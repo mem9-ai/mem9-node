@@ -24,6 +24,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "analysis_payloads" {
     id     = "expire-analysis-payloads"
     status = "Enabled"
 
+    filter {}
+
     expiration {
       days = var.payload_retention_days
     }
@@ -75,6 +77,24 @@ resource "aws_iam_role" "task_execution" {
   assume_role_policy = data.aws_iam_policy_document.ecs_task_assume_role.json
 }
 
+resource "aws_iam_role_policy" "task_execution_secrets" {
+  name = "${var.name_prefix}-task-execution-secrets"
+  role = aws_iam_role.task_execution.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue"
+        ]
+        Resource = aws_secretsmanager_secret.app.arn
+      }
+    ]
+  })
+}
+
 resource "aws_iam_role" "task_runtime" {
   name               = "${var.name_prefix}-task-runtime"
   assume_role_policy = data.aws_iam_policy_document.ecs_task_assume_role.json
@@ -86,23 +106,16 @@ resource "aws_iam_role_policy" "task_runtime" {
   policy = data.aws_iam_policy_document.task_runtime.json
 }
 
-resource "aws_security_group" "api" {
-  name        = "${var.name_prefix}-api"
-  description = "Placeholder SG for API tasks"
-  vpc_id      = var.vpc_id
-}
-
-resource "aws_security_group" "worker" {
-  name        = "${var.name_prefix}-worker"
-  description = "Placeholder SG for worker tasks"
-  vpc_id      = var.vpc_id
+resource "aws_iam_role_policy_attachment" "task_execution_ecs" {
+  role       = aws_iam_role.task_execution.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
 resource "aws_lb" "api" {
   name               = "${var.name_prefix}-alb"
   load_balancer_type = "application"
   subnets            = var.public_subnet_ids
-  security_groups    = [aws_security_group.api.id]
+  security_groups    = [aws_security_group.alb.id]
 }
 
 resource "aws_lb_target_group" "api" {
@@ -114,6 +127,129 @@ resource "aws_lb_target_group" "api" {
 
   health_check {
     path = "/health/ready"
+  }
+}
+
+resource "aws_security_group" "alb" {
+  name        = "${var.name_prefix}-alb"
+  description = "ALB security group"
+  vpc_id      = var.vpc_id
+}
+
+resource "aws_security_group" "api" {
+  name        = "${var.name_prefix}-api"
+  description = "API service security group"
+  vpc_id      = var.vpc_id
+}
+
+resource "aws_security_group" "worker" {
+  name        = "${var.name_prefix}-worker"
+  description = "Worker service security group"
+  vpc_id      = var.vpc_id
+}
+
+resource "aws_security_group" "db" {
+  name        = "${var.name_prefix}-db"
+  description = "MySQL security group"
+  vpc_id      = var.vpc_id
+}
+
+resource "aws_security_group" "redis" {
+  name        = "${var.name_prefix}-redis"
+  description = "Redis security group"
+  vpc_id      = var.vpc_id
+}
+
+resource "aws_vpc_security_group_ingress_rule" "alb_http_in" {
+  security_group_id = aws_security_group.alb.id
+  cidr_ipv4         = "0.0.0.0/0"
+  from_port         = 80
+  to_port           = 80
+  ip_protocol       = "tcp"
+}
+
+resource "aws_vpc_security_group_egress_rule" "alb_all_out" {
+  security_group_id = aws_security_group.alb.id
+  cidr_ipv4         = "0.0.0.0/0"
+  ip_protocol       = "-1"
+}
+
+
+resource "aws_vpc_security_group_egress_rule" "api_all_out" {
+  security_group_id = aws_security_group.api.id
+  cidr_ipv4         = "0.0.0.0/0"
+  ip_protocol       = "-1"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "api_from_alb" {
+  security_group_id            = aws_security_group.api.id
+  referenced_security_group_id = aws_security_group.alb.id
+  from_port                    = 3000
+  to_port                      = 3000
+  ip_protocol                  = "tcp"
+}
+
+resource "aws_vpc_security_group_egress_rule" "worker_all_out" {
+  security_group_id = aws_security_group.worker.id
+  cidr_ipv4         = "0.0.0.0/0"
+  ip_protocol       = "-1"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "db_from_api" {
+  security_group_id            = aws_security_group.db.id
+  referenced_security_group_id = aws_security_group.api.id
+  from_port                    = 3306
+  to_port                      = 3306
+  ip_protocol                  = "tcp"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "db_from_worker" {
+  security_group_id            = aws_security_group.db.id
+  referenced_security_group_id = aws_security_group.worker.id
+  from_port                    = 3306
+  to_port                      = 3306
+  ip_protocol                  = "tcp"
+}
+
+resource "aws_vpc_security_group_egress_rule" "db_all_out" {
+  security_group_id = aws_security_group.db.id
+  cidr_ipv4         = "0.0.0.0/0"
+  ip_protocol       = "-1"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "redis_from_api" {
+  security_group_id            = aws_security_group.redis.id
+  referenced_security_group_id = aws_security_group.api.id
+  from_port                    = 6379
+  to_port                      = 6379
+  ip_protocol                  = "tcp"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "redis_from_worker" {
+  security_group_id            = aws_security_group.redis.id
+  referenced_security_group_id = aws_security_group.worker.id
+  from_port                    = 6379
+  to_port                      = 6379
+  ip_protocol                  = "tcp"
+}
+
+resource "aws_vpc_security_group_egress_rule" "redis_all_out" {
+  security_group_id = aws_security_group.redis.id
+  cidr_ipv4         = "0.0.0.0/0"
+  ip_protocol       = "-1"
+}
+
+resource "aws_elasticache_subnet_group" "redis" {
+  name       = "${var.name_prefix}-redis"
+  subnet_ids = var.private_subnet_ids
+}
+
+resource "aws_db_subnet_group" "mysql" {
+  name       = "${var.name_prefix}-mysql"
+  subnet_ids = var.private_subnet_ids
+
+  tags = {
+    Name = "${var.name_prefix}-mysql"
   }
 }
 
@@ -129,34 +265,25 @@ resource "aws_lb_listener" "http" {
 }
 
 resource "aws_db_instance" "mysql" {
-  identifier             = "${var.name_prefix}-mysql"
-  engine                 = "mysql"
-  engine_version         = "8.0.39"
-  instance_class         = "db.t4g.micro"
-  allocated_storage      = 20
-  db_name                = var.database_name
-  username               = var.database_username
-  password               = var.database_password
-  skip_final_snapshot    = true
-  publicly_accessible    = false
-  vpc_security_group_ids = [aws_security_group.api.id, aws_security_group.worker.id]
+  identifier        = "${var.name_prefix}-mysql"
+  engine            = "mysql"
+  engine_version    = "8.0.39"
+  instance_class    = "db.t4g.micro"
+  allocated_storage = 20
+  storage_type      = "gp3"
+
+  db_name  = var.database_name
+  username = var.database_username
+  password = var.database_password
+
+  backup_retention_period = 7
+  skip_final_snapshot     = true
+  publicly_accessible     = false
+
+  db_subnet_group_name   = aws_db_subnet_group.mysql.name
+  vpc_security_group_ids = [aws_security_group.db.id]
 }
 
-resource "aws_elasticache_subnet_group" "redis" {
-  name       = "${var.name_prefix}-redis"
-  subnet_ids = var.private_subnet_ids
-}
-
-resource "aws_elasticache_replication_group" "redis" {
-  replication_group_id       = "${var.name_prefix}-redis"
-  description                = "Redis for analysis progress and aggregates"
-  node_type                  = "cache.t4g.micro"
-  port                       = 6379
-  subnet_group_name          = aws_elasticache_subnet_group.redis.name
-  security_group_ids         = [aws_security_group.api.id, aws_security_group.worker.id]
-  automatic_failover_enabled = false
-  num_cache_clusters         = 1
-}
 
 data "aws_iam_policy_document" "ecs_task_assume_role" {
   statement {
@@ -190,4 +317,18 @@ data "aws_iam_policy_document" "task_runtime" {
       aws_sqs_queue.analysis_llm_dlq.arn
     ]
   }
+}
+
+resource "aws_elasticache_replication_group" "redis" {
+  replication_group_id       = replace("${var.name_prefix}-redis", "-", "")
+  description                = "Redis for ${var.name_prefix}"
+  engine                     = "redis"
+  engine_version             = "7.1"
+  node_type                  = "cache.t4g.micro"
+  num_cache_clusters         = 1
+  parameter_group_name       = "default.redis7"
+  port                       = 6379
+  subnet_group_name          = aws_elasticache_subnet_group.redis.name
+  security_group_ids         = [aws_security_group.redis.id]
+  automatic_failover_enabled = false
 }
