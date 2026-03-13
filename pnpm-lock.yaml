@@ -161,6 +161,9 @@ importers:
 
   packages/shared:
     dependencies:
+      '@mem9/config':
+        specifier: workspace:*
+        version: link:../config
       '@mem9/contracts':
         specifier: workspace:*
         version: link:../contracts

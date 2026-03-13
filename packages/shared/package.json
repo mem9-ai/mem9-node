@@ -2,9 +2,10 @@
   "name": "@mem9/shared",
   "version": "0.1.0",
   "private": true,
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "dist/shared/src/index.js",
+  "types": "dist/shared/src/index.d.ts",
   "dependencies": {
+    "@mem9/config": "workspace:*",
     "@mem9/contracts": "workspace:*"
   },
   "scripts": {

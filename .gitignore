@@ -148,3 +148,6 @@ override.tf.json
 *_override.tf.json
 *.tfvars
 *.tfvars.json
+tfplan
+*.tfplan
+.DS_Store

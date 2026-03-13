@@ -267,7 +267,6 @@ resource "aws_lb_listener" "http" {
 resource "aws_db_instance" "mysql" {
   identifier        = "${var.name_prefix}-mysql"
   engine            = "mysql"
-  engine_version    = "8.0.39"
   instance_class    = "db.t4g.micro"
   allocated_storage = 20
   storage_type      = "gp3"
