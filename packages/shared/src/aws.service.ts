@@ -14,15 +14,28 @@ export class AwsClientFactory {
   private readonly sqsClient: SQSClient;
 
   public constructor(@Inject(APP_CONFIG) private readonly config: AppConfig) {
-    const options = {
+    const options: {
+      region: string;
+      endpoint?: string;
+      forcePathStyle: boolean;
+      credentials?: {
+        accessKeyId: string;
+        secretAccessKey: string;
+        sessionToken?: string;
+      };
+    } = {
       region: config.aws.region,
       endpoint: config.aws.endpointUrl,
       forcePathStyle: config.aws.forcePathStyle,
-      credentials: {
+    };
+
+    if (config.aws.accessKeyId !== undefined && config.aws.secretAccessKey !== undefined) {
+      options.credentials = {
         accessKeyId: config.aws.accessKeyId,
         secretAccessKey: config.aws.secretAccessKey,
-      },
-    };
+        sessionToken: config.aws.sessionToken,
+      };
+    }
 
     this.s3Client = new S3Client(options);
     this.sqsClient = new SQSClient(options);

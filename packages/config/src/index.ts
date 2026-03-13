@@ -17,9 +17,10 @@ const envSchema = z.object({
   APP_PEPPER: z.string().min(16).default('local-dev-pepper-1234567890'),
   AWS_REGION: z.string().min(1).default('us-east-1'),
   AWS_ENDPOINT_URL: z.string().url().optional(),
-  AWS_ACCESS_KEY_ID: z.string().default('test'),
-  AWS_SECRET_ACCESS_KEY: z.string().default('test'),
-  AWS_FORCE_PATH_STYLE: booleanish.default(true),
+  AWS_ACCESS_KEY_ID: z.string().min(1).optional(),
+  AWS_SECRET_ACCESS_KEY: z.string().min(1).optional(),
+  AWS_SESSION_TOKEN: z.string().min(1).optional(),
+  AWS_FORCE_PATH_STYLE: booleanish.default(false),
   S3_BUCKET_ANALYSIS_PAYLOADS: z.string().min(1).default('mem9-analysis-payloads'),
   SQS_ANALYSIS_BATCH_QUEUE_URL: z.string().min(1).default('http://127.0.0.1:4566/000000000000/analysis-batch'),
   SQS_ANALYSIS_BATCH_DLQ_URL: z.string().min(1).default('http://127.0.0.1:4566/000000000000/analysis-batch-dlq'),
@@ -40,6 +41,25 @@ const envSchema = z.object({
   SQS_WAIT_TIME_SECONDS: z.coerce.number().int().min(1).max(20).default(10),
   SQS_VISIBILITY_TIMEOUT_SECONDS: z.coerce.number().int().positive().default(30),
   SQS_VISIBILITY_HEARTBEAT_SECONDS: z.coerce.number().int().positive().default(10),
+}).superRefine((env, ctx) => {
+  const hasAccessKey = env.AWS_ACCESS_KEY_ID !== undefined;
+  const hasSecretKey = env.AWS_SECRET_ACCESS_KEY !== undefined;
+
+  if (hasAccessKey !== hasSecretKey) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be provided together',
+      path: hasAccessKey ? ['AWS_SECRET_ACCESS_KEY'] : ['AWS_ACCESS_KEY_ID'],
+    });
+  }
+
+  if (env.AWS_SESSION_TOKEN !== undefined && !(hasAccessKey && hasSecretKey)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'AWS_SESSION_TOKEN requires AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY',
+      path: ['AWS_SESSION_TOKEN'],
+    });
+  }
 });
 
 export type AppEnv = z.infer<typeof envSchema>;
@@ -61,8 +81,9 @@ export interface AppConfig {
   aws: {
     region: string;
     endpointUrl?: string;
-    accessKeyId: string;
-    secretAccessKey: string;
+    accessKeyId?: string;
+    secretAccessKey?: string;
+    sessionToken?: string;
     forcePathStyle: boolean;
     s3BucketAnalysisPayloads: string;
     sqsAnalysisBatchQueueUrl: string;
@@ -114,6 +135,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
       endpointUrl: env.AWS_ENDPOINT_URL,
       accessKeyId: env.AWS_ACCESS_KEY_ID,
       secretAccessKey: env.AWS_SECRET_ACCESS_KEY,
+      sessionToken: env.AWS_SESSION_TOKEN,
       forcePathStyle: env.AWS_FORCE_PATH_STYLE,
       s3BucketAnalysisPayloads: env.S3_BUCKET_ANALYSIS_PAYLOADS,
       sqsAnalysisBatchQueueUrl: env.SQS_ANALYSIS_BATCH_QUEUE_URL,
