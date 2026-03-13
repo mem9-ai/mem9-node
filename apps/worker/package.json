@@ -1,0 +1,17 @@
+{
+  "name": "@mem9/worker",
+  "version": "0.1.0",
+  "private": true,
+  "dependencies": {
+    "@mem9/config": "workspace:*",
+    "@mem9/contracts": "workspace:*",
+    "@mem9/shared": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "build:watch": "tsc -p tsconfig.build.json --watch",
+    "dev": "tsx watch src/main.ts",
+    "lint": "eslint \"src/**/*.ts\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  }
+}

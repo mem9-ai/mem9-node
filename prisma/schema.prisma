@@ -1,0 +1,169 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum ApiKeySubjectStatus {
+  ACTIVE
+  DISABLED
+  PENDING
+}
+
+enum AnalysisJobStatus {
+  CREATED
+  UPLOADING
+  PROCESSING
+  PARTIAL
+  COMPLETED
+  PARTIAL_FAILED
+  FAILED
+  CANCELLED
+  EXPIRED
+}
+
+enum AnalysisJobBatchStatus {
+  EXPECTED
+  UPLOADED
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  RETRYING
+  DLQ
+}
+
+enum TaxonomyMatchType {
+  keyword
+  regex
+  phrase
+}
+
+model ApiKeySubject {
+  id                String              @id @db.VarChar(64)
+  apiKeyFingerprint Bytes               @unique @db.VarBinary(32)
+  status            ApiKeySubjectStatus @default(ACTIVE)
+  planCode          String              @db.VarChar(64)
+  lastSeenAt        DateTime?           @db.DateTime(3)
+  lastVerifyAt      DateTime?           @db.DateTime(3)
+  createdAt         DateTime            @default(now()) @db.DateTime(3)
+  updatedAt         DateTime            @updatedAt @db.DateTime(3)
+
+  @@index([planCode])
+}
+
+model RateLimitPolicy {
+  id            String   @id @db.VarChar(64)
+  planCode      String   @unique @db.VarChar(64)
+  rpmLimit      Int
+  dailyLimit    Int
+  burstLimit    Int
+  maxActiveJobs Int
+  maxBatchesPerJob Int
+  enabled       Boolean  @default(true)
+  createdAt     DateTime @default(now()) @db.DateTime(3)
+  updatedAt     DateTime @updatedAt @db.DateTime(3)
+}
+
+model AnalysisJob {
+  id                    String            @id @db.VarChar(64)
+  apiKeyFingerprint     Bytes             @db.VarBinary(32)
+  status                AnalysisJobStatus @default(UPLOADING)
+  dateRangeStart        DateTime          @db.DateTime(3)
+  dateRangeEnd          DateTime          @db.DateTime(3)
+  expectedTotalMemories Int
+  expectedTotalBatches  Int
+  uploadedBatches       Int               @default(0)
+  completedBatches      Int               @default(0)
+  failedBatches         Int               @default(0)
+  processedMemories     Int               @default(0)
+  batchSize             Int
+  pipelineVersion       String            @db.VarChar(32)
+  taxonomyVersion       String            @db.VarChar(32)
+  llmEnabled            Boolean           @default(false)
+  resultVersion         Int               @default(0)
+  createdAt             DateTime          @default(now()) @db.DateTime(3)
+  startedAt             DateTime?         @db.DateTime(3)
+  completedAt           DateTime?         @db.DateTime(3)
+  expiresAt             DateTime?         @db.DateTime(3)
+  lastErrorCode         String?           @db.VarChar(64)
+  lastErrorMessage      String?           @db.VarChar(512)
+
+  batches AnalysisJobBatch[]
+
+  @@index([apiKeyFingerprint, createdAt])
+  @@index([status, createdAt])
+}
+
+model AnalysisJobBatch {
+  id               String                 @id @db.VarChar(64)
+  jobId            String                 @db.VarChar(64)
+  batchIndex       Int
+  status           AnalysisJobBatchStatus @default(EXPECTED)
+  memoryCount      Int
+  payloadHash      String                 @db.VarChar(64)
+  payloadObjectKey String                 @db.VarChar(255)
+  attemptCount     Int                    @default(0)
+  startedAt        DateTime?              @db.DateTime(3)
+  completedAt      DateTime?              @db.DateTime(3)
+  durationMs       Int?
+  resultCacheKey   String?                @db.VarChar(255)
+  errorCode        String?                @db.VarChar(64)
+  errorMessage     String?                @db.VarChar(512)
+  createdAt        DateTime               @default(now()) @db.DateTime(3)
+  updatedAt        DateTime               @updatedAt @db.DateTime(3)
+
+  job AnalysisJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, batchIndex])
+  @@index([jobId, status])
+}
+
+model TaxonomyRule {
+  id        String            @id @db.VarChar(64)
+  version   String            @db.VarChar(32)
+  category  String            @db.VarChar(32)
+  label     String            @db.VarChar(128)
+  lang      String            @db.VarChar(32)
+  matchType TaxonomyMatchType
+  pattern   String            @db.VarChar(255)
+  weight    Int
+  enabled   Boolean           @default(true)
+  createdAt DateTime          @default(now()) @db.DateTime(3)
+  updatedAt DateTime          @updatedAt @db.DateTime(3)
+
+  @@index([version, enabled])
+}
+
+model AnalysisPipelineConfig {
+  id                   String   @id @db.VarChar(64)
+  version              String   @unique @db.VarChar(32)
+  maxMemoriesPerRequest Int
+  maxBodyBytes         Int
+  resultCacheEnabled   Boolean  @default(true)
+  llmFallbackEnabled   Boolean  @default(false)
+  defaultBatchSize     Int
+  partialResultTtlSeconds Int
+  payloadRetentionDays Int
+  createdAt            DateTime @default(now()) @db.DateTime(3)
+  updatedAt            DateTime @updatedAt @db.DateTime(3)
+}
+
+model RequestAuditMeta {
+  id                String   @id @db.VarChar(64)
+  requestId         String   @db.VarChar(64)
+  apiKeyFingerprint Bytes    @db.VarBinary(32)
+  route             String   @db.VarChar(255)
+  jobId             String?  @db.VarChar(64)
+  batchIndex        Int?
+  memoryCount       Int?
+  statusCode        Int
+  latencyMs         Int
+  createdAt         DateTime @default(now()) @db.DateTime(3)
+
+  @@index([requestId])
+  @@index([createdAt])
+}
