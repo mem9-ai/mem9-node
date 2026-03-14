@@ -2,6 +2,7 @@ import type { AppConfig } from '@mem9/config';
 import { APP_CONFIG } from '@mem9/config';
 import type {
   AggregateSnapshot,
+  AnalysisFacetStat,
   AnalysisJobSnapshotResponse,
   AnalysisJobUpdatesResponse,
   BatchSummary,
@@ -27,6 +28,34 @@ import { Inject, Injectable } from '@nestjs/common';
 import type { Mem9RequestContext } from './common/request-context';
 import type { CreateAnalysisJobDto } from './dto/create-analysis-job.dto';
 import type { UploadAnalysisBatchDto } from './dto/upload-analysis-batch.dto';
+
+const MAX_FACET_STATS = 50;
+
+function compareFacetValues(left: string, right: string): number {
+  if (left < right) {
+    return -1;
+  }
+
+  if (left > right) {
+    return 1;
+  }
+
+  return 0;
+}
+
+export function buildFacetStats(
+  counts: Record<string, number>,
+  limit = MAX_FACET_STATS,
+): AnalysisFacetStat[] {
+  return Object.entries(counts)
+    .filter(([, count]) => count > 0)
+    .sort((left, right) => right[1] - left[1] || compareFacetValues(left[0], right[0]))
+    .slice(0, limit)
+    .map(([value, count]) => ({
+      value,
+      count,
+    }));
+}
 
 @Injectable()
 export class AnalysisJobsService {
@@ -257,14 +286,10 @@ export class AnalysisJobsService {
       }),
     );
     const aggregateCards = this.mapAggregateCards(aggregate, progress.processedMemories);
-    const topTags = Object.entries(aggregate.tagCounts)
-      .sort((left, right) => right[1] - left[1])
-      .slice(0, 5)
-      .map(([tag]) => tag);
-    const topTopics = Object.entries(aggregate.topicCounts)
-      .sort((left, right) => right[1] - left[1])
-      .slice(0, 5)
-      .map(([tag]) => tag);
+    const topTagStats = buildFacetStats(aggregate.tagCounts);
+    const topTopicStats = buildFacetStats(aggregate.topicCounts);
+    const topTags = topTagStats.map(({ value }) => value);
+    const topTopics = topTopicStats.map(({ value }) => value);
 
     return {
       jobId: job.id,
@@ -289,6 +314,8 @@ export class AnalysisJobsService {
       },
       aggregate,
       aggregateCards,
+      topTagStats,
+      topTopicStats,
       topTags,
       topTopics,
       batchSummaries,

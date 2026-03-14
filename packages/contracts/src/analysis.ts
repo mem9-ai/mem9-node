@@ -63,6 +63,11 @@ export interface AnalysisCategoryCard {
   confidence: number;
 }
 
+export interface AnalysisFacetStat {
+  value: string;
+  count: number;
+}
+
 export interface BatchSummary {
   batchIndex: number;
   status: BatchStatus;
@@ -109,6 +114,8 @@ export interface AnalysisJobSnapshotResponse {
   progress: JobProgressSnapshot;
   aggregate: AggregateSnapshot;
   aggregateCards: AnalysisCategoryCard[];
+  topTagStats: AnalysisFacetStat[];
+  topTopicStats: AnalysisFacetStat[];
   topTags: string[];
   topTopics: string[];
   batchSummaries: BatchSummary[];

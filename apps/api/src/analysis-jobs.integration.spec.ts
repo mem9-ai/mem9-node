@@ -593,6 +593,19 @@ describe('analysis jobs integration', () => {
       .expect(200);
 
     const progressStore = new RedisProgressStore(redis as never, 86400);
+    const tagCounts: Record<string, number> = Object.fromEntries(
+      Array.from({ length: 51 }, (_, index) => [`tag-${index.toString().padStart(2, '0')}`, 1] as const),
+    );
+    const topicCounts: Record<string, number> = Object.fromEntries(
+      Array.from({ length: 51 }, (_, index) => [`topic-${index.toString().padStart(2, '0')}`, 1] as const),
+    );
+
+    tagCounts.priority = 53;
+    tagCounts.beta = 5;
+    tagCounts.alpha = 5;
+    topicCounts.roadmap = 9;
+    topicCounts.project = 9;
+
     await progressStore.mergeBatch('aj_test_1', {
       batchIndex: 1,
       expectedTotalBatches: 3,
@@ -604,14 +617,8 @@ describe('analysis jobs integration', () => {
         experience: 0,
         activity: 0,
       },
-      tagCounts: {
-        ai: 1,
-        开心: 1,
-      },
-      topicCounts: {
-        ai: 1,
-        开心: 1,
-      },
+      tagCounts,
+      topicCounts,
       summarySnapshot: ['identity:1', 'emotion:1'],
       batchResult: {
         batchIndex: 1,
@@ -634,6 +641,22 @@ describe('analysis jobs integration', () => {
 
     expect(snapshotBody.progress.uploadedBatches).toBe(1);
     expect(snapshotBody.aggregate.categoryCounts.identity).toBe(1);
+    expect(snapshotBody.topTagStats).toHaveLength(50);
+    expect(snapshotBody.topTagStats[0]).toEqual({ value: 'priority', count: 53 });
+    expect(snapshotBody.topTagStats[1]).toEqual({ value: 'alpha', count: 5 });
+    expect(snapshotBody.topTagStats[2]).toEqual({ value: 'beta', count: 5 });
+    expect(snapshotBody.topTagStats[49]).toEqual({ value: 'tag-46', count: 1 });
+    expect(snapshotBody.topTags).toEqual(snapshotBody.topTagStats.map((stat) => stat.value));
+    expect(snapshotBody.topTags).not.toContain('tag-47');
+    expect(snapshotBody.topTopicStats).toHaveLength(50);
+    expect(snapshotBody.topTopicStats[0]).toEqual({ value: 'project', count: 9 });
+    expect(snapshotBody.topTopicStats[1]).toEqual({ value: 'roadmap', count: 9 });
+    expect(snapshotBody.topTopics).toEqual(snapshotBody.topTopicStats.map((stat) => stat.value));
+    expect(snapshotBody.topTopics).not.toContain('topic-49');
+    expect(snapshotBody.aggregate.tagCounts['tag-47']).toBe(1);
+    expect(snapshotBody.aggregate.tagCounts.priority).toBe(53);
+    expect(snapshotBody.aggregate.topicCounts['topic-49']).toBe(1);
+    expect(snapshotBody.aggregate.topicCounts.project).toBe(9);
 
     const updatesResponse = await request(app.getHttpServer())
       .get('/v1/analysis-jobs/aj_test_1/updates?cursor=0')
@@ -643,6 +666,6 @@ describe('analysis jobs integration', () => {
 
     expect(updatesBody.events).toHaveLength(1);
     expect(updatesBody.completedBatchResults).toHaveLength(1);
-    expect(updatesBody.aggregate.tagCounts.ai).toBe(1);
+    expect(updatesBody.aggregate.tagCounts.priority).toBe(53);
   });
 });

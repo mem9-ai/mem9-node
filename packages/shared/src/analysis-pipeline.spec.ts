@@ -1,6 +1,12 @@
 import type { TaxonomyRuleDefinition } from '@mem9/contracts';
 
-import { analyzeBatch, canonicalizeBatchPayload, classifyMemory, normalizeMemory } from './analysis-pipeline';
+import {
+  analyzeBatch,
+  canonicalizeBatchPayload,
+  classifyMemory,
+  isMeaningfulFacetToken,
+  normalizeMemory,
+} from './analysis-pipeline';
 import { sha256Hex } from './hash';
 
 const rules: TaxonomyRuleDefinition[] = [
@@ -73,5 +79,34 @@ describe('analysis pipeline', () => {
     ]);
 
     expect(sha256Hex(payload)).toBe(sha256Hex(payload));
+  });
+
+  it('filters high-frequency English stopwords from facet tags', () => {
+    const memory = normalizeMemory({
+      id: 'm2',
+      content: 'It is for your my his agent memory roadmap',
+      createdAt: '2026-03-01T00:00:00.000Z',
+      metadata: {},
+    });
+
+    const analyzed = classifyMemory(memory, rules, 'en-US');
+
+    expect(analyzed.tags).toEqual(expect.arrayContaining(['agent', 'memory', 'roadmap']));
+    expect(analyzed.tags).not.toEqual(expect.arrayContaining(['it', 'is', 'for', 'your', 'my', 'his']));
+  });
+
+  it('retains meaningful tokens after stricter facet filtering', () => {
+    expect(isMeaningfulFacetToken('agent')).toBe(true);
+    expect(isMeaningfulFacetToken('search')).toBe(true);
+    expect(isMeaningfulFacetToken(' is ')).toBe(false);
+    expect(isMeaningfulFacetToken('Your')).toBe(false);
+  });
+
+  it('keeps mixed Chinese and English facet filtering stable', () => {
+    const filteredTokens = [' 我的 ', 'AI', 'agent', '记忆', '系统', '稳定', 'Your']
+      .filter(isMeaningfulFacetToken)
+      .map((token) => token.trim().toLowerCase());
+
+    expect(filteredTokens).toEqual(['ai', 'agent', '记忆', '系统', '稳定']);
   });
 });
