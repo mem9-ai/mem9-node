@@ -9,6 +9,21 @@ terraform {
   }
 }
 
+moved {
+  from = aws_vpc_security_group_ingress_rule.alb_http_in
+  to   = aws_vpc_security_group_ingress_rule.alb_https_in
+}
+
+import {
+  to = aws_vpc_security_group_ingress_rule.alb_http_redirect_in
+  id = "sgr-0b9e2034b2b1fb1fd"
+}
+
+import {
+  to = aws_lb_listener.https
+  id = "arn:aws:elasticloadbalancing:ap-southeast-1:401696231252:listener/app/mem9-node-prod-alb/04df54f74e428044/cd982852312c563a"
+}
+
 provider "aws" {
   region = var.aws_region
 }
@@ -160,11 +175,19 @@ resource "aws_security_group" "redis" {
   vpc_id      = var.vpc_id
 }
 
-resource "aws_vpc_security_group_ingress_rule" "alb_http_in" {
+resource "aws_vpc_security_group_ingress_rule" "alb_http_redirect_in" {
   security_group_id = aws_security_group.alb.id
   cidr_ipv4         = "0.0.0.0/0"
   from_port         = 80
   to_port           = 80
+  ip_protocol       = "tcp"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "alb_https_in" {
+  security_group_id = aws_security_group.alb.id
+  cidr_ipv4         = "0.0.0.0/0"
+  from_port         = 443
+  to_port           = 443
   ip_protocol       = "tcp"
 }
 
@@ -246,7 +269,7 @@ resource "aws_elasticache_subnet_group" "redis" {
 
 resource "aws_db_subnet_group" "mysql" {
   name       = "${var.name_prefix}-mysql"
-  subnet_ids = var.private_subnet_ids
+  subnet_ids = var.database_subnet_ids
 
   tags = {
     Name = "${var.name_prefix}-mysql"
@@ -259,8 +282,37 @@ resource "aws_lb_listener" "http" {
   protocol          = "HTTP"
 
   default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.api.arn
+    type = "redirect"
+
+    redirect {
+      port        = "443"
+      protocol    = "HTTPS"
+      status_code = "HTTP_301"
+    }
+  }
+}
+
+resource "aws_lb_listener" "https" {
+  load_balancer_arn = aws_lb.api.arn
+  port              = 443
+  protocol          = "HTTPS"
+  certificate_arn   = "arn:aws:acm:ap-southeast-1:401696231252:certificate/b45d5c85-ae95-453e-b4b3-7802f09a2d2b"
+  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09"
+
+  default_action {
+    type = "forward"
+
+    forward {
+      target_group {
+        arn    = aws_lb_target_group.api.arn
+        weight = 1
+      }
+
+      stickiness {
+        enabled  = false
+        duration = 3600
+      }
+    }
   }
 }
 
@@ -277,7 +329,7 @@ resource "aws_db_instance" "mysql" {
 
   backup_retention_period = 7
   skip_final_snapshot     = true
-  publicly_accessible     = false
+  publicly_accessible     = true
 
   db_subnet_group_name   = aws_db_subnet_group.mysql.name
   vpc_security_group_ids = [aws_security_group.db.id]

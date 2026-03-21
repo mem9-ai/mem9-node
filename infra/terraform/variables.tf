@@ -30,6 +30,10 @@ variable "private_subnet_ids" {
   type = list(string)
 }
 
+variable "database_subnet_ids" {
+  type = list(string)
+}
+
 variable "database_name" {
   type    = string
   default = "mem9"

@@ -95,6 +95,7 @@ export class BatchProcessorService {
       const uniqueMemories = [];
 
       for (const memory of payload.memories.map(normalizeMemory)) {
+        // Progress and category aggregates intentionally count unique memories only.
         if (await this.progressStore.markMemorySeen(message.jobId, memory.id, memory.contentHash)) {
           uniqueMemories.push(memory);
         }
