@@ -1,5 +1,7 @@
 import { RedisProgressStore } from './redis-progress-store';
 
+const legacyCategories = ['identity', 'emotion', 'preference', 'experience', 'activity'] as const;
+
 interface FakeProgressState {
   expectedTotalBatches: number;
   uploadedBatches: number;
@@ -66,7 +68,7 @@ class FakeRedis {
     ) as FakeProgressState;
     const aggregate = JSON.parse(
       (await this.get(aggregateKey)) ??
-        '{"categoryCounts":{"identity":0,"emotion":0,"preference":0,"experience":0,"activity":0},"tagCounts":{},"topicCounts":{},"summarySnapshot":[],"resultVersion":0}',
+        '{"categoryCounts":{},"tagCounts":{},"topicCounts":{},"summarySnapshot":[],"resultVersion":0}',
     ) as FakeAggregateState;
 
     progress.expectedTotalBatches = input.expectedTotalBatches;
@@ -178,7 +180,7 @@ describe('redis progress store', () => {
   it('merges aggregate deltas atomically', async () => {
     const store = new RedisProgressStore(new FakeRedis() as never, 60);
 
-    await store.initializeJob('aj_1', 3);
+    await store.initializeJob('aj_1', 3, legacyCategories);
     const result = await store.mergeBatch('aj_1', {
       batchIndex: 1,
       expectedTotalBatches: 3,
@@ -212,9 +214,24 @@ describe('redis progress store', () => {
   it('deduplicates seen memory ids and hashes', async () => {
     const store = new RedisProgressStore(new FakeRedis() as never, 60);
 
-    await store.initializeJob('aj_1', 1);
+    await store.initializeJob('aj_1', 1, legacyCategories);
 
     expect(await store.markMemorySeen('aj_1', 'm1', 'h1')).toBe(true);
     expect(await store.markMemorySeen('aj_1', 'm1', 'h1')).toBe(false);
+  });
+
+  it('supports dynamic category initialization for v3 taxonomies', async () => {
+    const store = new RedisProgressStore(new FakeRedis() as never, 60);
+    const categories = ['policy', 'project', 'debugging'];
+
+    await store.initializeJob('aj_v3', 1, categories);
+
+    const aggregate = await store.getAggregate('aj_v3');
+
+    expect(aggregate.categoryCounts).toEqual({
+      policy: 0,
+      project: 0,
+      debugging: 0,
+    });
   });
 });

@@ -27,6 +27,8 @@ import { ApiKeyGuard } from './common/api-key.guard';
 import { AppExceptionFilter } from './common/app-exception.filter';
 import { RateLimitGuard } from './common/rate-limit.guard';
 
+const legacyCategories = ['identity', 'emotion', 'preference', 'experience', 'activity'] as const;
+
 interface FakeJob {
   id: string;
   apiKeyFingerprint: Uint8Array<ArrayBuffer>;
@@ -136,7 +138,7 @@ class FakeRedis {
     };
     const aggregate = JSON.parse(
       (await this.get(aggregateKey)) ??
-        '{"categoryCounts":{"identity":0,"emotion":0,"preference":0,"experience":0,"activity":0},"tagCounts":{},"topicCounts":{},"summarySnapshot":[],"resultVersion":0}',
+        '{"categoryCounts":{},"tagCounts":{},"topicCounts":{},"summarySnapshot":[],"resultVersion":0}',
     ) as {
       categoryCounts: Record<string, number>;
       tagCounts: Record<string, number>;
@@ -501,7 +503,7 @@ describe('analysis jobs integration', () => {
             getResponse: jest.fn(async () => ({
               version: 'v1',
               updatedAt: new Date().toISOString(),
-              categories: ['identity', 'emotion', 'preference', 'experience', 'activity'],
+              categories: [...legacyCategories],
               rules: [],
             })),
           },
@@ -667,5 +669,25 @@ describe('analysis jobs integration', () => {
     expect(updatesBody.events).toHaveLength(1);
     expect(updatesBody.completedBatchResults).toHaveLength(1);
     expect(updatesBody.aggregate.tagCounts.priority).toBe(53);
+  });
+
+  it('returns taxonomy responses with dynamic categories for v3', async () => {
+    const taxonomyService = app.get(TaxonomyCacheService) as {
+      getResponse: jest.Mock;
+    };
+
+    taxonomyService.getResponse.mockResolvedValueOnce({
+      version: 'v3',
+      updatedAt: new Date().toISOString(),
+      categories: ['policy', 'debugging', 'project', 'artifact'],
+      rules: [],
+    });
+
+    const response = await request(app.getHttpServer())
+      .get('/v1/taxonomy?version=v3')
+      .set('x-mem9-api-key', 'mem9-secret')
+      .expect(200);
+
+    expect(response.body.categories).toEqual(['policy', 'debugging', 'project', 'artifact']);
   });
 });

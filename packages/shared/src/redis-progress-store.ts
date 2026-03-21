@@ -6,6 +6,7 @@ import type {
   BatchSummary,
   JobProgressSnapshot,
 } from '@mem9/contracts';
+import { ANALYSIS_CATEGORIES } from '@mem9/contracts';
 import type Redis from 'ioredis';
 
 import { redisKeys } from './redis-keys';
@@ -19,14 +20,8 @@ const defaultProgress = (expectedTotalBatches = 0): JobProgressSnapshot => ({
   resultVersion: 0,
 });
 
-const defaultAggregate = (): AggregateSnapshot => ({
-  categoryCounts: {
-    identity: 0,
-    emotion: 0,
-    preference: 0,
-    experience: 0,
-    activity: 0,
-  },
+const defaultAggregate = (categories: readonly string[] = ANALYSIS_CATEGORIES): AggregateSnapshot => ({
+  categoryCounts: Object.fromEntries(categories.map((category) => [category, 0])),
   tagCounts: {},
   topicCounts: {},
   summarySnapshot: [],
@@ -47,13 +42,7 @@ const mergeScript = `
     resultVersion = 0
   }
   local aggregateObj = aggregate and cjson.decode(aggregate) or {
-    categoryCounts = {
-      identity = 0,
-      emotion = 0,
-      preference = 0,
-      experience = 0,
-      activity = 0
-    },
+    categoryCounts = {},
     tagCounts = {},
     topicCounts = {},
     summarySnapshot = {},
@@ -105,7 +94,11 @@ export class RedisProgressStore {
     private readonly ttlSeconds: number,
   ) {}
 
-  public async initializeJob(jobId: string, expectedTotalBatches: number): Promise<void> {
+  public async initializeJob(
+    jobId: string,
+    expectedTotalBatches: number,
+    categories: readonly string[] = ANALYSIS_CATEGORIES,
+  ): Promise<void> {
     await this.redis.set(
       redisKeys.jobProgress(jobId),
       JSON.stringify(defaultProgress(expectedTotalBatches)),
@@ -114,7 +107,7 @@ export class RedisProgressStore {
     );
     await this.redis.set(
       redisKeys.aggregate(jobId),
-      JSON.stringify(defaultAggregate()),
+      JSON.stringify(defaultAggregate(categories)),
       'EX',
       this.ttlSeconds,
     );

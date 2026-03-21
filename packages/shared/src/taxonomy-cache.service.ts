@@ -2,12 +2,12 @@
 import type { AppConfig } from '@mem9/config';
 import { APP_CONFIG } from '@mem9/config';
 import type { TaxonomyResponse, TaxonomyRuleDefinition } from '@mem9/contracts';
-import { ANALYSIS_CATEGORIES } from '@mem9/contracts';
 import { Inject, Injectable } from '@nestjs/common';
 
 import { AnalysisRepository } from './analysis-repository';
 import { redisKeys } from './redis-keys';
 import { RedisService } from './redis.service';
+import { deriveTaxonomyCategories } from './taxonomy-categories';
 
 @Injectable()
 export class TaxonomyCacheService {
@@ -49,7 +49,7 @@ export class TaxonomyCacheService {
     return {
       version: source.version,
       updatedAt: source.updatedAt.toISOString(),
-      categories: [...ANALYSIS_CATEGORIES],
+      categories: deriveTaxonomyCategories(rules),
       rules,
     };
   }

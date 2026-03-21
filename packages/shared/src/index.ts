@@ -15,4 +15,5 @@ export * from './redis.service';
 export * from './redaction';
 export * from './state-machine';
 export * from './taxonomy-cache.service';
+export * from './taxonomy-categories';
 export * from './time';

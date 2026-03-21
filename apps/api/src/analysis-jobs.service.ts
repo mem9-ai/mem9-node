@@ -13,6 +13,7 @@ import type {
 import {
   AnalysisRepository,
   AppError,
+  compareCategoryPriority,
   GoVerifyService,
   RedisProgressStore,
   RedisService,
@@ -99,6 +100,7 @@ export class AnalysisJobsService {
     await this.goVerifyService.verify();
 
     const pipelineConfig = await this.repository.getPipelineConfig(this.config.analysis.pipelineVersion);
+    const taxonomy = await this.taxonomyCacheService.getResponse(dto.options.taxonomyVersion);
 
     if (dto.batchSize > pipelineConfig.defaultBatchSize && dto.batchSize > this.config.analysis.maxBatchMemories) {
       throw new AppError('Batch size exceeds allowed maximum', {
@@ -121,7 +123,7 @@ export class AnalysisJobsService {
       expiresAt,
     });
 
-    await this.progressStore.initializeJob(job.id, dto.expectedTotalBatches);
+    await this.progressStore.initializeJob(job.id, dto.expectedTotalBatches, taxonomy.categories);
 
     return {
       jobId: job.id,
@@ -342,6 +344,6 @@ export class AnalysisJobsService {
         count,
         confidence: processedMemories === 0 ? 0 : Number((count / processedMemories).toFixed(2)),
       }))
-      .sort((left, right) => right.count - left.count);
+      .sort((left, right) => right.count - left.count || compareCategoryPriority(left.category, right.category));
   }
 }

@@ -34,6 +34,64 @@ const rules: TaxonomyRuleDefinition[] = [
   },
 ];
 
+const v3Rules: TaxonomyRuleDefinition[] = [
+  {
+    id: 'v3_policy_1',
+    version: 'v3',
+    category: 'policy',
+    label: 'Policy',
+    lang: 'en-US',
+    matchType: 'phrase',
+    pattern: 'if no changes',
+    weight: 7,
+    enabled: true,
+  },
+  {
+    id: 'v3_project_1',
+    version: 'v3',
+    category: 'project',
+    label: 'Project',
+    lang: 'en-US',
+    matchType: 'keyword',
+    pattern: 'openclaw',
+    weight: 5,
+    enabled: true,
+  },
+  {
+    id: 'v3_debugging_1',
+    version: 'v3',
+    category: 'debugging',
+    label: 'Debugging',
+    lang: 'en-US',
+    matchType: 'keyword',
+    pattern: 'debug',
+    weight: 5,
+    enabled: true,
+  },
+  {
+    id: 'v3_system_config_1',
+    version: 'v3',
+    category: 'system_config',
+    label: 'System config',
+    lang: 'en-US',
+    matchType: 'keyword',
+    pattern: 'config',
+    weight: 5,
+    enabled: true,
+  },
+  {
+    id: 'v3_status_metric_1',
+    version: 'v3',
+    category: 'status_metric',
+    label: 'Status',
+    lang: 'en-US',
+    matchType: 'keyword',
+    pattern: 'result',
+    weight: 5,
+    enabled: true,
+  },
+];
+
 describe('analysis pipeline', () => {
   it('classifies memories by taxonomy rules', () => {
     const memory = normalizeMemory({
@@ -66,6 +124,41 @@ describe('analysis pipeline', () => {
 
     expect(result.categoryCounts.emotion).toBe(1);
     expect(result.batchResult.topCategories[0]?.category).toBe('emotion');
+  });
+
+  it('uses v3 category priority when multiple rule groups match', () => {
+    const memory = normalizeMemory({
+      id: 'm3',
+      content: 'OpenClaw config update: if no changes, exit',
+      createdAt: '2026-03-01T00:00:00.000Z',
+      metadata: {},
+    });
+
+    const analyzed = classifyMemory(memory, v3Rules, 'en-US');
+
+    expect(analyzed.category).toBe('policy');
+  });
+
+  it('initializes aggregate counts from dynamic v3 categories', () => {
+    const result = analyzeBatch({
+      batchIndex: 1,
+      lang: 'en-US',
+      rules: v3Rules,
+      memories: [
+        normalizeMemory({
+          id: 'm4',
+          content: 'OpenClaw result: no changes',
+          createdAt: '2026-03-01T00:00:00.000Z',
+          metadata: {},
+        }),
+      ],
+    });
+
+    expect(Object.keys(result.categoryCounts)).toEqual(
+      expect.arrayContaining(['policy', 'project', 'debugging', 'system_config', 'status_metric']),
+    );
+    expect(result.categoryCounts.status_metric).toBe(1);
+    expect(result.batchResult.topCategories[0]?.category).toBe('status_metric');
   });
 
   it('creates deterministic batch hashes', () => {

@@ -5,9 +5,14 @@ import type {
   MemoryInput,
   TaxonomyRuleDefinition,
 } from '@mem9/contracts';
-import { ANALYSIS_CATEGORIES } from '@mem9/contracts';
 
 import { sha256Hex } from './hash';
+import {
+  compareCategoryPriority,
+  deriveTaxonomyCategories,
+  inferFallbackCategory,
+  selectDefaultCategory,
+} from './taxonomy-categories';
 
 export interface NormalizedMemory {
   id: string;
@@ -252,6 +257,7 @@ export function classifyMemory(
   rules: TaxonomyRuleDefinition[],
   lang: string,
 ): AnalyzedMemory {
+  const categories = deriveTaxonomyCategories(rules);
   const tokens = tokenize(memory.content, lang).map(normalizeFacetToken).filter(isMeaningfulFacetToken);
   const tagCounts = new Map<string, number>();
 
@@ -265,7 +271,7 @@ export function classifyMemory(
 
   const categoryScores = new Map<AnalysisCategory, number>();
 
-  for (const category of ANALYSIS_CATEGORIES) {
+  for (const category of categories) {
     categoryScores.set(category, 0);
   }
 
@@ -273,9 +279,12 @@ export function classifyMemory(
     categoryScores.set(rule.category, (categoryScores.get(rule.category) ?? 0) + rule.weight);
   }
 
-  const sortedCategories = [...categoryScores.entries()].sort((left, right) => right[1] - left[1]);
-  const [topCategory, topScore] = sortedCategories[0] ?? ['activity', 0];
-  const category = topScore > 0 ? topCategory : inferFallbackCategory(tokens);
+  const sortedCategories = [...categoryScores.entries()].sort(
+    (left, right) => right[1] - left[1] || compareCategoryPriority(left[0], right[0]),
+  );
+  const fallbackCategory = selectDefaultCategory(categories);
+  const [topCategory, topScore] = sortedCategories[0] ?? [fallbackCategory, 0];
+  const category = topScore > 0 ? topCategory : inferFallbackCategory(tokens, categories);
   const totalScore = sortedCategories.reduce((sum, [, score]) => sum + score, 0);
   const confidence = totalScore > 0 ? Number((topScore / totalScore).toFixed(2)) : 0.35;
   const tags = [...tagCounts.entries()]
@@ -291,47 +300,20 @@ export function classifyMemory(
   };
 }
 
-function inferFallbackCategory(tokens: string[]): AnalysisCategory {
-  const joined = tokens.join(' ');
-
-  if (/(feel|happy|sad|angry|焦虑|开心|难过)/iu.test(joined)) {
-    return 'emotion';
-  }
-
-  if (/(喜欢|偏好|prefer|love|hate|想要)/iu.test(joined)) {
-    return 'preference';
-  }
-
-  if (/(身份|我是|role|职业|engineer|founder)/iu.test(joined)) {
-    return 'identity';
-  }
-
-  if (/(旅行|trip|experience|经历|去过)/iu.test(joined)) {
-    return 'experience';
-  }
-
-  return 'activity';
-}
-
 export function analyzeBatch(input: {
   batchIndex: number;
   memories: NormalizedMemory[];
   rules: TaxonomyRuleDefinition[];
   lang: string;
 }): AggregateMergeInput {
-  const categoryCounts = {
-    identity: 0,
-    emotion: 0,
-    preference: 0,
-    experience: 0,
-    activity: 0,
-  } satisfies Record<AnalysisCategory, number>;
+  const categories = deriveTaxonomyCategories(input.rules);
+  const categoryCounts = Object.fromEntries(categories.map((category) => [category, 0])) satisfies Record<string, number>;
   const tagCounts: Record<string, number> = {};
   const topicCounts: Record<string, number> = {};
   const analyzedMemories = input.memories.map((memory) => classifyMemory(memory, input.rules, input.lang));
 
   for (const memory of analyzedMemories) {
-    categoryCounts[memory.category] += 1;
+    categoryCounts[memory.category] = (categoryCounts[memory.category] ?? 0) + 1;
 
     for (const tag of memory.tags) {
       tagCounts[tag] = (tagCounts[tag] ?? 0) + 1;
@@ -345,7 +327,7 @@ export function analyzeBatch(input: {
       count,
       confidence: analyzedMemories.length === 0 ? 0 : Number((count / analyzedMemories.length).toFixed(2)),
     }))
-    .sort((left, right) => right.count - left.count)
+    .sort((left, right) => right.count - left.count || compareCategoryPriority(left.category, right.category))
     .slice(0, 3);
 
   const topTags = Object.entries(tagCounts)

@@ -41,7 +41,7 @@ export const ANALYSIS_CATEGORIES = [
   'activity',
 ] as const;
 
-export type AnalysisCategory = (typeof ANALYSIS_CATEGORIES)[number];
+export type AnalysisCategory = string;
 
 export const EVENT_TYPES = [
   'job_created',

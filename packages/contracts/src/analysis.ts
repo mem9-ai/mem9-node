@@ -91,7 +91,7 @@ export interface JobProgressSnapshot {
 }
 
 export interface AggregateSnapshot {
-  categoryCounts: Record<AnalysisCategory, number>;
+  categoryCounts: Record<string, number>;
   tagCounts: Record<string, number>;
   topicCounts: Record<string, number>;
   summarySnapshot: string[];
@@ -207,7 +207,7 @@ export interface AggregateMergeInput {
   batchIndex: number;
   expectedTotalBatches: number;
   processedMemories: number;
-  categoryCounts: Record<AnalysisCategory, number>;
+  categoryCounts: Record<string, number>;
   tagCounts: Record<string, number>;
   topicCounts: Record<string, number>;
   summarySnapshot: string[];
