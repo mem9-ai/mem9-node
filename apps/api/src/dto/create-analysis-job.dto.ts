@@ -17,7 +17,7 @@ export class AnalysisOptionsDto {
   @IsString()
   public lang!: string;
 
-  @ApiProperty({ example: 'v2.1' })
+  @ApiProperty({ example: 'v3' })
   @IsString()
   public taxonomyVersion!: string;
 

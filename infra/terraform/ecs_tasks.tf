@@ -39,7 +39,7 @@ resource "aws_ecs_task_definition" "api" {
       environment = [
         { name = "NODE_ENV", value = "production" },
         { name = "PORT", value = "3000" },
-        { name = "TAXONOMY_VERSION", value = "v2.1" },
+        { name = "TAXONOMY_VERSION", value = "v3" },
         { name = "AWS_REGION", value = var.aws_region },
         { name = "S3_BUCKET_ANALYSIS_PAYLOADS", value = aws_s3_bucket.analysis_payloads.bucket },
         { name = "SQS_ANALYSIS_BATCH_QUEUE_URL", value = aws_sqs_queue.analysis_batch.url },
@@ -107,7 +107,7 @@ resource "aws_ecs_task_definition" "worker" {
       environment = [
         { name = "NODE_ENV", value = "production" },
         { name = "WORKER_HEALTH_PORT", value = "3001" },
-        { name = "TAXONOMY_VERSION", value = "v2.1" },
+        { name = "TAXONOMY_VERSION", value = "v3" },
         { name = "AWS_REGION", value = var.aws_region },
         { name = "S3_BUCKET_ANALYSIS_PAYLOADS", value = aws_s3_bucket.analysis_payloads.bucket },
         { name = "SQS_ANALYSIS_BATCH_QUEUE_URL", value = aws_sqs_queue.analysis_batch.url },

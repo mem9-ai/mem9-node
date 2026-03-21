@@ -37,7 +37,7 @@ const envSchema = z.object({
   GO_INTERNAL_SHARED_SECRET: z.string().min(8).default('local-secret'),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   PIPELINE_VERSION: z.string().default('v1'),
-  TAXONOMY_VERSION: z.string().default('v2.1'),
+  TAXONOMY_VERSION: z.string().default('v3'),
   SQS_WAIT_TIME_SECONDS: z.coerce.number().int().min(1).max(20).default(10),
   SQS_VISIBILITY_TIMEOUT_SECONDS: z.coerce.number().int().positive().default(30),
   SQS_VISIBILITY_HEARTBEAT_SECONDS: z.coerce.number().int().positive().default(10),

@@ -1,10 +1,29 @@
-import { PrismaClient, TaxonomyMatchType } from '@prisma/client';
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { PrismaClient } from '@prisma/client';
 
 import { createPrefixedId } from '../packages/shared/src';
 
 process.env.DATABASE_URL ??= 'mysql://mem9:mem9@127.0.0.1:3306/mem9';
 
 const prisma = new PrismaClient();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const TAXONOMY_SQL_PATH = path.resolve(__dirname, './taxonomy-v3.sql');
+
+async function seedTaxonomy(): Promise<void> {
+  const sql = await readFile(TAXONOMY_SQL_PATH, 'utf8');
+  const statements = sql
+    .split(/;\s*\n/g)
+    .map((statement) => statement.trim())
+    .filter((statement) => statement.length > 0 && !statement.startsWith('--'));
+
+  for (const statement of statements) {
+    await prisma.$executeRawUnsafe(`${statement};`);
+  }
+}
 
 async function main(): Promise<void> {
   await prisma.rateLimitPolicy.upsert({
@@ -53,45 +72,7 @@ async function main(): Promise<void> {
     },
   });
 
-  const rules = [
-    ['identity', '职业身份', 'zh-CN', TaxonomyMatchType.keyword, '工程师', 5],
-    ['identity', 'Role', 'en-US', TaxonomyMatchType.keyword, 'engineer', 5],
-    ['emotion', 'Positive emotion', 'zh-CN', TaxonomyMatchType.keyword, '开心', 4],
-    ['emotion', 'Negative emotion', 'zh-CN', TaxonomyMatchType.keyword, '焦虑', 4],
-    ['preference', 'Preference', 'zh-CN', TaxonomyMatchType.keyword, '喜欢', 4],
-    ['preference', 'Preference', 'en-US', TaxonomyMatchType.keyword, 'prefer', 4],
-    ['experience', 'Travel', 'zh-CN', TaxonomyMatchType.keyword, '旅行', 4],
-    ['experience', 'Experience', 'en-US', TaxonomyMatchType.keyword, 'experience', 4],
-    ['activity', 'Work activity', 'zh-CN', TaxonomyMatchType.keyword, '做', 3],
-    ['activity', 'Building', 'en-US', TaxonomyMatchType.keyword, 'building', 3],
-  ] as const;
-
-  for (const [category, label, lang, matchType, pattern, weight] of rules) {
-    await prisma.taxonomyRule.upsert({
-      where: {
-        id: `${lang}-${category}-${pattern}`,
-      },
-      update: {
-        enabled: true,
-        label,
-        matchType,
-        pattern,
-        version: 'v2.1',
-        weight,
-      },
-      create: {
-        id: `${lang}-${category}-${pattern}`,
-        version: 'v2.1',
-        category,
-        label,
-        lang,
-        matchType,
-        pattern,
-        weight,
-        enabled: true,
-      },
-    });
-  }
+  await seedTaxonomy();
 }
 
 main()

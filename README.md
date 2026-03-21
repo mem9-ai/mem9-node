@@ -61,7 +61,7 @@ curl -X POST http://127.0.0.1:3000/v1/analysis-jobs \
     "batchSize": 100,
     "options": {
       "lang": "zh-CN",
-      "taxonomyVersion": "v2.1",
+      "taxonomyVersion": "v3",
       "llmEnabled": false,
       "includeItems": true,
       "includeSummary": true
