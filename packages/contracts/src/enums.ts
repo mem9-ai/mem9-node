@@ -54,3 +54,25 @@ export const EVENT_TYPES = [
 ] as const;
 
 export type AnalysisEventType = (typeof EVENT_TYPES)[number];
+
+export const DEEP_ANALYSIS_REPORT_STATUSES = [
+  'QUEUED',
+  'PREPARING',
+  'ANALYZING',
+  'SYNTHESIZING',
+  'COMPLETED',
+  'FAILED',
+] as const;
+
+export type DeepAnalysisReportStatus = (typeof DEEP_ANALYSIS_REPORT_STATUSES)[number];
+
+export const DEEP_ANALYSIS_REPORT_STAGES = [
+  'FETCH_SOURCE',
+  'PREPROCESS',
+  'CHUNK_ANALYSIS',
+  'GLOBAL_SYNTHESIS',
+  'VALIDATE',
+  'COMPLETE',
+] as const;
+
+export type DeepAnalysisReportStage = (typeof DEEP_ANALYSIS_REPORT_STAGES)[number];

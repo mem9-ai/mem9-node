@@ -468,6 +468,11 @@ describe('analysis jobs integration', () => {
               maxMemoriesPerRequest: 100,
               pipelineVersion: 'v1',
               taxonomyVersion: 'v1',
+              mem9SourceApiBaseUrl: 'http://127.0.0.1:3002',
+              mem9SourcePageSize: 200,
+              qwenApiBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+              qwenApiKey: '',
+              qwenModel: 'qwen3.5-pro',
             },
             goVerify: {
               mode: 'noop',

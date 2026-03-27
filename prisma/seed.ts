@@ -15,10 +15,18 @@ const TAXONOMY_SQL_PATH = path.resolve(__dirname, './taxonomy-v3.sql');
 
 async function seedTaxonomy(): Promise<void> {
   const sql = await readFile(TAXONOMY_SQL_PATH, 'utf8');
-  const statements = sql
+  const sanitizedSql = sql
+    .split('\n')
+    .filter((line) => !line.trimStart().startsWith('--'))
+    .join('\n');
+  const statements = sanitizedSql
     .split(/;\s*\n/g)
     .map((statement) => statement.trim())
-    .filter((statement) => statement.length > 0 && !statement.startsWith('--'));
+    .filter(
+      (statement) =>
+        statement.length > 0 &&
+        !statement.toUpperCase().startsWith('SELECT '),
+    );
 
   for (const statement of statements) {
     await prisma.$executeRawUnsafe(`${statement};`);

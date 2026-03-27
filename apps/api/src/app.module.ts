@@ -21,7 +21,10 @@ import { ApiKeyGuard } from './common/api-key.guard';
 import { HealthService } from './common/health.service';
 import { RateLimitGuard } from './common/rate-limit.guard';
 import { RequestAuditInterceptor } from './common/request-audit.interceptor';
+import { DeepAnalysisController } from './deep-analysis.controller';
+import { DeepAnalysisService } from './deep-analysis.service';
 import { HealthController } from './health.controller';
+import { Mem9SourceService } from './mem9-source.service';
 
 const appConfig = loadConfig();
 
@@ -47,7 +50,7 @@ const appConfig = loadConfig();
       },
     }),
   ],
-  controllers: [AnalysisJobsController, HealthController],
+  controllers: [AnalysisJobsController, DeepAnalysisController, HealthController],
   providers: [
     {
       provide: APP_CONFIG,
@@ -63,6 +66,8 @@ const appConfig = loadConfig();
     GoVerifyService,
     RateLimitWindowService,
     AnalysisJobsService,
+    DeepAnalysisService,
+    Mem9SourceService,
     ApiKeyGuard,
     RateLimitGuard,
     HealthService,

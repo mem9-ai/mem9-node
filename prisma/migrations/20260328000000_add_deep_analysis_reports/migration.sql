@@ -1,0 +1,23 @@
+CREATE TABLE `DeepAnalysisReport` (
+  `id` VARCHAR(64) NOT NULL,
+  `apiKeyFingerprint` VARBINARY(32) NOT NULL,
+  `requestDayKey` VARCHAR(64) NOT NULL,
+  `status` ENUM('QUEUED', 'PREPARING', 'ANALYZING', 'SYNTHESIZING', 'COMPLETED', 'FAILED') NOT NULL DEFAULT 'QUEUED',
+  `stage` ENUM('FETCH_SOURCE', 'PREPROCESS', 'CHUNK_ANALYSIS', 'GLOBAL_SYNTHESIS', 'VALIDATE', 'COMPLETE') NOT NULL DEFAULT 'FETCH_SOURCE',
+  `progressPercent` INTEGER NOT NULL DEFAULT 0,
+  `lang` VARCHAR(32) NOT NULL,
+  `timezone` VARCHAR(64) NOT NULL,
+  `memoryCount` INTEGER NOT NULL,
+  `requestedAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `startedAt` DATETIME(3) NULL,
+  `completedAt` DATETIME(3) NULL,
+  `errorCode` VARCHAR(64) NULL,
+  `errorMessage` VARCHAR(512) NULL,
+  `previewJson` JSON NULL,
+  `reportObjectKey` VARCHAR(255) NULL,
+  `sourceSnapshotObjectKey` VARCHAR(255) NOT NULL,
+  UNIQUE INDEX `DeepAnalysisReport_apiKeyFingerprint_requestDayKey_key` (`apiKeyFingerprint`, `requestDayKey`),
+  INDEX `DeepAnalysisReport_apiKeyFingerprint_requestedAt_idx` (`apiKeyFingerprint`, `requestedAt`),
+  INDEX `DeepAnalysisReport_status_requestedAt_idx` (`status`, `requestedAt`),
+  PRIMARY KEY (`id`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;

@@ -36,6 +36,24 @@ enum AnalysisJobBatchStatus {
   DLQ
 }
 
+enum DeepAnalysisReportStatus {
+  QUEUED
+  PREPARING
+  ANALYZING
+  SYNTHESIZING
+  COMPLETED
+  FAILED
+}
+
+enum DeepAnalysisReportStage {
+  FETCH_SOURCE
+  PREPROCESS
+  CHUNK_ANALYSIS
+  GLOBAL_SYNTHESIS
+  VALIDATE
+  COMPLETE
+}
+
 enum TaxonomyMatchType {
   keyword
   regex
@@ -150,6 +168,30 @@ model AnalysisPipelineConfig {
   payloadRetentionDays Int
   createdAt            DateTime @default(now()) @db.DateTime(3)
   updatedAt            DateTime @updatedAt @db.DateTime(3)
+}
+
+model DeepAnalysisReport {
+  id                    String                   @id @db.VarChar(64)
+  apiKeyFingerprint     Bytes                    @db.VarBinary(32)
+  requestDayKey         String                   @db.VarChar(64)
+  status                DeepAnalysisReportStatus @default(QUEUED)
+  stage                 DeepAnalysisReportStage  @default(FETCH_SOURCE)
+  progressPercent       Int                      @default(0)
+  lang                  String                   @db.VarChar(32)
+  timezone              String                   @db.VarChar(64)
+  memoryCount           Int
+  requestedAt           DateTime                 @default(now()) @db.DateTime(3)
+  startedAt             DateTime?                @db.DateTime(3)
+  completedAt           DateTime?                @db.DateTime(3)
+  errorCode             String?                  @db.VarChar(64)
+  errorMessage          String?                  @db.VarChar(512)
+  previewJson           Json?
+  reportObjectKey       String?                  @db.VarChar(255)
+  sourceSnapshotObjectKey String                 @db.VarChar(255)
+
+  @@unique([apiKeyFingerprint, requestDayKey])
+  @@index([apiKeyFingerprint, requestedAt])
+  @@index([status, requestedAt])
 }
 
 model RequestAuditMeta {

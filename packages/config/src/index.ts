@@ -26,6 +26,11 @@ const envSchema = z.object({
   SQS_ANALYSIS_BATCH_DLQ_URL: z.string().min(1).default('http://127.0.0.1:4566/000000000000/analysis-batch-dlq'),
   SQS_ANALYSIS_LLM_QUEUE_URL: z.string().min(1).default('http://127.0.0.1:4566/000000000000/analysis-llm'),
   SQS_ANALYSIS_LLM_DLQ_URL: z.string().min(1).default('http://127.0.0.1:4566/000000000000/analysis-llm-dlq'),
+  MEM9_SOURCE_API_BASE_URL: z.string().url().default('http://127.0.0.1:8080/v1alpha2/mem9s'),
+  MEM9_SOURCE_PAGE_SIZE: z.coerce.number().int().positive().max(200).default(200),
+  QWEN_API_BASE_URL: z.string().url().default('https://dashscope.aliyuncs.com/compatible-mode/v1'),
+  QWEN_API_KEY: z.string().min(1).optional(),
+  QWEN_MODEL: z.string().min(1).default('qwen3.5-pro'),
   JOB_RESULT_TTL_SECONDS: z.coerce.number().int().positive().default(86400),
   PAYLOAD_RETENTION_DAYS: z.coerce.number().int().positive().default(7),
   DEFAULT_BATCH_SIZE: z.coerce.number().int().positive().default(100),
@@ -100,6 +105,11 @@ export interface AppConfig {
     maxMemoriesPerRequest: number;
     pipelineVersion: string;
     taxonomyVersion: string;
+    mem9SourceApiBaseUrl: string;
+    mem9SourcePageSize: number;
+    qwenApiBaseUrl: string;
+    qwenApiKey?: string;
+    qwenModel: string;
   };
   goVerify: {
     mode: AppEnv['GO_VERIFY_MODE'];
@@ -152,6 +162,11 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
       maxMemoriesPerRequest: env.MAX_MEMORIES_PER_REQUEST,
       pipelineVersion: env.PIPELINE_VERSION,
       taxonomyVersion: env.TAXONOMY_VERSION,
+      mem9SourceApiBaseUrl: env.MEM9_SOURCE_API_BASE_URL,
+      mem9SourcePageSize: env.MEM9_SOURCE_PAGE_SIZE,
+      qwenApiBaseUrl: env.QWEN_API_BASE_URL,
+      qwenApiKey: env.QWEN_API_KEY,
+      qwenModel: env.QWEN_MODEL,
     },
     goVerify: {
       mode: env.GO_VERIFY_MODE,
