@@ -33,10 +33,16 @@ resource "aws_ecs_task_definition" "api" {
         {
           name      = "GO_INTERNAL_SHARED_SECRET"
           valueFrom = "${aws_secretsmanager_secret.app.arn}:GO_INTERNAL_SHARED_SECRET::"
+        },
+        {
+          name      = "QWEN_API_KEY"
+          valueFrom = "${aws_secretsmanager_secret.app.arn}:QWEN_API_KEY::"
         }
       ]
 
       environment = [
+        { name = "MEM9_SOURCE_API_BASE_URL", value = var.mem9_source_api_base_url },
+        { name = "MEM9_SOURCE_PAGE_SIZE", value = "200" },
         { name = "NODE_ENV", value = "production" },
         { name = "PORT", value = "3000" },
         { name = "TAXONOMY_VERSION", value = "v3" },
@@ -101,6 +107,10 @@ resource "aws_ecs_task_definition" "worker" {
         {
           name      = "GO_INTERNAL_SHARED_SECRET"
           valueFrom = "${aws_secretsmanager_secret.app.arn}:GO_INTERNAL_SHARED_SECRET::"
+        },
+        {
+          name      = "QWEN_API_KEY"
+          valueFrom = "${aws_secretsmanager_secret.app.arn}:QWEN_API_KEY::"
         }
       ]
 
@@ -109,6 +119,8 @@ resource "aws_ecs_task_definition" "worker" {
         { name = "WORKER_HEALTH_PORT", value = "3001" },
         { name = "TAXONOMY_VERSION", value = "v3" },
         { name = "AWS_REGION", value = var.aws_region },
+        { name = "QWEN_API_BASE_URL", value = var.qwen_api_base_url },
+        { name = "QWEN_MODEL", value = var.qwen_model },
         { name = "S3_BUCKET_ANALYSIS_PAYLOADS", value = aws_s3_bucket.analysis_payloads.bucket },
         { name = "SQS_ANALYSIS_BATCH_QUEUE_URL", value = aws_sqs_queue.analysis_batch.url },
         { name = "SQS_ANALYSIS_LLM_QUEUE_URL", value = aws_sqs_queue.analysis_llm.url },
