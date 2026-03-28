@@ -23,7 +23,10 @@ async function main() {
     return;
   }
 
-  const apiKey = (process.argv[2] ?? (await readStdin())).trim();
+  const cliArgs = process.argv
+    .slice(2)
+    .filter((value) => value !== '--');
+  const apiKey = (cliArgs[0] ?? (await readStdin())).trim();
   if (!apiKey) {
     console.error('Usage: APP_PEPPER=... pnpm deep-analysis:fingerprint -- <x-mem9-api-key>');
     process.exitCode = 1;
