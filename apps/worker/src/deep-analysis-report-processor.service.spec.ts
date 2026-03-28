@@ -3,13 +3,14 @@ import { gzipJson } from '@mem9/shared';
 import { DeepAnalysisReportProcessorService } from './deep-analysis-report-processor.service';
 
 describe('deep analysis report processor service', () => {
-  it('builds a completed report with cleaned themes, entities, and duplicate counts', async () => {
+  it('builds a completed report with cleaned themes, entities, duplicate counts, and usage audit', async () => {
     const repository = {
       getDeepAnalysisReport: jest.fn(async () => ({
         id: 'dar_1',
         status: 'QUEUED',
         lang: 'zh-CN',
         sourceSnapshotObjectKey: 'deep-analysis/reports/dar_1/source.json.gz',
+        internalComment: null,
       })),
       updateDeepAnalysisReport: jest.fn(async () => undefined),
     };
@@ -59,7 +60,71 @@ describe('deep analysis report processor service', () => {
       putJson: jest.fn(async () => undefined),
     };
     const qwen = {
-      createJson: jest.fn(async () => null),
+      getConfiguredModel: jest.fn(() => 'qwen3.5-pro'),
+      createJson: jest
+        .fn()
+        .mockImplementationOnce(async () => ({
+          parsed: {
+            summary: 'Alice and Bosn repeatedly align on dashboard roadmap execution.',
+            themes: [{ name: 'dashboard roadmap', memoryIds: ['mem_1', 'mem_3'] }],
+            entities: {
+              people: ['Alice Johnson', 'Bosn'],
+              teams: ['Platform Team'],
+              projects: ['dashboard roadmap'],
+              tools: ['React'],
+              places: [],
+            },
+            personaSignals: {
+              workingStyle: ['Prefers structured reviews and staged rollout decisions.'],
+              goals: ['Keep memory insight workflows durable.'],
+              preferences: ['Concise but information-dense summaries.'],
+              constraints: ['Do not delete canonical memories.'],
+              decisionSignals: ['Balances speed and correctness in dashboard work.'],
+              notableRoutines: ['Reviews traffic dashboards every morning.'],
+              contradictionsOrTensions: ['Wants concise output without losing implementation detail.'],
+            },
+            relationships: [],
+          },
+          usage: {
+            model: 'qwen3.5-pro',
+            promptTokens: 120,
+            completionTokens: 30,
+            totalTokens: 150,
+            usageMissing: false,
+          },
+          requestMeta: {
+            stage: 'chunk_analysis',
+            success: true,
+            requested: true,
+            httpStatus: 200,
+            parseSucceeded: true,
+            errorCode: null,
+            errorMessage: null,
+            requestedAt: '2026-03-28T00:00:00.000Z',
+            finishedAt: '2026-03-28T00:00:01.000Z',
+          },
+        }))
+        .mockImplementationOnce(async () => ({
+          parsed: null,
+          usage: {
+            model: 'qwen3.5-pro',
+            promptTokens: 90,
+            completionTokens: 20,
+            totalTokens: 110,
+            usageMissing: false,
+          },
+          requestMeta: {
+            stage: 'global_synthesis',
+            success: false,
+            requested: true,
+            httpStatus: 200,
+            parseSucceeded: false,
+            errorCode: 'QWEN_JSON_PARSE_FAILED',
+            errorMessage: 'Unexpected token',
+            requestedAt: '2026-03-28T00:00:02.000Z',
+            finishedAt: '2026-03-28T00:00:03.000Z',
+          },
+        })),
     };
     const processor = new DeepAnalysisReportProcessorService(
       repository as never,
@@ -138,6 +203,49 @@ describe('deep analysis report processor service', () => {
       expect.arrayContaining(['team', 'Platform']),
     );
 
+    const internalCommentUpdates = (
+      repository.updateDeepAnalysisReport.mock.calls as unknown as Array<[string, { internalComment?: string }]>
+    )
+      .map((call) => call[1]?.internalComment)
+      .filter((value): value is string => typeof value === 'string')
+      .map((value) => JSON.parse(value) as {
+        aggregate: {
+          requestCount: number;
+          successCount: number;
+          failureCount: number;
+          promptTokens: number;
+          completionTokens: number;
+          totalTokens: number;
+        };
+        calls: Array<{
+          stage: string;
+          index: number;
+          success: boolean;
+        }>;
+      });
+    const firstUsageUpdate = internalCommentUpdates.find(
+      (payload) => payload.aggregate.requestCount === 1,
+    );
+    expect(firstUsageUpdate).toBeTruthy();
+    const internalComment = firstUsageUpdate as {
+      aggregate: {
+        requestCount: number;
+        successCount: number;
+        failureCount: number;
+        promptTokens: number;
+        completionTokens: number;
+        totalTokens: number;
+      };
+    };
+    expect(internalComment.aggregate).toEqual({
+      requestCount: 1,
+      successCount: 1,
+      failureCount: 0,
+      promptTokens: 120,
+      completionTokens: 30,
+      totalTokens: 150,
+    });
+
     expect(repository.updateDeepAnalysisReport).toHaveBeenLastCalledWith(
       'dar_1',
       expect.objectContaining({
@@ -145,10 +253,55 @@ describe('deep analysis report processor service', () => {
         stage: 'COMPLETE',
         progressPercent: 100,
         reportObjectKey: 'deep-analysis/reports/dar_1/report.json',
+        internalComment: expect.any(String),
         previewJson: expect.objectContaining({
           summary: expect.any(String),
         }),
       }),
     );
+
+    const finalCall = (
+      repository.updateDeepAnalysisReport.mock.calls as unknown as Array<[string, { internalComment?: string }]>
+    ).at(-1);
+    const finalPayload = finalCall?.[1];
+    expect(finalPayload?.internalComment).toBeTruthy();
+    const finalInternalComment = JSON.parse(String(finalPayload?.internalComment)) as {
+      aggregate: {
+        requestCount: number;
+        successCount: number;
+        failureCount: number;
+        promptTokens: number;
+        completionTokens: number;
+        totalTokens: number;
+      };
+      calls: Array<{
+        stage: string;
+        index: number;
+        success: boolean;
+        httpStatus: number | null;
+      }>;
+    };
+    expect(finalInternalComment.aggregate).toEqual({
+      requestCount: 2,
+      successCount: 1,
+      failureCount: 1,
+      promptTokens: 210,
+      completionTokens: 50,
+      totalTokens: 260,
+    });
+    expect(finalInternalComment.calls).toEqual([
+      expect.objectContaining({
+        stage: 'chunk_analysis',
+        index: 1,
+        success: true,
+        httpStatus: 200,
+      }),
+      expect.objectContaining({
+        stage: 'global_synthesis',
+        index: 1,
+        success: false,
+        httpStatus: 200,
+      }),
+    ]);
   });
 });
