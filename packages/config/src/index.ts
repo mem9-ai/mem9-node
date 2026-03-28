@@ -28,6 +28,7 @@ const envSchema = z.object({
   SQS_ANALYSIS_LLM_DLQ_URL: z.string().min(1).default('http://127.0.0.1:4566/000000000000/analysis-llm-dlq'),
   MEM9_SOURCE_API_BASE_URL: z.string().url().default('http://127.0.0.1:8080/v1alpha2/mem9s'),
   MEM9_SOURCE_PAGE_SIZE: z.coerce.number().int().positive().max(200).default(200),
+  DEEP_ANALYSIS_DAILY_LIMIT_BYPASS_FINGERPRINTS: z.string().optional(),
   QWEN_API_BASE_URL: z.string().url().default('https://dashscope.aliyuncs.com/compatible-mode/v1'),
   QWEN_API_KEY: z.string().min(1).optional(),
   QWEN_MODEL: z.string().min(1).default('qwen3.5-pro'),
@@ -107,6 +108,7 @@ export interface AppConfig {
     taxonomyVersion: string;
     mem9SourceApiBaseUrl: string;
     mem9SourcePageSize: number;
+    deepAnalysisDailyLimitBypassFingerprints: string[];
     qwenApiBaseUrl: string;
     qwenApiKey?: string;
     qwenModel: string;
@@ -164,6 +166,10 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
       taxonomyVersion: env.TAXONOMY_VERSION,
       mem9SourceApiBaseUrl: env.MEM9_SOURCE_API_BASE_URL,
       mem9SourcePageSize: env.MEM9_SOURCE_PAGE_SIZE,
+      deepAnalysisDailyLimitBypassFingerprints: env.DEEP_ANALYSIS_DAILY_LIMIT_BYPASS_FINGERPRINTS
+        ?.split(',')
+        .map((value) => value.trim().toLowerCase())
+        .filter((value) => value.length > 0) ?? [],
       qwenApiBaseUrl: env.QWEN_API_BASE_URL,
       qwenApiKey: env.QWEN_API_KEY,
       qwenModel: env.QWEN_MODEL,

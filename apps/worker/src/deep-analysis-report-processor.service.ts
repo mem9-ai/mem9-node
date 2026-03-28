@@ -2,7 +2,9 @@ import type {
   DeepAnalysisCandidateEdge,
   DeepAnalysisCandidateNode,
   DeepAnalysisEntityGroup,
+  DeepAnalysisEvidenceHighlight,
   DeepAnalysisMemorySnapshot,
+  DeepAnalysisQualityIssue,
   DeepAnalysisRelationship,
   DeepAnalysisReportDocument,
   DeepAnalysisReportMessage,
@@ -27,8 +29,34 @@ interface SourceSnapshotPayload {
   memories: DeepAnalysisMemorySnapshot[];
 }
 
+interface ChunkThemeSignal {
+  name: string;
+  memoryIds: string[];
+}
+
+interface ChunkEntitySignals {
+  people: string[];
+  teams: string[];
+  projects: string[];
+  tools: string[];
+  places: string[];
+}
+
+interface ChunkPersonaSignals {
+  workingStyle: string[];
+  goals: string[];
+  preferences: string[];
+  constraints: string[];
+  decisionSignals: string[];
+  notableRoutines: string[];
+  contradictionsOrTensions: string[];
+}
+
 interface ChunkInsight {
-  themes: string[];
+  summary: string;
+  themes: ChunkThemeSignal[];
+  entities: ChunkEntitySignals;
+  personaSignals: ChunkPersonaSignals;
   relationships: DeepAnalysisRelationship[];
 }
 
@@ -50,17 +78,121 @@ interface PreparedCorpus {
   }>;
 }
 
+interface CounterValue {
+  count: number;
+  evidenceMemoryIds: string[];
+}
+
+interface SignalEntry {
+  text: string;
+  memoryId: string;
+}
+
+interface CorpusStats {
+  tokenCounts: Map<string, number>;
+  phraseCounts: Map<string, number>;
+  personCounters: Map<string, CounterValue>;
+  teamCounters: Map<string, CounterValue>;
+  projectCounters: Map<string, CounterValue>;
+  toolCounters: Map<string, CounterValue>;
+  placeCounters: Map<string, CounterValue>;
+  workingStyleSignals: SignalEntry[];
+  goalSignals: SignalEntry[];
+  preferenceSignals: SignalEntry[];
+  constraintSignals: SignalEntry[];
+  decisionSignals: SignalEntry[];
+  routineSignals: SignalEntry[];
+  lowQualityExamples: DeepAnalysisQualityIssue[];
+  relationships: DeepAnalysisRelationship[];
+}
+
+interface PersonaSummarySection {
+  summary: string;
+  workingStyle: string[];
+  goals: string[];
+  preferences: string[];
+  constraints: string[];
+  decisionSignals: string[];
+  notableRoutines: string[];
+  contradictionsOrTensions: string[];
+  evidenceHighlights: DeepAnalysisEvidenceHighlight[];
+}
+
+interface CorpusSignals {
+  persona: PersonaSummarySection;
+  themeHighlights: DeepAnalysisThemeItem[];
+  entities: {
+    people: DeepAnalysisEntityGroup[];
+    teams: DeepAnalysisEntityGroup[];
+    projects: DeepAnalysisEntityGroup[];
+    tools: DeepAnalysisEntityGroup[];
+    places: DeepAnalysisEntityGroup[];
+  };
+  relationships: DeepAnalysisRelationship[];
+  lowQualityExamples: DeepAnalysisQualityIssue[];
+  duplicateMemoryCount: number;
+  coverageGaps: string[];
+  recommendations: string[];
+  productSignals: {
+    candidateNodes: DeepAnalysisCandidateNode[];
+    candidateEdges: DeepAnalysisCandidateEdge[];
+    searchSeeds: string[];
+  };
+}
+
 const TOOL_HINTS = [
   'react', 'typescript', 'javascript', 'node', 'go', 'python', 'docker', 'kubernetes',
   'tidb', 'mysql', 'redis', 'neovim', 'vscode', 'github', 'gitlab', 'openai', 'qwen',
-  'claude', 'terraform', 'prometheus',
+  'claude', 'terraform', 'prometheus', 'grafana', 'feishu',
 ] as const;
-const PLACE_HINTS = ['shanghai', 'beijing', 'singapore', 'tokyo', 'office', 'home'] as const;
-const TEAM_HINTS = ['team', 'group', 'platform', 'infra', 'backend', 'frontend', 'security'] as const;
+const PLACE_HINTS = [
+  'shanghai', 'beijing', 'singapore', 'tokyo', 'office', 'home', 'hangzhou',
+] as const;
 const RELATION_PATTERNS = [
   { pattern: /\bworks with ([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b/g, relation: 'works_with' },
+  { pattern: /\bcollaborates with ([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b/g, relation: 'collaborates_with' },
   { pattern: /\bwith ([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b/g, relation: 'interacts_with' },
-];
+] as const;
+const ACKNOWLEDGEMENT_PATTERN = /^(ok|done|noted|received|收到|好的|完成|明白了)$/iu;
+const EN_STOPWORDS = new Set<string>([
+  'the', 'and', 'for', 'with', 'from', 'into', 'that', 'this', 'have', 'has', 'had', 'been',
+  'were', 'was', 'will', 'would', 'should', 'could', 'there', 'their', 'about', 'after',
+  'before', 'because', 'while', 'where', 'when', 'what', 'which', 'then', 'than', 'them',
+  'they', 'your', 'ours', 'ourselves', 'myself', 'herself', 'himself', 'itself', 'user',
+  'users', 'agent', 'assistant', 'self', 'team', 'project', 'task', 'system', 'memory',
+  'workflow', 'workflows', 'group', 'thing', 'things', 'item', 'items', 'info', 'information',
+  'data', 'using', 'used', 'use', 'like', 'just', 'more', 'less', 'very', 'also', 'into',
+  'over', 'under', 'through', 'across', 'within', 'without', 'each', 'every',
+] as const);
+const ZH_STOPWORDS = new Set<string>([
+  '的', '了', '和', '是', '在', '与', '及', '一个', '这个', '那个', '需要', '可以', '进行',
+  '通过', '我们', '他们', '自己', '用户', '团队', '项目', '系统', '记忆', '工作流', '一些',
+  '这种', '这个人', '这个团队', '事情', '内容', '信息', '数据', '以及', '然后', '这里',
+] as const);
+const DISALLOWED_THEME_TERMS = new Set<string>([
+  ...EN_STOPWORDS,
+  ...ZH_STOPWORDS,
+  'end',
+]);
+const DISALLOWED_ENTITY_TERMS = new Set<string>([
+  ...EN_STOPWORDS,
+  ...ZH_STOPWORDS,
+  'the',
+  'user',
+  'assistant',
+  'self',
+  'team',
+  'group',
+  'platform',
+  'workflow',
+  'project',
+  'task',
+  'system',
+  'memory',
+]);
+const DISALLOWED_PROJECT_TAGS = new Set<string>([
+  'work', 'plan', 'task', 'tasks', 'project', 'projects', 'memory', 'workflow', 'agent', 'user',
+]);
 
 function chunkArray<T>(items: T[], size: number): T[][] {
   const chunks: T[][] = [];
@@ -71,19 +203,51 @@ function chunkArray<T>(items: T[], size: number): T[][] {
 }
 
 function sentencePreview(content: string): string {
-  return content.replace(/\s+/g, ' ').trim().slice(0, 160);
+  return content.replace(/\s+/g, ' ').trim().slice(0, 220);
 }
 
 function normalizeToken(value: string): string {
   return value.trim().toLowerCase();
 }
 
+function containsHan(value: string): boolean {
+  return /[\p{Script=Han}]/u.test(value);
+}
+
+function isMeaningfulToken(token: string): boolean {
+  const normalized = normalizeToken(token);
+
+  if (!normalized) {
+    return false;
+  }
+
+  if (/^https?:/u.test(normalized) || /^www\./u.test(normalized)) {
+    return false;
+  }
+
+  if (/^\d+$/u.test(normalized)) {
+    return false;
+  }
+
+  if (containsHan(normalized)) {
+    return normalized.length >= 2 && !ZH_STOPWORDS.has(normalized);
+  }
+
+  return normalized.length >= 3 && !DISALLOWED_THEME_TERMS.has(normalized);
+}
+
 function tokenize(content: string): string[] {
   return content
-    .toLowerCase()
-    .split(/[^\p{L}\p{N}@#._-]+/u)
-    .map((token) => token.trim())
-    .filter((token) => token.length >= 3);
+    .split(/[^\p{L}\p{N}@#._/-]+/u)
+    .map((token) => normalizeToken(token))
+    .filter((token) => isMeaningfulToken(token));
+}
+
+function titleCaseWords(value: string): string {
+  return value
+    .split(/\s+/u)
+    .map((part) => part ? part[0]!.toUpperCase() + part.slice(1).toLowerCase() : part)
+    .join(' ');
 }
 
 function pickTopEntries(map: Map<string, number>, limit: number): Array<[string, number]> {
@@ -92,8 +256,27 @@ function pickTopEntries(map: Map<string, number>, limit: number): Array<[string,
     .slice(0, limit);
 }
 
+function upsertCounter(
+  map: Map<string, CounterValue>,
+  label: string,
+  memoryId: string,
+): void {
+  const current = map.get(label) ?? { count: 0, evidenceMemoryIds: [] };
+  current.count += 1;
+  if (!current.evidenceMemoryIds.includes(memoryId)) {
+    current.evidenceMemoryIds.push(memoryId);
+  }
+  map.set(label, current);
+}
+
+function appendSignal(target: SignalEntry[], text: string, memoryId: string): void {
+  if (!target.some((entry) => entry.text === text && entry.memoryId === memoryId)) {
+    target.push({ text, memoryId });
+  }
+}
+
 function buildEntityGroups(
-  counters: Map<string, { count: number; evidenceMemoryIds: string[] }>,
+  counters: Map<string, CounterValue>,
   limit = 8,
 ): DeepAnalysisEntityGroup[] {
   return [...counters.entries()]
@@ -106,22 +289,153 @@ function buildEntityGroups(
     }));
 }
 
-function upsertCounter(
-  map: Map<string, { count: number; evidenceMemoryIds: string[] }>,
-  label: string,
-  memoryId: string,
-): void {
-  const current = map.get(label) ?? { count: 0, evidenceMemoryIds: [] };
-  current.count += 1;
-  if (!current.evidenceMemoryIds.includes(memoryId)) {
-    current.evidenceMemoryIds.push(memoryId);
-  }
-  map.set(label, current);
+function extractProperNames(content: string): string[] {
+  const matches = content.match(/\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\b/g) ?? [];
+  return [...new Set(matches.filter((label) => isMeaningfulEntityLabel(label)))];
 }
 
-function extractProperNames(content: string): string[] {
-  const matches = content.match(/\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\b/g) ?? [];
-  return [...new Set(matches)].slice(0, 6);
+function extractTeamLabels(content: string): string[] {
+  const labels = new Set<string>();
+
+  for (const match of content.matchAll(/\b([A-Za-z][A-Za-z-]+)\s+(team|group)\b/gi)) {
+    const name = match[1]?.trim();
+    const suffix = match[2]?.trim();
+    if (!name || !suffix || DISALLOWED_ENTITY_TERMS.has(normalizeToken(name))) {
+      continue;
+    }
+    labels.add(`${titleCaseWords(name)} ${titleCaseWords(suffix)}`);
+  }
+
+  for (const hint of ['backend', 'frontend', 'platform', 'security', 'sales', 'product']) {
+    if (new RegExp(`\\b${hint}\\s+team\\b`, 'i').test(content)) {
+      labels.add(`${titleCaseWords(hint)} Team`);
+    }
+  }
+
+  return [...labels];
+}
+
+function isMeaningfulEntityLabel(label: string): boolean {
+  const normalized = normalizeToken(label);
+  if (!normalized) {
+    return false;
+  }
+  if (DISALLOWED_ENTITY_TERMS.has(normalized)) {
+    return false;
+  }
+  if (containsHan(normalized)) {
+    return normalized.length >= 2;
+  }
+  return normalized.length >= 3;
+}
+
+function collectMemoryPhrases(content: string): string[] {
+  const tokens = tokenize(content);
+  const phrases = new Set<string>();
+
+  for (let size = 2; size <= 3; size += 1) {
+    for (let index = 0; index <= tokens.length - size; index += 1) {
+      const phrase = tokens.slice(index, index + size).join(' ');
+      if (phrase.length >= 7 && !DISALLOWED_THEME_TERMS.has(phrase)) {
+        phrases.add(phrase);
+      }
+    }
+  }
+
+  return [...phrases];
+}
+
+function uniqueStrings(items: string[], limit = items.length): string[] {
+  return [...new Set(items)].slice(0, limit);
+}
+
+function collectRepresentativeSignals(entries: SignalEntry[], limit = 5): string[] {
+  return uniqueStrings(entries.map((entry) => entry.text), limit);
+}
+
+function buildEvidenceHighlights(entries: SignalEntry[], limit = 4): DeepAnalysisEvidenceHighlight[] {
+  return entries.slice(0, limit).map((entry, index) => ({
+    title: `Evidence ${index + 1}`,
+    detail: entry.text,
+    memoryIds: [entry.memoryId],
+  }));
+}
+
+function buildContradictions(stats: CorpusStats): string[] {
+  const combined = [
+    ...stats.workingStyleSignals,
+    ...stats.preferenceSignals,
+    ...stats.constraintSignals,
+    ...stats.decisionSignals,
+  ].map((entry) => normalizeToken(entry.text)).join(' ');
+  const contradictions: string[] = [];
+
+  if (/(concise|save token|节省|简洁)/u.test(combined) && /(detail|详细|全面|完整)/u.test(combined)) {
+    contradictions.push('The corpus shows a tension between concise communication and preserving rich implementation detail.');
+  }
+  if (/(automate|automation|自动化|脚本)/u.test(combined) && /(manual|手动|人工)/u.test(combined)) {
+    contradictions.push('The user values automation but still keeps manual control in sensitive workflows.');
+  }
+  if (/(fast|speed|效率|迅速)/u.test(combined) && /(stable|quality|严格|严谨|正确)/u.test(combined)) {
+    contradictions.push('The corpus balances speed and efficiency against reliability and correctness concerns.');
+  }
+
+  return contradictions;
+}
+
+function buildCoverageGaps(
+  peopleCount: number,
+  projectCount: number,
+  toolCount: number,
+  routineCount: number,
+  decisionCount: number,
+): string[] {
+  const gaps: string[] = [];
+
+  if (peopleCount < 3) {
+    gaps.push('People and collaborator mentions are sparse; relationship coverage may still be incomplete.');
+  }
+  if (projectCount < 3) {
+    gaps.push('Project-level labels are still thin; clearer project naming would improve grouping quality.');
+  }
+  if (toolCount < 3) {
+    gaps.push('Tool and environment references are limited; operational context may be underrepresented.');
+  }
+  if (routineCount < 2) {
+    gaps.push('Routines and temporal habits are under-specified, so behavioral patterns may be incomplete.');
+  }
+  if (decisionCount < 2) {
+    gaps.push('Decision rationale is lightly captured; more explicit tradeoff memories would deepen future persona analysis.');
+  }
+
+  return gaps;
+}
+
+function buildRecommendations(
+  duplicateMemoryCount: number,
+  lowQualityCount: number,
+  relationshipCount: number,
+  contradictionsOrTensions: string[],
+): string[] {
+  const recommendations: string[] = [];
+
+  if (duplicateMemoryCount > 0) {
+    recommendations.push('Collapse repeated memories into stronger canonical entries and clean up duplicate drift regularly.');
+  }
+  if (lowQualityCount > 0) {
+    recommendations.push('Rewrite or filter low-information memories so future analysis has denser evidence to work with.');
+  }
+  if (relationshipCount < 4) {
+    recommendations.push('Capture more explicit collaborator, stakeholder, and project interactions to strengthen relationship signals.');
+  }
+  if (contradictionsOrTensions.length > 0) {
+    recommendations.push('Track important tradeoffs explicitly so future persona summaries can separate stable preferences from situational compromises.');
+  }
+  if (recommendations.length === 0) {
+    recommendations.push('The corpus is already fairly healthy; focus next on richer relationship and decision-rationale capture.');
+  }
+
+  return recommendations;
 }
 
 function buildPreview(report: DeepAnalysisReportDocument): DeepAnalysisReportPreview {
@@ -131,6 +445,17 @@ function buildPreview(report: DeepAnalysisReportDocument): DeepAnalysisReportPre
     topThemes: report.themeLandscape.highlights.slice(0, 3).map((item) => item.name),
     keyRecommendations: report.recommendations.slice(0, 3),
   };
+}
+
+function validateMemoryReferences(memoryIds: Set<string>, ids: string[], errorMessage: string): void {
+  for (const memoryId of ids) {
+    if (!memoryIds.has(memoryId)) {
+      throw new AppError(errorMessage, {
+        statusCode: 500,
+        code: 'DEEP_ANALYSIS_REPORT_INVALID',
+      });
+    }
+  }
 }
 
 function validateReport(
@@ -153,15 +478,80 @@ function validateReport(
     });
   }
 
-  for (const relationship of report.relationships) {
-    for (const memoryId of relationship.evidenceMemoryIds) {
-      if (!memoryIds.has(memoryId)) {
-        throw new AppError('Report relationship evidence references an unknown memory', {
-          statusCode: 500,
-          code: 'DEEP_ANALYSIS_REPORT_INVALID',
-        });
-      }
+  const themeNames = (report.themeLandscape.highlights ?? []).map((item) => normalizeToken(item.name));
+  if (themeNames.some((name) => DISALLOWED_THEME_TERMS.has(name))) {
+    throw new AppError('Report theme landscape contains generic or disallowed terms', {
+      statusCode: 500,
+      code: 'DEEP_ANALYSIS_REPORT_INVALID',
+    });
+  }
+
+  for (const group of [
+    ...(report.entities.people ?? []),
+    ...(report.entities.teams ?? []),
+    ...(report.entities.projects ?? []),
+    ...(report.entities.tools ?? []),
+    ...(report.entities.places ?? []),
+  ]) {
+    if (DISALLOWED_ENTITY_TERMS.has(normalizeToken(group.label))) {
+      throw new AppError('Report entities contain generic or disallowed labels', {
+        statusCode: 500,
+        code: 'DEEP_ANALYSIS_REPORT_INVALID',
+      });
     }
+    validateMemoryReferences(
+      memoryIds,
+      group.evidenceMemoryIds,
+      'Report entity evidence references an unknown memory',
+    );
+  }
+
+  for (const relationship of report.relationships) {
+    validateMemoryReferences(
+      memoryIds,
+      relationship.evidenceMemoryIds,
+      'Report relationship evidence references an unknown memory',
+    );
+  }
+
+  for (const issue of report.quality.lowQualityExamples ?? []) {
+    validateMemoryReferences(
+      memoryIds,
+      [issue.memoryId],
+      'Report low-quality memory references an unknown memory',
+    );
+  }
+
+  for (const cluster of report.quality.duplicateClusters ?? []) {
+    validateMemoryReferences(
+      memoryIds,
+      [cluster.canonicalMemoryId, ...cluster.duplicateMemoryIds],
+      'Report duplicate cluster references an unknown memory',
+    );
+  }
+
+  for (const highlight of report.persona.evidenceHighlights ?? []) {
+    validateMemoryReferences(
+      memoryIds,
+      highlight.memoryIds,
+      'Report persona evidence references an unknown memory',
+    );
+  }
+
+  const personaSignalCount =
+    (report.persona.workingStyle?.length ?? 0) +
+    (report.persona.goals?.length ?? 0) +
+    (report.persona.preferences?.length ?? 0) +
+    (report.persona.constraints?.length ?? 0) +
+    (report.persona.decisionSignals?.length ?? 0) +
+    (report.persona.notableRoutines?.length ?? 0) +
+    (report.persona.evidenceHighlights?.length ?? 0);
+
+  if (report.persona.summary.trim().length < 80 || personaSignalCount < 4) {
+    throw new AppError('Report persona section is too shallow', {
+      statusCode: 500,
+      code: 'DEEP_ANALYSIS_REPORT_INVALID',
+    });
   }
 }
 
@@ -201,6 +591,7 @@ export class DeepAnalysisReportProcessorService {
         progressPercent: 35,
       });
       const chunkInsights = await this.analyzeChunks(prepared.uniqueMemories);
+      const corpusSignals = this.buildCorpusSignals(prepared, chunkInsights);
 
       await this.repository.updateDeepAnalysisReport(reportRecord.id, {
         status: DeepAnalysisReportStatus.SYNTHESIZING,
@@ -212,6 +603,7 @@ export class DeepAnalysisReportProcessorService {
         reportRecord.lang,
         prepared,
         chunkInsights,
+        corpusSignals,
       );
 
       await this.repository.updateDeepAnalysisReport(reportRecord.id, {
@@ -220,7 +612,7 @@ export class DeepAnalysisReportProcessorService {
         progressPercent: 90,
       });
 
-      const memoryIds = new Set(prepared.uniqueMemories.map((memory) => memory.id));
+      const memoryIds = new Set(payload.memories.map((memory) => memory.id));
 
       try {
         validateReport(
@@ -231,7 +623,7 @@ export class DeepAnalysisReportProcessorService {
         );
       } catch (error) {
         this.logger.warn(`Validation failed for report ${reportRecord.id}; retrying with heuristic synthesis`);
-        report = this.buildHeuristicReport(reportRecord.lang, prepared, chunkInsights);
+        report = this.buildHeuristicReport(reportRecord.lang, prepared, corpusSignals);
         validateReport(
           report,
           memoryIds,
@@ -313,22 +705,50 @@ export class DeepAnalysisReportProcessorService {
   }
 
   private async analyzeChunks(memories: PreparedMemory[]): Promise<ChunkInsight[]> {
-    const chunks = chunkArray(memories, 250);
+    const chunks = chunkArray(memories, 180);
     const insights: ChunkInsight[] = [];
 
     for (const chunk of chunks) {
       const qwenInsight = await this.qwen.createJson<ChunkInsight>(
-        'You analyze user memory chunks and return concise JSON with themes and relationships.',
+        [
+          'You analyze one chunk of user memories and return JSON only.',
+          'Never emit stopwords or generic role terms like the, and, for, user, agent, assistant, self, team, project, task, system, memory, workflow.',
+          'Themes must be high-information phrases or specific concepts, not filler words.',
+          'Entities must be specific people, teams, projects, tools, or places with stable evidence.',
+          'Persona signals must summarize repeated behavior patterns across the chunk, not restate one memory.',
+          'Return an object with keys: summary, themes, entities, personaSignals, relationships.',
+        ].join(' '),
         JSON.stringify({
           memories: chunk.map((memory) => ({
             id: memory.id,
             content: sentencePreview(memory.content),
+            tags: memory.tags.slice(0, 6),
           })),
         }),
       );
 
       if (qwenInsight) {
-        insights.push(qwenInsight);
+        insights.push({
+          summary: qwenInsight.summary ?? '',
+          themes: Array.isArray(qwenInsight.themes) ? qwenInsight.themes : [],
+          entities: {
+            people: qwenInsight.entities?.people ?? [],
+            teams: qwenInsight.entities?.teams ?? [],
+            projects: qwenInsight.entities?.projects ?? [],
+            tools: qwenInsight.entities?.tools ?? [],
+            places: qwenInsight.entities?.places ?? [],
+          },
+          personaSignals: {
+            workingStyle: qwenInsight.personaSignals?.workingStyle ?? [],
+            goals: qwenInsight.personaSignals?.goals ?? [],
+            preferences: qwenInsight.personaSignals?.preferences ?? [],
+            constraints: qwenInsight.personaSignals?.constraints ?? [],
+            decisionSignals: qwenInsight.personaSignals?.decisionSignals ?? [],
+            notableRoutines: qwenInsight.personaSignals?.notableRoutines ?? [],
+            contradictionsOrTensions: qwenInsight.personaSignals?.contradictionsOrTensions ?? [],
+          },
+          relationships: Array.isArray(qwenInsight.relationships) ? qwenInsight.relationships : [],
+        });
         continue;
       }
 
@@ -339,37 +759,346 @@ export class DeepAnalysisReportProcessorService {
   }
 
   private buildHeuristicChunkInsight(memories: PreparedMemory[]): ChunkInsight {
-    const tokenCounts = new Map<string, number>();
-    const relationships: DeepAnalysisRelationship[] = [];
+    const stats = this.collectCorpusStats(memories);
+    const themeNames = this.buildThemeHighlights(stats.tokenCounts, stats.phraseCounts).map((item) => ({
+      name: item.name,
+      memoryIds: [],
+    }));
+
+    return {
+      summary: this.buildPersonaSection(themeNames.map((item) => item.name), stats).summary,
+      themes: themeNames,
+      entities: {
+        people: buildEntityGroups(stats.personCounters, 5).map((item) => item.label),
+        teams: buildEntityGroups(stats.teamCounters, 5).map((item) => item.label),
+        projects: buildEntityGroups(stats.projectCounters, 5).map((item) => item.label),
+        tools: buildEntityGroups(stats.toolCounters, 5).map((item) => item.label),
+        places: buildEntityGroups(stats.placeCounters, 5).map((item) => item.label),
+      },
+      personaSignals: {
+        workingStyle: collectRepresentativeSignals(stats.workingStyleSignals, 4),
+        goals: collectRepresentativeSignals(stats.goalSignals, 4),
+        preferences: collectRepresentativeSignals(stats.preferenceSignals, 4),
+        constraints: collectRepresentativeSignals(stats.constraintSignals, 4),
+        decisionSignals: collectRepresentativeSignals(stats.decisionSignals, 4),
+        notableRoutines: collectRepresentativeSignals(stats.routineSignals, 4),
+        contradictionsOrTensions: buildContradictions(stats),
+      },
+      relationships: stats.relationships.slice(0, 10),
+    };
+  }
+
+  private collectCorpusStats(memories: PreparedMemory[]): CorpusStats {
+    const stats: CorpusStats = {
+      tokenCounts: new Map<string, number>(),
+      phraseCounts: new Map<string, number>(),
+      personCounters: new Map<string, CounterValue>(),
+      teamCounters: new Map<string, CounterValue>(),
+      projectCounters: new Map<string, CounterValue>(),
+      toolCounters: new Map<string, CounterValue>(),
+      placeCounters: new Map<string, CounterValue>(),
+      workingStyleSignals: [],
+      goalSignals: [],
+      preferenceSignals: [],
+      constraintSignals: [],
+      decisionSignals: [],
+      routineSignals: [],
+      lowQualityExamples: [],
+      relationships: [],
+    };
 
     for (const memory of memories) {
-      for (const token of tokenize(memory.content)) {
-        tokenCounts.set(token, (tokenCounts.get(token) ?? 0) + 1);
+      const preview = sentencePreview(memory.content);
+      const lower = normalizeToken(memory.content);
+      const uniqueTokens = new Set(tokenize(memory.content));
+      const uniquePhrases = new Set(collectMemoryPhrases(memory.content));
+
+      for (const token of uniqueTokens) {
+        stats.tokenCounts.set(token, (stats.tokenCounts.get(token) ?? 0) + 1);
+      }
+
+      for (const phrase of uniquePhrases) {
+        stats.phraseCounts.set(phrase, (stats.phraseCounts.get(phrase) ?? 0) + 1);
+      }
+
+      for (const name of extractProperNames(memory.content)) {
+        upsertCounter(stats.personCounters, name, memory.id);
+      }
+
+      for (const teamLabel of extractTeamLabels(memory.content)) {
+        upsertCounter(stats.teamCounters, teamLabel, memory.id);
+      }
+
+      for (const hint of TOOL_HINTS) {
+        if (lower.includes(hint)) {
+          upsertCounter(stats.toolCounters, hint, memory.id);
+        }
+      }
+
+      for (const hint of PLACE_HINTS) {
+        if (lower.includes(hint)) {
+          upsertCounter(stats.placeCounters, hint, memory.id);
+        }
+      }
+
+      for (const tag of memory.tags) {
+        const normalizedTag = normalizeToken(tag.replace(/^#+/u, ''));
+        if (
+          isMeaningfulToken(normalizedTag) &&
+          !DISALLOWED_PROJECT_TAGS.has(normalizedTag) &&
+          !DISALLOWED_ENTITY_TERMS.has(normalizedTag)
+        ) {
+          upsertCounter(stats.projectCounters, normalizedTag, memory.id);
+        }
+      }
+
+      if (/(prefer|prefers|like|likes|favorite|偏好|喜欢|更喜欢|倾向于)/iu.test(memory.content)) {
+        appendSignal(stats.preferenceSignals, preview, memory.id);
+      }
+      if (/(debug|refactor|review|document|structured|structure|automation|automate|iterate|迭代|自动化|结构化|细节|详细|简洁|token|workflow|memory insight)/iu.test(memory.content)) {
+        appendSignal(stats.workingStyleSignals, preview, memory.id);
+      }
+      if (/(goal|plan to|target|roadmap|objective|目标|计划|路线图|想要)/iu.test(memory.content)) {
+        appendSignal(stats.goalSignals, preview, memory.id);
+      }
+      if (/(must|need to|should not|cannot|can't|avoid|禁止|不要|约束|限制|必须|不能|避免)/iu.test(memory.content)) {
+        appendSignal(stats.constraintSignals, preview, memory.id);
+      }
+      if (/(decide|decision|choose|selected|tradeoff|priority|prioritize|consider|决定|选择|取舍|优先级|权衡|考虑)/iu.test(memory.content)) {
+        appendSignal(stats.decisionSignals, preview, memory.id);
+      }
+      if (/(daily|weekly|every day|every morning|usually|routine|habit|每天|每周|经常|习惯|工作时间)/iu.test(memory.content)) {
+        appendSignal(stats.routineSignals, preview, memory.id);
+      }
+
+      if (memory.content.trim().length < 24 || ACKNOWLEDGEMENT_PATTERN.test(lower)) {
+        stats.lowQualityExamples.push({
+          memoryId: memory.id,
+          reason: 'Very short or low-information memory',
+        });
       }
 
       for (const pattern of RELATION_PATTERNS) {
         for (const match of memory.content.matchAll(pattern.pattern)) {
           const target = match[1]?.trim();
 
-          if (!target) {
+          if (!target || !isMeaningfulEntityLabel(target)) {
             continue;
           }
 
-          relationships.push({
+          stats.relationships.push({
             source: 'user',
             relation: pattern.relation,
             target,
-            confidence: 0.52,
+            confidence: 0.58,
             evidenceMemoryIds: [memory.id],
-            evidenceExcerpts: [sentencePreview(memory.content)],
+            evidenceExcerpts: [preview],
           });
         }
       }
     }
 
+    return stats;
+  }
+
+  private buildThemeHighlights(
+    tokenCounts: Map<string, number>,
+    phraseCounts: Map<string, number>,
+  ): DeepAnalysisThemeItem[] {
+    const highlights: DeepAnalysisThemeItem[] = [];
+    const seen = new Set<string>();
+
+    for (const [name, count] of pickTopEntries(phraseCounts, 10)) {
+      if (count < 2 || seen.has(name) || DISALLOWED_THEME_TERMS.has(name)) {
+        continue;
+      }
+      seen.add(name);
+      highlights.push({
+        name,
+        count,
+        description: `Recurring phrase found in ${count} memories.`,
+      });
+      if (highlights.length >= 8) {
+        return highlights;
+      }
+    }
+
+    for (const [name, count] of pickTopEntries(tokenCounts, 12)) {
+      if (count < 2 || seen.has(name) || DISALLOWED_THEME_TERMS.has(name)) {
+        continue;
+      }
+      seen.add(name);
+      highlights.push({
+        name,
+        count,
+        description: `Recurring signal across ${count} memories.`,
+      });
+      if (highlights.length >= 8) {
+        break;
+      }
+    }
+
+    return highlights;
+  }
+
+  private buildPersonaSection(themeNames: string[], stats: CorpusStats): PersonaSummarySection {
+    const workingStyle = collectRepresentativeSignals(stats.workingStyleSignals, 5);
+    const goals = collectRepresentativeSignals(stats.goalSignals, 5);
+    const preferences = collectRepresentativeSignals(stats.preferenceSignals, 5);
+    const constraints = collectRepresentativeSignals(stats.constraintSignals, 5);
+    const decisionSignals = collectRepresentativeSignals(stats.decisionSignals, 5);
+    const notableRoutines = collectRepresentativeSignals(stats.routineSignals, 5);
+    const contradictionsOrTensions = buildContradictions(stats);
+    const evidenceHighlights = buildEvidenceHighlights([
+      ...stats.preferenceSignals,
+      ...stats.workingStyleSignals,
+      ...stats.goalSignals,
+      ...stats.constraintSignals,
+    ], 4);
+    const summaryParts: string[] = [];
+
+    if (themeNames.length > 0) {
+      summaryParts.push(
+        `This corpus concentrates on ${themeNames.slice(0, 3).join(', ')}, with repeated memory traffic around those domains.`,
+      );
+    }
+    if (workingStyle.length > 0 || preferences.length > 0) {
+      summaryParts.push(
+        'The user tends to capture working norms, tool choices, and preferred execution patterns rather than isolated facts.',
+      );
+    }
+    if (goals.length > 0 || decisionSignals.length > 0) {
+      summaryParts.push(
+        'The memories also expose explicit goals and tradeoff decisions, which makes the persona more operational than purely descriptive.',
+      );
+    }
+    if (notableRoutines.length > 0) {
+      summaryParts.push(
+        'Stable routines and recurring timing references suggest habits that are strong enough to influence future memory insight features.',
+      );
+    }
+
     return {
-      themes: pickTopEntries(tokenCounts, 6).map(([token]) => token),
+      summary: summaryParts.length > 0
+        ? summaryParts.join(' ')
+        : 'The corpus contains repeated operational memories, but the current evidence is still too sparse to form a sharper persona summary.',
+      workingStyle,
+      goals,
+      preferences,
+      constraints,
+      decisionSignals,
+      notableRoutines,
+      contradictionsOrTensions,
+      evidenceHighlights,
+    };
+  }
+
+  private buildCorpusSignals(
+    corpus: PreparedCorpus,
+    chunkInsights: ChunkInsight[],
+  ): CorpusSignals {
+    const stats = this.collectCorpusStats(corpus.uniqueMemories);
+    const themeHighlights = this.buildThemeHighlights(stats.tokenCounts, stats.phraseCounts);
+    const chunkThemeBoosts = new Map<string, number>();
+
+    for (const chunk of chunkInsights) {
+      for (const theme of chunk.themes ?? []) {
+        const normalized = normalizeToken(theme.name);
+        if (!normalized || DISALLOWED_THEME_TERMS.has(normalized)) {
+          continue;
+        }
+        chunkThemeBoosts.set(normalized, (chunkThemeBoosts.get(normalized) ?? 0) + (theme.memoryIds?.length || 1));
+      }
+    }
+
+    const boostedHighlights = [
+      ...themeHighlights,
+      ...pickTopEntries(chunkThemeBoosts, 6)
+        .filter(([name]) => !themeHighlights.some((item) => item.name === name))
+        .map(([name, count]) => ({
+          name,
+          count,
+          description: `Cross-chunk recurring signal seen in ${count} memory references.`,
+        })),
+    ].slice(0, 8);
+
+    const relationships = [...stats.relationships, ...chunkInsights.flatMap((item) => item.relationships ?? [])]
+      .filter((item, index, list) =>
+        list.findIndex((candidate) =>
+          candidate.source === item.source &&
+          candidate.relation === item.relation &&
+          candidate.target === item.target &&
+          candidate.evidenceMemoryIds.join('|') === item.evidenceMemoryIds.join('|')) === index)
+      .slice(0, 18);
+    const persona = this.buildPersonaSection(
+      boostedHighlights.map((item) => item.name),
+      stats,
+    );
+    const duplicateMemoryCount = corpus.duplicateClusters.reduce(
+      (sum, item) => sum + item.duplicateMemoryIds.length,
+      0,
+    );
+    const coverageGaps = buildCoverageGaps(
+      stats.personCounters.size,
+      stats.projectCounters.size,
+      stats.toolCounters.size,
+      stats.routineSignals.length,
+      stats.decisionSignals.length,
+    );
+    const recommendations = buildRecommendations(
+      duplicateMemoryCount,
+      stats.lowQualityExamples.length,
+      relationships.length,
+      persona.contradictionsOrTensions,
+    );
+    const candidateNodes: DeepAnalysisCandidateNode[] = [
+      ...boostedHighlights.slice(0, 4).map((item) => ({
+        label: item.name,
+        kind: 'theme',
+        count: item.count,
+      })),
+      ...buildEntityGroups(stats.personCounters, 2).map((item) => ({
+        label: item.label,
+        kind: 'person',
+        count: item.count,
+      })),
+      ...buildEntityGroups(stats.projectCounters, 2).map((item) => ({
+        label: item.label,
+        kind: 'project',
+        count: item.count,
+      })),
+    ].slice(0, 8);
+    const candidateEdges: DeepAnalysisCandidateEdge[] = relationships.slice(0, 10).map((item) => ({
+      source: item.source,
+      relation: item.relation,
+      target: item.target,
+      confidence: item.confidence,
+    }));
+
+    return {
+      persona,
+      themeHighlights: boostedHighlights,
+      entities: {
+        people: buildEntityGroups(stats.personCounters),
+        teams: buildEntityGroups(stats.teamCounters),
+        projects: buildEntityGroups(stats.projectCounters),
+        tools: buildEntityGroups(stats.toolCounters),
+        places: buildEntityGroups(stats.placeCounters),
+      },
       relationships,
+      lowQualityExamples: stats.lowQualityExamples.slice(0, 10),
+      duplicateMemoryCount,
+      coverageGaps,
+      recommendations,
+      productSignals: {
+        candidateNodes,
+        candidateEdges,
+        searchSeeds: uniqueStrings([
+          ...boostedHighlights.slice(0, 6).map((item) => item.name),
+          ...buildEntityGroups(stats.projectCounters, 4).map((item) => item.label),
+          ...buildEntityGroups(stats.personCounters, 4).map((item) => item.label),
+        ], 8),
+      },
     };
   }
 
@@ -377,14 +1106,26 @@ export class DeepAnalysisReportProcessorService {
     lang: string,
     corpus: PreparedCorpus,
     chunkInsights: ChunkInsight[],
+    corpusSignals: CorpusSignals,
   ): Promise<DeepAnalysisReportDocument> {
     const qwenReport = await this.qwen.createJson<DeepAnalysisReportDocument>(
-      'You synthesize a deep memory analysis report and must return JSON only.',
+      [
+        'You synthesize a deep memory analysis report and must return JSON only.',
+        'Preserve the exact top-level keys: overview, persona, themeLandscape, entities, relationships, quality, recommendations, productSignals.',
+        'Do not output stopwords or generic terms such as the, and, for, user, agent, assistant, self, team, project, task, system, memory, workflow.',
+        'Persona.summary must be 2-4 strong sentences describing sustained behavior, priorities, and routines across the corpus.',
+        'Persona fields must summarize stable patterns using evidence-based statements, not one-off facts.',
+        'Every relationship and persona evidence item must include valid memoryIds that appear in the provided inputs.',
+        'Theme landscape should prefer specific phrases over generic single words.',
+      ].join(' '),
       JSON.stringify({
         lang,
-        memoryCount: corpus.originalCount,
-        deduplicatedMemoryCount: corpus.deduplicatedCount,
+        overview: {
+          memoryCount: corpus.originalCount,
+          deduplicatedMemoryCount: corpus.deduplicatedCount,
+        },
         chunkInsights,
+        corpusSignals,
       }),
     );
 
@@ -392,111 +1133,15 @@ export class DeepAnalysisReportProcessorService {
       return qwenReport;
     }
 
-    return this.buildHeuristicReport(lang, corpus, chunkInsights);
+    return this.buildHeuristicReport(lang, corpus, corpusSignals);
   }
 
   private buildHeuristicReport(
     lang: string,
     corpus: PreparedCorpus,
-    chunkInsights: ChunkInsight[],
+    corpusSignals: CorpusSignals,
   ): DeepAnalysisReportDocument {
     const memories = corpus.uniqueMemories;
-    const tokenCounts = new Map<string, number>();
-    const personCounters = new Map<string, { count: number; evidenceMemoryIds: string[] }>();
-    const teamCounters = new Map<string, { count: number; evidenceMemoryIds: string[] }>();
-    const projectCounters = new Map<string, { count: number; evidenceMemoryIds: string[] }>();
-    const toolCounters = new Map<string, { count: number; evidenceMemoryIds: string[] }>();
-    const placeCounters = new Map<string, { count: number; evidenceMemoryIds: string[] }>();
-    const preferenceSignals: string[] = [];
-    const habitSignals: string[] = [];
-    const goalSignals: string[] = [];
-    const constraintSignals: string[] = [];
-    const lowQualityExamples: { memoryId: string; reason: string }[] = [];
-    const duplicateClusters = corpus.duplicateClusters;
-
-    for (const memory of memories) {
-      for (const token of tokenize(memory.content)) {
-        tokenCounts.set(token, (tokenCounts.get(token) ?? 0) + 1);
-      }
-
-      for (const name of extractProperNames(memory.content)) {
-        upsertCounter(personCounters, name, memory.id);
-      }
-
-      for (const hint of TEAM_HINTS) {
-        if (memory.content.toLowerCase().includes(hint)) {
-          upsertCounter(teamCounters, hint, memory.id);
-        }
-      }
-
-      for (const hint of TOOL_HINTS) {
-        if (memory.content.toLowerCase().includes(hint)) {
-          upsertCounter(toolCounters, hint, memory.id);
-        }
-      }
-
-      for (const hint of PLACE_HINTS) {
-        if (memory.content.toLowerCase().includes(hint)) {
-          upsertCounter(placeCounters, hint, memory.id);
-        }
-      }
-
-      for (const tag of memory.tags) {
-        if (tag.length >= 3) {
-          upsertCounter(projectCounters, tag, memory.id);
-        }
-      }
-
-      const lower = memory.content.toLowerCase();
-
-      if (/(prefer|like|favorite|偏好|喜欢)/iu.test(memory.content)) {
-        preferenceSignals.push(sentencePreview(memory.content));
-      }
-      if (/(daily|weekly|habit|usually|routine|习惯|每天|每周)/iu.test(memory.content)) {
-        habitSignals.push(sentencePreview(memory.content));
-      }
-      if (/(goal|plan|target|roadmap|目标|计划)/iu.test(memory.content)) {
-        goalSignals.push(sentencePreview(memory.content));
-      }
-      if (/(must|need to|should not|不要|禁止|限制|约束)/iu.test(memory.content)) {
-        constraintSignals.push(sentencePreview(memory.content));
-      }
-
-      if (memory.content.trim().length < 18 || /^(ok|done|noted|收到|好的)$/iu.test(lower)) {
-        lowQualityExamples.push({
-          memoryId: memory.id,
-          reason: 'Very short or low-information memory',
-        });
-      }
-    }
-
-    const highlights: DeepAnalysisThemeItem[] = pickTopEntries(tokenCounts, 8).map(([name, count]) => ({
-      name,
-      count,
-      description: `Recurring signal across ${count} memories.`,
-    }));
-
-    const relationships = chunkInsights.flatMap((item) => item.relationships).slice(0, 16);
-    const candidateNodes: DeepAnalysisCandidateNode[] = highlights.slice(0, 6).map((item) => ({
-      label: item.name,
-      kind: 'theme',
-      count: item.count,
-    }));
-    const candidateEdges: DeepAnalysisCandidateEdge[] = relationships.slice(0, 10).map((item) => ({
-      source: item.source,
-      relation: item.relation,
-      target: item.target,
-      confidence: item.confidence,
-    }));
-    const duplicateMemoryCount = duplicateClusters.reduce(
-      (sum, item) => sum + item.duplicateMemoryIds.length,
-      0,
-    );
-    const recommendations = this.buildRecommendations(
-      duplicateClusters.length,
-      lowQualityExamples.length,
-      relationships.length,
-    );
     const generatedAt = new Date().toISOString();
 
     return {
@@ -510,84 +1155,24 @@ export class DeepAnalysisReportProcessorService {
           end: memories[memories.length - 1]?.createdAt.toISOString() ?? null,
         },
       },
-      persona: {
-        summary: preferenceSignals[0]
-          ? `The user shows stable preferences and repeated working patterns, with strong signals around ${highlights.slice(0, 2).map((item) => item.name).join(', ')}.`
-          : `The user memory corpus is dominated by recurring themes around ${highlights.slice(0, 3).map((item) => item.name).join(', ')}.`,
-        preferences: preferenceSignals.slice(0, 5),
-        habits: habitSignals.slice(0, 5),
-        goals: goalSignals.slice(0, 5),
-        constraints: constraintSignals.slice(0, 5),
-      },
+      persona: corpusSignals.persona,
       themeLandscape: {
-        highlights,
+        highlights: corpusSignals.themeHighlights,
       },
-      entities: {
-        people: buildEntityGroups(personCounters),
-        teams: buildEntityGroups(teamCounters),
-        projects: buildEntityGroups(projectCounters),
-        tools: buildEntityGroups(toolCounters),
-        places: buildEntityGroups(placeCounters),
-      },
-      relationships,
+      entities: corpusSignals.entities,
+      relationships: corpusSignals.relationships,
       quality: {
         duplicateRatio: corpus.originalCount === 0
           ? 0
-          : Number((duplicateMemoryCount / corpus.originalCount).toFixed(2)),
-        noisyMemoryCount: lowQualityExamples.length,
-        duplicateClusters,
-        lowQualityExamples: lowQualityExamples.slice(0, 10),
-        coverageGaps: this.buildCoverageGaps(personCounters.size, projectCounters.size, toolCounters.size),
+          : Number((corpusSignals.duplicateMemoryCount / corpus.originalCount).toFixed(2)),
+        duplicateMemoryCount: corpusSignals.duplicateMemoryCount,
+        noisyMemoryCount: corpusSignals.lowQualityExamples.length,
+        duplicateClusters: corpus.duplicateClusters,
+        lowQualityExamples: corpusSignals.lowQualityExamples,
+        coverageGaps: corpusSignals.coverageGaps,
       },
-      recommendations,
-      productSignals: {
-        candidateNodes,
-        candidateEdges,
-        searchSeeds: highlights.slice(0, 8).map((item) => item.name),
-      },
+      recommendations: corpusSignals.recommendations,
+      productSignals: corpusSignals.productSignals,
     };
-  }
-
-  private buildCoverageGaps(
-    peopleCount: number,
-    projectCount: number,
-    toolCount: number,
-  ): string[] {
-    const gaps: string[] = [];
-
-    if (peopleCount < 3) {
-      gaps.push('People and collaborator mentions are sparse; relationship coverage may be incomplete.');
-    }
-    if (projectCount < 3) {
-      gaps.push('Project labeling is thin; adding more explicit project references would improve grouping.');
-    }
-    if (toolCount < 3) {
-      gaps.push('Tool and environment references are limited; operational context may be underrepresented.');
-    }
-
-    return gaps;
-  }
-
-  private buildRecommendations(
-    duplicateClusterCount: number,
-    lowQualityCount: number,
-    relationshipCount: number,
-  ): string[] {
-    const recommendations: string[] = [];
-
-    if (duplicateClusterCount > 0) {
-      recommendations.push('Consider collapsing repeated memories into stronger canonical entries to reduce duplicate drift.');
-    }
-    if (lowQualityCount > 0) {
-      recommendations.push('Filter or rewrite low-information memories so future analysis has denser evidence.');
-    }
-    if (relationshipCount < 3) {
-      recommendations.push('Capture more explicit people, project, and collaboration statements to strengthen relationship graphs.');
-    }
-    if (recommendations.length === 0) {
-      recommendations.push('The memory corpus is reasonably healthy; focus next on enriching entity and relationship signals.');
-    }
-
-    return recommendations;
   }
 }

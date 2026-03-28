@@ -222,10 +222,15 @@ export interface DeepAnalysisOverviewSection {
 
 export interface DeepAnalysisPersonaSection {
   summary: string;
-  preferences: string[];
-  habits: string[];
-  goals: string[];
-  constraints: string[];
+  workingStyle?: string[];
+  goals?: string[];
+  preferences?: string[];
+  constraints?: string[];
+  decisionSignals?: string[];
+  notableRoutines?: string[];
+  contradictionsOrTensions?: string[];
+  evidenceHighlights?: DeepAnalysisEvidenceHighlight[];
+  habits?: string[];
 }
 
 export interface DeepAnalysisThemeItem {
@@ -259,6 +264,20 @@ export interface DeepAnalysisDuplicateCluster {
   duplicateMemoryIds: string[];
 }
 
+export interface DeepAnalysisEvidenceHighlight {
+  title: string;
+  detail: string;
+  memoryIds: string[];
+}
+
+export interface DeepAnalysisDuplicateExportRow {
+  duplicateMemoryId: string;
+  clusterIndex: number;
+  canonicalPreview: string;
+  duplicatePreview: string;
+  reason: string;
+}
+
 export interface DeepAnalysisCandidateNode {
   label: string;
   kind: string;
@@ -288,6 +307,7 @@ export interface DeepAnalysisReportDocument {
   relationships: DeepAnalysisRelationship[];
   quality: {
     duplicateRatio: number;
+    duplicateMemoryCount?: number;
     noisyMemoryCount: number;
     duplicateClusters: DeepAnalysisDuplicateCluster[];
     lowQualityExamples: DeepAnalysisQualityIssue[];

@@ -1,5 +1,6 @@
-import { Body, Controller, Get, HttpCode, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Param, Post, Query, Res, UseGuards } from '@nestjs/common';
 import { ApiHeader, ApiOperation, ApiTags } from '@nestjs/swagger';
+import type { FastifyReply } from 'fastify';
 
 import { DeepAnalysisService } from './deep-analysis.service';
 import { ApiKeyGuard } from './common/api-key.guard';
@@ -46,5 +47,18 @@ export class DeepAnalysisController {
     @Param('reportId') reportId: string,
   ) {
     return this.service.getReport(context, reportId);
+  }
+
+  @Get('reports/:reportId/duplicates.csv')
+  @ApiOperation({ summary: 'Download duplicate cleanup CSV for one deep analysis report' })
+  public async downloadDuplicateCleanupCsv(
+    @CurrentContext() context: Mem9RequestContext,
+    @Param('reportId') reportId: string,
+    @Res() reply: FastifyReply,
+  ) {
+    const { filename, content } = await this.service.downloadDuplicateCleanupCsv(context, reportId);
+    reply.header('Content-Type', 'text/csv; charset=utf-8');
+    reply.header('Content-Disposition', `attachment; filename="${filename}"`);
+    return reply.send(content);
   }
 }

@@ -414,6 +414,23 @@ export class AnalysisRepository {
     });
   }
 
+  public async findDeepAnalysisReportsByDayPrefix(
+    fingerprint: Buffer,
+    requestDayKeyPrefix: string,
+  ): Promise<DeepAnalysisReport[]> {
+    return this.prisma.deepAnalysisReport.findMany({
+      where: {
+        apiKeyFingerprint: toPrismaBytes(fingerprint),
+        requestDayKey: {
+          startsWith: requestDayKeyPrefix,
+        },
+      },
+      orderBy: {
+        requestedAt: 'desc',
+      },
+    });
+  }
+
   public async createDeepAnalysisReport(data: {
     fingerprint: Buffer;
     requestDayKey: string;
