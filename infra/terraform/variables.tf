@@ -90,7 +90,7 @@ variable "qwen_api_base_url" {
 
 variable "qwen_model" {
   type    = string
-  default = "qwen3.5-pro"
+  default = "qwen3.5-plus"
 }
 
 variable "qwen_api_key" {
