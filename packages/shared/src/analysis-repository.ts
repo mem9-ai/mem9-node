@@ -522,4 +522,10 @@ export class AnalysisRepository {
       data,
     });
   }
+
+  public async deleteDeepAnalysisReport(reportId: string): Promise<void> {
+    await this.prisma.deepAnalysisReport.delete({
+      where: { id: reportId },
+    });
+  }
 }

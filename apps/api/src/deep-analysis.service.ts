@@ -1,6 +1,7 @@
 import type {
   CreateDeepAnalysisReportResponse,
   DeleteDeepAnalysisDuplicatesResponse,
+  DeleteDeepAnalysisReportResponse,
   DeepAnalysisDuplicateExportRow,
   DeepAnalysisMemorySnapshot,
   DeepAnalysisReportDetail,
@@ -91,6 +92,10 @@ function buildExistingReportError(existing: {
       },
     },
   );
+}
+
+function isTerminalStatus(status: DeepAnalysisReportStatus): boolean {
+  return status === 'COMPLETED' || status === 'FAILED';
 }
 
 function toPreview(value: unknown): DeepAnalysisReportPreview | null {
@@ -431,6 +436,34 @@ export class DeepAnalysisService {
       deletedCount: deletion.deletedMemoryIds.length,
       deletedMemoryIds: deletion.deletedMemoryIds,
       failedMemoryIds: deletion.failedMemoryIds,
+    };
+  }
+
+  public async deleteReport(
+    context: Mem9RequestContext,
+    reportId: string,
+  ): Promise<DeleteDeepAnalysisReportResponse> {
+    const report = await this.repository.getOwnedDeepAnalysisReport(
+      reportId,
+      context.apiKeyFingerprint,
+    );
+
+    if (!isTerminalStatus(report.status)) {
+      throw new AppError('Cannot delete a deep analysis report while it is still running', {
+        statusCode: 409,
+        code: 'DEEP_ANALYSIS_REPORT_RUNNING',
+      });
+    }
+
+    await Promise.all([
+      report.reportObjectKey ? this.storage.deleteObject(report.reportObjectKey) : Promise.resolve(),
+      this.storage.deleteObject(report.sourceSnapshotObjectKey),
+    ]);
+
+    await this.repository.deleteDeepAnalysisReport(report.id);
+
+    return {
+      reportId,
     };
   }
 

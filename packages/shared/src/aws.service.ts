@@ -1,6 +1,6 @@
 import { Readable } from 'node:stream';
 
-import { PutObjectCommand, GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import type { Message } from '@aws-sdk/client-sqs';
 import { ChangeMessageVisibilityCommand, DeleteMessageCommand, ReceiveMessageCommand, SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import type { AppConfig } from '@mem9/config';
@@ -118,6 +118,15 @@ export class S3PayloadStorageService {
         Key: key,
         Body: JSON.stringify(payload),
         ContentType: 'application/json',
+      }),
+    );
+  }
+
+  public async deleteObject(key: string): Promise<void> {
+    await this.factory.s3.send(
+      new DeleteObjectCommand({
+        Bucket: this.factory.settings.aws.s3BucketAnalysisPayloads,
+        Key: key,
       }),
     );
   }

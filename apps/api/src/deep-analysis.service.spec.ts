@@ -135,6 +135,7 @@ function createService(overrides?: {
       reportObjectKey: null,
       sourceSnapshotObjectKey: 'deep-analysis/reports/snapshot_1/source.json.gz',
     })),
+    deleteDeepAnalysisReport: jest.fn(async () => undefined),
     ...overrides?.repository,
   };
   const source = {
@@ -159,6 +160,7 @@ function createService(overrides?: {
   const storage = {
     putCompressedJson: jest.fn(async () => undefined),
     getObjectBuffer: jest.fn(async () => Buffer.from('{}')),
+    deleteObject: jest.fn(async () => undefined),
     ...overrides?.storage,
   };
   const queue = {
@@ -749,5 +751,66 @@ describe('deep analysis service', () => {
       deletedMemoryIds: ['mem_2'],
       failedMemoryIds: ['mem_3'],
     });
+  });
+
+  it('deletes one completed report and removes its stored payloads', async () => {
+    const { service, repository, storage } = createService({
+      repository: {
+        getOwnedDeepAnalysisReport: jest.fn(async () => ({
+          id: 'dar_1',
+          status: 'COMPLETED',
+          stage: 'COMPLETE',
+          progressPercent: 100,
+          lang: 'zh-CN',
+          timezone: 'Asia/Shanghai',
+          memoryCount: 1003,
+          requestedAt: new Date('2026-03-28T00:00:00Z'),
+          startedAt: new Date('2026-03-28T00:01:00Z'),
+          completedAt: new Date('2026-03-28T00:05:00Z'),
+          errorCode: null,
+          errorMessage: null,
+          previewJson: null,
+          reportObjectKey: 'deep-analysis/reports/dar_1/report.json',
+          sourceSnapshotObjectKey: 'deep-analysis/reports/dar_1/source.json.gz',
+        })),
+      },
+    });
+
+    const result = await service.deleteReport(createContext(), 'dar_1');
+
+    expect(storage.deleteObject).toHaveBeenNthCalledWith(1, 'deep-analysis/reports/dar_1/report.json');
+    expect(storage.deleteObject).toHaveBeenNthCalledWith(2, 'deep-analysis/reports/dar_1/source.json.gz');
+    expect(repository.deleteDeepAnalysisReport).toHaveBeenCalledWith('dar_1');
+    expect(result).toEqual({ reportId: 'dar_1' });
+  });
+
+  it('rejects deleting a report that is still running', async () => {
+    const { service, repository, storage } = createService({
+      repository: {
+        getOwnedDeepAnalysisReport: jest.fn(async () => ({
+          id: 'dar_queued',
+          status: 'ANALYZING',
+          stage: 'CHUNK_ANALYSIS',
+          progressPercent: 42,
+          lang: 'zh-CN',
+          timezone: 'Asia/Shanghai',
+          memoryCount: 1003,
+          requestedAt: new Date('2026-03-28T00:00:00Z'),
+          startedAt: new Date('2026-03-28T00:01:00Z'),
+          completedAt: null,
+          errorCode: null,
+          errorMessage: null,
+          previewJson: null,
+          reportObjectKey: null,
+          sourceSnapshotObjectKey: 'deep-analysis/reports/dar_queued/source.json.gz',
+        })),
+      },
+    });
+
+    await expect(service.deleteReport(createContext(), 'dar_queued')).rejects.toMatchObject({
+      code: 'DEEP_ANALYSIS_REPORT_RUNNING',
+    });
+    expect(storage.deleteObject).not.toHaveBeenCalled();
+    expect(repository.deleteDeepAnalysisReport).not.toHaveBeenCalled();
   });
 });
