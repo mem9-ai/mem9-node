@@ -67,6 +67,7 @@ function createConfig(overrides?: {
       qwenApiBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
       qwenApiKey: undefined,
       qwenModel: 'qwen3.5-pro',
+      qwenRequestTimeoutMs: 120000,
       ...overrides?.analysis,
     },
     goVerify: {

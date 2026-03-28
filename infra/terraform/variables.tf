@@ -93,6 +93,11 @@ variable "qwen_model" {
   default = "qwen3.5-plus"
 }
 
+variable "qwen_request_timeout_ms" {
+  type    = number
+  default = 120000
+}
+
 variable "qwen_api_key" {
   type      = string
   sensitive = true

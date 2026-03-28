@@ -39,3 +39,4 @@ mem9_source_fetch_retry_base_ms = 250
 mem9_source_delete_concurrency  = 4
 qwen_api_base_url        = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 qwen_model               = "qwen3.5-plus"
+qwen_request_timeout_ms  = 120000

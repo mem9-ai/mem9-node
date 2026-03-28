@@ -304,4 +304,121 @@ describe('deep analysis report processor service', () => {
       }),
     ]);
   });
+
+  it('updates progress within chunk analysis for large reports', async () => {
+    const memories = Array.from({ length: 181 }, (_, index) => ({
+      id: `mem_${index + 1}`,
+      content: `Every morning Bosn reviews React dashboard roadmap item ${index + 1} with Alice Johnson and prefers structured automation decisions for the Platform Team.`,
+      createdAt: `2026-03-${String((index % 28) + 1).padStart(2, '0')}T00:00:00Z`,
+      updatedAt: `2026-03-${String((index % 28) + 1).padStart(2, '0')}T00:00:00Z`,
+      memoryType: 'insight',
+      tags: [`dashboard-${index + 1}`],
+      metadata: null,
+    }));
+    const repository = {
+      getDeepAnalysisReport: jest.fn(async () => ({
+        id: 'dar_progress',
+        status: 'QUEUED',
+        lang: 'en',
+        sourceSnapshotObjectKey: 'deep-analysis/reports/dar_progress/source.json.gz',
+        internalComment: null,
+      })),
+      updateDeepAnalysisReport: jest.fn(async () => undefined),
+    };
+    const storage = {
+      getObjectBuffer: jest.fn(async () => gzipJson({
+        fetchedAt: '2026-03-28T00:00:00Z',
+        memoryCount: memories.length,
+        memories,
+      })),
+      putJson: jest.fn(async () => undefined),
+    };
+    const qwen = {
+      getConfiguredModel: jest.fn(() => 'qwen3.5-pro'),
+      createJson: jest
+        .fn()
+        .mockImplementationOnce(async () => ({
+          parsed: null,
+          usage: {
+            model: 'qwen3.5-pro',
+            promptTokens: 10,
+            completionTokens: 2,
+            totalTokens: 12,
+            usageMissing: false,
+          },
+          requestMeta: {
+            stage: 'chunk_analysis',
+            success: false,
+            requested: true,
+            httpStatus: 200,
+            parseSucceeded: false,
+            errorCode: 'QWEN_JSON_PARSE_FAILED',
+            errorMessage: 'Unexpected token',
+            requestedAt: '2026-03-28T00:00:00.000Z',
+            finishedAt: '2026-03-28T00:00:01.000Z',
+          },
+        }))
+        .mockImplementationOnce(async () => ({
+          parsed: null,
+          usage: {
+            model: 'qwen3.5-pro',
+            promptTokens: 10,
+            completionTokens: 2,
+            totalTokens: 12,
+            usageMissing: false,
+          },
+          requestMeta: {
+            stage: 'chunk_analysis',
+            success: false,
+            requested: true,
+            httpStatus: 200,
+            parseSucceeded: false,
+            errorCode: 'QWEN_JSON_PARSE_FAILED',
+            errorMessage: 'Unexpected token',
+            requestedAt: '2026-03-28T00:00:02.000Z',
+            finishedAt: '2026-03-28T00:00:03.000Z',
+          },
+        }))
+        .mockImplementationOnce(async () => ({
+          parsed: null,
+          usage: {
+            model: 'qwen3.5-pro',
+            promptTokens: 20,
+            completionTokens: 4,
+            totalTokens: 24,
+            usageMissing: false,
+          },
+          requestMeta: {
+            stage: 'global_synthesis',
+            success: false,
+            requested: true,
+            httpStatus: 200,
+            parseSucceeded: false,
+            errorCode: 'QWEN_JSON_PARSE_FAILED',
+            errorMessage: 'Unexpected token',
+            requestedAt: '2026-03-28T00:00:04.000Z',
+            finishedAt: '2026-03-28T00:00:05.000Z',
+          },
+        })),
+    };
+    const processor = new DeepAnalysisReportProcessorService(
+      repository as never,
+      storage as never,
+      qwen as never,
+    );
+
+    await processor.process({
+      messageType: 'deep_report',
+      reportId: 'dar_progress',
+      traceId: 'trace_progress',
+    });
+
+    const progressUpdates = (
+      repository.updateDeepAnalysisReport.mock.calls as unknown as Array<[string, { progressPercent?: number }]>
+    )
+      .map((call) => call[1]?.progressPercent)
+      .filter((value): value is number => typeof value === 'number');
+
+    expect(progressUpdates).toEqual(expect.arrayContaining([10, 35, 47, 59, 60, 90, 100]));
+  });
 });

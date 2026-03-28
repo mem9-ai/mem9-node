@@ -30,6 +30,10 @@ export interface QwenJsonResult<T> {
   requestMeta: QwenRequestMeta;
 }
 
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
+}
+
 @Injectable()
 export class QwenDeepAnalysisService {
   private readonly logger = new Logger(QwenDeepAnalysisService.name);
@@ -64,9 +68,17 @@ export class QwenDeepAnalysisService {
       };
     }
 
+    const timeoutMs = this.config.analysis.qwenRequestTimeoutMs;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => {
+      controller.abort();
+    }, timeoutMs);
+    timeout.unref?.();
+
     try {
       const response = await fetch(`${this.config.analysis.qwenApiBaseUrl.replace(/\/+$/, '')}/chat/completions`, {
         method: 'POST',
+        signal: controller.signal,
         headers: {
           Authorization: `Bearer ${this.config.analysis.qwenApiKey}`,
           'Content-Type': 'application/json',
@@ -89,8 +101,6 @@ export class QwenDeepAnalysisService {
           ],
         }),
       });
-
-      const finishedAt = new Date().toISOString();
       const payload = await response.json().catch(() => null) as
         | {
           model?: string;
@@ -113,6 +123,7 @@ export class QwenDeepAnalysisService {
           };
         }
         | null;
+      const finishedAt = new Date().toISOString();
       const usage = this.buildUsage(payload);
       const content = payload?.choices?.[0]?.message?.content;
 
@@ -189,8 +200,14 @@ export class QwenDeepAnalysisService {
         };
       }
     } catch (error) {
+      const finishedAt = new Date().toISOString();
+      const timedOut = controller.signal.aborted || isAbortError(error);
       const message = error instanceof Error ? error.message : 'unknown error';
-      this.logger.warn(`Qwen request threw before completion: ${message}`);
+      this.logger.warn(
+        timedOut
+          ? `Qwen request timed out after ${timeoutMs}ms`
+          : `Qwen request threw before completion: ${message}`,
+      );
       return {
         parsed: null,
         usage: {
@@ -206,12 +223,14 @@ export class QwenDeepAnalysisService {
           requested: true,
           httpStatus: null,
           parseSucceeded: false,
-          errorCode: 'QWEN_REQUEST_FAILED',
-          errorMessage: message,
+          errorCode: timedOut ? 'QWEN_REQUEST_TIMEOUT' : 'QWEN_REQUEST_FAILED',
+          errorMessage: timedOut ? `Qwen request timed out after ${timeoutMs}ms` : message,
           requestedAt,
-          finishedAt: new Date().toISOString(),
+          finishedAt,
         },
       };
+    } finally {
+      clearTimeout(timeout);
     }
   }
 

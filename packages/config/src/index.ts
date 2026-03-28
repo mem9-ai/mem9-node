@@ -36,6 +36,7 @@ const envSchema = z.object({
   QWEN_API_BASE_URL: z.string().url().default('https://dashscope.aliyuncs.com/compatible-mode/v1'),
   QWEN_API_KEY: z.string().min(1).optional(),
   QWEN_MODEL: z.string().min(1).default('qwen3.5-pro'),
+  QWEN_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(120000),
   JOB_RESULT_TTL_SECONDS: z.coerce.number().int().positive().default(86400),
   PAYLOAD_RETENTION_DAYS: z.coerce.number().int().positive().default(7),
   DEFAULT_BATCH_SIZE: z.coerce.number().int().positive().default(100),
@@ -120,6 +121,7 @@ export interface AppConfig {
     qwenApiBaseUrl: string;
     qwenApiKey?: string;
     qwenModel: string;
+    qwenRequestTimeoutMs: number;
   };
   goVerify: {
     mode: AppEnv['GO_VERIFY_MODE'];
@@ -185,6 +187,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
       qwenApiBaseUrl: env.QWEN_API_BASE_URL,
       qwenApiKey: env.QWEN_API_KEY,
       qwenModel: env.QWEN_MODEL,
+      qwenRequestTimeoutMs: env.QWEN_REQUEST_TIMEOUT_MS,
     },
     goVerify: {
       mode: env.GO_VERIFY_MODE,

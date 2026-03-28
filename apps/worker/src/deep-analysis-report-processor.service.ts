@@ -232,6 +232,8 @@ const DISALLOWED_ENTITY_TERMS = new Set<string>([
 const DISALLOWED_PROJECT_TAGS = new Set<string>([
   'work', 'plan', 'task', 'tasks', 'project', 'projects', 'memory', 'workflow', 'agent', 'user',
 ]);
+const CHUNK_ANALYSIS_PROGRESS_START = 35;
+const CHUNK_ANALYSIS_PROGRESS_END = 59;
 
 function chunkArray<T>(items: T[], size: number): T[][] {
   const chunks: T[][] = [];
@@ -830,7 +832,7 @@ export class DeepAnalysisReportProcessorService {
       await this.repository.updateDeepAnalysisReport(reportRecord.id, {
         status: DeepAnalysisReportStatus.ANALYZING,
         stage: DeepAnalysisReportStage.CHUNK_ANALYSIS,
-        progressPercent: 35,
+        progressPercent: CHUNK_ANALYSIS_PROGRESS_START,
       });
       const chunkInsights = await this.analyzeChunks(
         reportRecord.id,
@@ -1010,13 +1012,28 @@ export class DeepAnalysisReportProcessorService {
           },
           relationships: Array.isArray(qwenInsight.parsed.relationships) ? qwenInsight.parsed.relationships : [],
         });
-        continue;
+      } else {
+        insights.push(this.buildHeuristicChunkInsight(chunk));
       }
 
-      insights.push(this.buildHeuristicChunkInsight(chunk));
+      await this.repository.updateDeepAnalysisReport(reportId, {
+        progressPercent: this.buildChunkAnalysisProgress(index + 1, chunks.length),
+      });
     }
 
     return insights;
+  }
+
+  private buildChunkAnalysisProgress(processedChunks: number, totalChunks: number): number {
+    if (totalChunks <= 0) {
+      return CHUNK_ANALYSIS_PROGRESS_START;
+    }
+
+    const spread = CHUNK_ANALYSIS_PROGRESS_END - CHUNK_ANALYSIS_PROGRESS_START;
+    return Math.min(
+      CHUNK_ANALYSIS_PROGRESS_END,
+      CHUNK_ANALYSIS_PROGRESS_START + Math.floor((processedChunks / totalChunks) * spread),
+    );
   }
 
   private buildHeuristicChunkInsight(memories: PreparedMemory[]): ChunkInsight {

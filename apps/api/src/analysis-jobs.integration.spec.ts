@@ -478,6 +478,7 @@ describe('analysis jobs integration', () => {
               qwenApiBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
               qwenApiKey: '',
               qwenModel: 'qwen3.5-pro',
+              qwenRequestTimeoutMs: 120000,
             },
             goVerify: {
               mode: 'noop',

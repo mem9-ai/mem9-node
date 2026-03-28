@@ -129,6 +129,7 @@ resource "aws_ecs_task_definition" "worker" {
         { name = "AWS_REGION", value = var.aws_region },
         { name = "QWEN_API_BASE_URL", value = var.qwen_api_base_url },
         { name = "QWEN_MODEL", value = var.qwen_model },
+        { name = "QWEN_REQUEST_TIMEOUT_MS", value = tostring(var.qwen_request_timeout_ms) },
         { name = "S3_BUCKET_ANALYSIS_PAYLOADS", value = aws_s3_bucket.analysis_payloads.bucket },
         { name = "SQS_ANALYSIS_BATCH_QUEUE_URL", value = aws_sqs_queue.analysis_batch.url },
         { name = "SQS_ANALYSIS_LLM_QUEUE_URL", value = aws_sqs_queue.analysis_llm.url },

@@ -57,6 +57,7 @@ function createConfig(overrides?: {
       qwenApiBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
       qwenApiKey: 'test-qwen-key',
       qwenModel: 'qwen3.5-pro',
+      qwenRequestTimeoutMs: 120000,
       ...overrides?.analysis,
     },
     goVerify: {
@@ -76,6 +77,7 @@ function createConfig(overrides?: {
 
 describe('qwen deep analysis service', () => {
   afterEach(() => {
+    jest.useRealTimers();
     jest.restoreAllMocks();
   });
 
@@ -203,6 +205,50 @@ describe('qwen deep analysis service', () => {
       parseSucceeded: false,
       errorCode: 'quota_exceeded',
       errorMessage: 'quota exceeded',
+    });
+    expect(result.usage).toEqual({
+      model: 'qwen3.5-pro',
+      promptTokens: null,
+      completionTokens: null,
+      totalTokens: null,
+      usageMissing: true,
+    });
+  });
+
+  it('times out stalled requests instead of waiting forever', async () => {
+    jest.useFakeTimers();
+    jest.spyOn(globalThis, 'fetch').mockImplementation((async (_input, init) => {
+      const signal = init?.signal as AbortSignal | undefined;
+      return await new Promise<Response>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => {
+          reject(Object.assign(new Error('The operation was aborted'), { name: 'AbortError' }));
+        });
+      });
+    }) as typeof fetch);
+
+    const service = new QwenDeepAnalysisService(createConfig({
+      analysis: {
+        qwenRequestTimeoutMs: 50,
+      },
+    }));
+    const resultPromise = service.createJson<{ summary: string }>(
+      'chunk_analysis',
+      'system prompt',
+      'user prompt',
+    );
+
+    await jest.advanceTimersByTimeAsync(60);
+    const result = await resultPromise;
+
+    expect(result.parsed).toBeNull();
+    expect(result.requestMeta).toMatchObject({
+      stage: 'chunk_analysis',
+      success: false,
+      requested: true,
+      httpStatus: null,
+      parseSucceeded: false,
+      errorCode: 'QWEN_REQUEST_TIMEOUT',
+      errorMessage: 'Qwen request timed out after 50ms',
     });
     expect(result.usage).toEqual({
       model: 'qwen3.5-pro',
