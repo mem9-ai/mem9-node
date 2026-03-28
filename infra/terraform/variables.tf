@@ -63,6 +63,26 @@ variable "mem9_source_api_base_url" {
   type = string
 }
 
+variable "mem9_source_request_timeout_ms" {
+  type    = number
+  default = 10000
+}
+
+variable "mem9_source_fetch_retries" {
+  type    = number
+  default = 2
+}
+
+variable "mem9_source_fetch_retry_base_ms" {
+  type    = number
+  default = 250
+}
+
+variable "mem9_source_delete_concurrency" {
+  type    = number
+  default = 4
+}
+
 variable "qwen_api_base_url" {
   type    = string
   default = "https://dashscope.aliyuncs.com/compatible-mode/v1"
