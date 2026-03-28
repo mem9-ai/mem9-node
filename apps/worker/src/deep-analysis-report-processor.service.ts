@@ -194,7 +194,7 @@ interface InternalCommentRuntimeError {
 interface InternalCommentRawResponse {
   at: string;
   stage: string;
-  reason: 'qwen_request_failed' | 'qwen_json_parse_failed' | 'report_validation_failed' | 'report_processing_failed';
+  reason: 'qwen_request_failed' | 'qwen_json_parse_failed' | 'report_validation_failed' | 'report_processing_failed' | 'report_repaired';
   source: 'message_content' | 'response_payload' | 'parsed_report';
   preview: string;
   truncated: boolean;
@@ -236,6 +236,12 @@ interface SynthesisOutcome {
   durationMs: number;
   fallbackUsed: boolean;
   errorCode: string | null;
+}
+
+interface ReportRepairOutcome {
+  report: DeepAnalysisReportDocument;
+  repairCount: number;
+  invalidEvidenceIds: string[];
 }
 
 const TOOL_HINTS = [
@@ -303,6 +309,14 @@ const INTERNAL_COMMENT_RUNTIME_ERROR_LIMIT = 10;
 const INTERNAL_COMMENT_STACK_LIMIT = 4000;
 const INTERNAL_COMMENT_RAW_RESPONSE_LIMIT = 10;
 const INTERNAL_COMMENT_RAW_RESPONSE_PREVIEW_LIMIT = 6000;
+const ALLOWED_DISCOVERY_KINDS = new Set<DeepAnalysisDiscoveryCard['kind']>([
+  'focus_area',
+  'collaborator',
+  'routine',
+  'decision',
+  'hygiene',
+  'opportunity',
+]);
 
 function chunkArray<T>(items: T[], size: number): T[][] {
   const chunks: T[][] = [];
@@ -327,6 +341,15 @@ function trimToString(value: unknown): string | null {
 
 function normalizeToken(value: unknown): string {
   return trimToString(value)?.toLowerCase() ?? '';
+}
+
+function normalizeLookupKey(value: unknown): string {
+  return trimToString(value)
+    ?.toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim()
+    .replace(/\s+/gu, ' ')
+    ?? '';
 }
 
 function coerceStringArray(value: unknown, limit = Number.POSITIVE_INFINITY): string[] {
@@ -952,6 +975,566 @@ function validateReport(
   }
 }
 
+function normalizePositiveNumber(value: unknown, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return fallback;
+  }
+
+  return value;
+}
+
+function normalizeConfidence(value: unknown, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback;
+  }
+
+  return Math.min(1, Math.max(0, value));
+}
+
+function createRepairDiagnostics(): {
+  repairCount: number;
+  invalidEvidenceIds: string[];
+} {
+  return {
+    repairCount: 0,
+    invalidEvidenceIds: [],
+  };
+}
+
+function noteRepair(
+  diagnostics: ReturnType<typeof createRepairDiagnostics>,
+  count = 1,
+): void {
+  diagnostics.repairCount += count;
+}
+
+function noteInvalidEvidenceIds(
+  diagnostics: ReturnType<typeof createRepairDiagnostics>,
+  ids: string[],
+): void {
+  const invalidIds = uniqueStrings(ids, 12);
+  if (invalidIds.length === 0) {
+    return;
+  }
+
+  diagnostics.invalidEvidenceIds = uniqueStrings(
+    [...diagnostics.invalidEvidenceIds, ...invalidIds],
+    12,
+  );
+  noteRepair(diagnostics);
+}
+
+function normalizeEvidenceIds(
+  value: unknown,
+  validMemoryIds: Set<string>,
+  diagnostics: ReturnType<typeof createRepairDiagnostics>,
+  limit = 6,
+): string[] {
+  const rawIds = coerceStringArray(value, limit);
+  const validIds: string[] = [];
+  const invalidIds: string[] = [];
+
+  for (const memoryId of rawIds) {
+    if (validMemoryIds.has(memoryId)) {
+      validIds.push(memoryId);
+    } else {
+      invalidIds.push(memoryId);
+    }
+  }
+
+  noteInvalidEvidenceIds(diagnostics, invalidIds);
+  return uniqueStrings(validIds, limit);
+}
+
+function normalizeTextList(
+  value: unknown,
+  fallback: string[],
+  diagnostics: ReturnType<typeof createRepairDiagnostics>,
+  limit: number,
+): string[] {
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+
+  const normalized = coerceStringArray(value, limit);
+  if (normalized.length === 0 && fallback.length > 0) {
+    noteRepair(diagnostics);
+    return fallback;
+  }
+
+  if (Array.isArray(value) && normalized.length < Math.min(value.length, limit)) {
+    noteRepair(diagnostics);
+  }
+
+  return normalized.length > 0 ? normalized : fallback;
+}
+
+function sanitizeThemeHighlights(
+  value: unknown,
+  fallback: DeepAnalysisThemeItem[],
+  diagnostics: ReturnType<typeof createRepairDiagnostics>,
+): DeepAnalysisThemeItem[] {
+  const fallbackByName = new Map(
+    fallback.map((item) => [normalizeLookupKey(item.name), item] as const),
+  );
+  let highlights: unknown[] | null = null;
+
+  if (Array.isArray(value)) {
+    highlights = value;
+    noteRepair(diagnostics);
+  } else if (isRecord(value) && Array.isArray(value.highlights)) {
+    highlights = value.highlights;
+  }
+
+  if (!highlights) {
+    return fallback;
+  }
+
+  const repaired = new Map<string, DeepAnalysisThemeItem>();
+
+  for (const item of highlights) {
+    const name = typeof item === 'string'
+      ? trimToString(item)
+      : isRecord(item)
+        ? trimToString(item.name)
+        : null;
+    const normalizedName = normalizeLookupKey(name);
+
+    if (!name || !normalizedName || DISALLOWED_THEME_TERMS.has(normalizedName)) {
+      noteRepair(diagnostics);
+      continue;
+    }
+
+    const fallbackItem = fallbackByName.get(normalizedName);
+    const description = isRecord(item)
+      ? trimToString(item.description) ?? fallbackItem?.description ?? `Recurring signal around ${name}.`
+      : fallbackItem?.description ?? `Recurring signal around ${name}.`;
+    const count = isRecord(item)
+      ? normalizePositiveNumber(item.count, fallbackItem?.count ?? 1)
+      : fallbackItem?.count ?? 1;
+
+    repaired.set(normalizedName, {
+      name,
+      count,
+      description,
+    });
+  }
+
+  return repaired.size > 0 ? [...repaired.values()].slice(0, 8) : fallback;
+}
+
+function sanitizeEntityGroups(
+  value: unknown,
+  fallback: DeepAnalysisEntityGroup[],
+  validMemoryIds: Set<string>,
+  diagnostics: ReturnType<typeof createRepairDiagnostics>,
+): DeepAnalysisEntityGroup[] {
+  if (!Array.isArray(value)) {
+    return fallback;
+  }
+
+  const fallbackByLabel = new Map(
+    fallback.map((item) => [normalizeLookupKey(item.label), item] as const),
+  );
+  const repaired = new Map<string, DeepAnalysisEntityGroup>();
+
+  for (const item of value) {
+    const label = typeof item === 'string'
+      ? trimToString(item)
+      : isRecord(item)
+        ? trimToString(item.label ?? item.name)
+        : null;
+    const normalizedLabel = normalizeLookupKey(label);
+
+    if (!label || !normalizedLabel || DISALLOWED_ENTITY_TERMS.has(normalizedLabel)) {
+      noteRepair(diagnostics);
+      continue;
+    }
+
+    const fallbackItem = fallbackByLabel.get(normalizedLabel);
+    const evidenceMemoryIds = isRecord(item)
+      ? normalizeEvidenceIds(item.evidenceMemoryIds, validMemoryIds, diagnostics, 6)
+      : [];
+    const finalEvidenceMemoryIds = evidenceMemoryIds.length > 0
+      ? evidenceMemoryIds
+      : fallbackItem?.evidenceMemoryIds ?? [];
+
+    if (evidenceMemoryIds.length === 0) {
+      noteRepair(diagnostics);
+    }
+    if (finalEvidenceMemoryIds.length === 0) {
+      continue;
+    }
+
+    const count = isRecord(item)
+      ? normalizePositiveNumber(item.count, fallbackItem?.count ?? finalEvidenceMemoryIds.length)
+      : fallbackItem?.count ?? finalEvidenceMemoryIds.length;
+    const existing = repaired.get(normalizedLabel);
+
+    if (existing) {
+      existing.count = Math.max(existing.count, count);
+      existing.evidenceMemoryIds = uniqueStrings(
+        [...existing.evidenceMemoryIds, ...finalEvidenceMemoryIds],
+        6,
+      );
+      continue;
+    }
+
+    repaired.set(normalizedLabel, {
+      label,
+      count,
+      evidenceMemoryIds: finalEvidenceMemoryIds,
+    });
+  }
+
+  return repaired.size > 0 ? [...repaired.values()].slice(0, 8) : fallback;
+}
+
+function relationshipKey(value: Pick<DeepAnalysisRelationship, 'source' | 'relation' | 'target'>): string {
+  return `${normalizeLookupKey(value.source)}|${normalizeLookupKey(value.relation)}|${normalizeLookupKey(value.target)}`;
+}
+
+function sanitizeRelationships(
+  value: unknown,
+  fallback: DeepAnalysisRelationship[],
+  validMemoryIds: Set<string>,
+  diagnostics: ReturnType<typeof createRepairDiagnostics>,
+): DeepAnalysisRelationship[] {
+  if (!Array.isArray(value)) {
+    return fallback;
+  }
+
+  const fallbackByKey = new Map(
+    fallback.map((item) => [relationshipKey(item), item] as const),
+  );
+  const repaired = new Map<string, DeepAnalysisRelationship>();
+
+  for (const item of value) {
+    if (!isRecord(item)) {
+      noteRepair(diagnostics);
+      continue;
+    }
+
+    const source = trimToString(item.source);
+    const relation = trimToString(item.relation);
+    const target = trimToString(item.target);
+    if (!source || !relation || !target) {
+      noteRepair(diagnostics);
+      continue;
+    }
+
+    const key = relationshipKey({ source, relation, target });
+    const fallbackItem = fallbackByKey.get(key);
+    const evidenceMemoryIds = normalizeEvidenceIds(item.evidenceMemoryIds, validMemoryIds, diagnostics, 6);
+    const finalEvidenceMemoryIds = evidenceMemoryIds.length > 0
+      ? evidenceMemoryIds
+      : fallbackItem?.evidenceMemoryIds ?? [];
+
+    if (evidenceMemoryIds.length === 0) {
+      noteRepair(diagnostics);
+    }
+    if (finalEvidenceMemoryIds.length === 0) {
+      continue;
+    }
+
+    const evidenceExcerpts = normalizeTextList(
+      item.evidenceExcerpts,
+      fallbackItem?.evidenceExcerpts ?? [],
+      diagnostics,
+      4,
+    );
+    const confidence = normalizeConfidence(item.confidence, fallbackItem?.confidence ?? 0.5);
+    const existing = repaired.get(key);
+
+    if (existing) {
+      existing.confidence = Math.max(existing.confidence, confidence);
+      existing.evidenceMemoryIds = uniqueStrings(
+        [...existing.evidenceMemoryIds, ...finalEvidenceMemoryIds],
+        6,
+      );
+      existing.evidenceExcerpts = uniqueStrings(
+        [...existing.evidenceExcerpts, ...evidenceExcerpts],
+        4,
+      );
+      continue;
+    }
+
+    repaired.set(key, {
+      source,
+      relation,
+      target,
+      confidence,
+      evidenceMemoryIds: finalEvidenceMemoryIds,
+      evidenceExcerpts,
+    });
+  }
+
+  return repaired.size > 0 ? [...repaired.values()].slice(0, 18) : fallback;
+}
+
+function normalizeDiscoveryKind(value: unknown): DeepAnalysisDiscoveryCard['kind'] | null {
+  const kind = trimToString(value);
+  if (!kind || !ALLOWED_DISCOVERY_KINDS.has(kind as DeepAnalysisDiscoveryCard['kind'])) {
+    return null;
+  }
+
+  return kind as DeepAnalysisDiscoveryCard['kind'];
+}
+
+function sanitizeDiscoveries(
+  value: unknown,
+  fallback: DeepAnalysisDiscoveryCard[],
+  validMemoryIds: Set<string>,
+  diagnostics: ReturnType<typeof createRepairDiagnostics>,
+): DeepAnalysisDiscoveryCard[] {
+  if (!Array.isArray(value)) {
+    return fallback;
+  }
+
+  const fallbackByKind = new Map(
+    fallback.map((item) => [item.kind, item] as const),
+  );
+  const fallbackById = new Map(
+    fallback.map((item) => [normalizeLookupKey(item.id), item] as const),
+  );
+  const fallbackByTitle = new Map(
+    fallback.map((item) => [normalizeLookupKey(item.title), item] as const),
+  );
+  const repaired: DeepAnalysisDiscoveryCard[] = [];
+
+  for (const item of value) {
+    if (!isRecord(item)) {
+      noteRepair(diagnostics);
+      continue;
+    }
+
+    const id = trimToString(item.id);
+    const title = trimToString(item.title);
+    const rawKind = normalizeDiscoveryKind(item.kind);
+    const fallbackItem =
+      (rawKind ? fallbackByKind.get(rawKind) : undefined)
+      ?? (id ? fallbackById.get(normalizeLookupKey(id)) : undefined)
+      ?? (title ? fallbackByTitle.get(normalizeLookupKey(title)) : undefined);
+    const kind = rawKind ?? fallbackItem?.kind ?? null;
+    const summary = trimToString(item.summary) ?? fallbackItem?.summary ?? null;
+    const finalTitle = title ?? fallbackItem?.title ?? null;
+    const finalId = id ?? fallbackItem?.id ?? (kind && finalTitle ? makeDiscoveryId(kind, finalTitle) : null);
+    const evidenceMemoryIds = normalizeEvidenceIds(item.evidenceMemoryIds, validMemoryIds, diagnostics, 6);
+    const finalEvidenceMemoryIds = evidenceMemoryIds.length > 0
+      ? evidenceMemoryIds
+      : fallbackItem?.evidenceMemoryIds ?? [];
+
+    if (evidenceMemoryIds.length === 0) {
+      noteRepair(diagnostics);
+    }
+    if (!kind || !summary || !finalTitle || !finalId || finalEvidenceMemoryIds.length === 0) {
+      continue;
+    }
+
+    repaired.push({
+      id: finalId,
+      kind,
+      title: finalTitle,
+      summary,
+      confidence: normalizeConfidence(item.confidence, fallbackItem?.confidence ?? 0.66),
+      evidenceMemoryIds: finalEvidenceMemoryIds,
+    });
+  }
+
+  return repaired.length > 0 ? uniqueDiscoveryCards(repaired, 6) : fallback;
+}
+
+function sanitizeEvidenceHighlights(
+  value: unknown,
+  fallback: DeepAnalysisEvidenceHighlight[],
+  validMemoryIds: Set<string>,
+  diagnostics: ReturnType<typeof createRepairDiagnostics>,
+): DeepAnalysisEvidenceHighlight[] {
+  if (!Array.isArray(value)) {
+    return fallback;
+  }
+
+  const fallbackByTitle = new Map(
+    fallback.map((item) => [normalizeLookupKey(item.title), item] as const),
+  );
+  const fallbackByDetail = new Map(
+    fallback.map((item) => [normalizeLookupKey(item.detail), item] as const),
+  );
+  const repaired: DeepAnalysisEvidenceHighlight[] = [];
+
+  for (const [index, item] of value.entries()) {
+    if (!isRecord(item)) {
+      noteRepair(diagnostics);
+      continue;
+    }
+
+    const title = trimToString(item.title);
+    const detail = trimToString(item.detail);
+    const fallbackItem =
+      (title ? fallbackByTitle.get(normalizeLookupKey(title)) : undefined)
+      ?? (detail ? fallbackByDetail.get(normalizeLookupKey(detail)) : undefined)
+      ?? fallback[index];
+    const finalTitle = title ?? fallbackItem?.title ?? null;
+    const finalDetail = detail ?? fallbackItem?.detail ?? null;
+    const memoryIds = normalizeEvidenceIds(item.memoryIds, validMemoryIds, diagnostics, 6);
+    const finalMemoryIds = memoryIds.length > 0
+      ? memoryIds
+      : fallbackItem?.memoryIds ?? [];
+
+    if (memoryIds.length === 0) {
+      noteRepair(diagnostics);
+    }
+    if (!finalTitle || !finalDetail || finalMemoryIds.length === 0) {
+      continue;
+    }
+
+    repaired.push({
+      title: finalTitle,
+      detail: finalDetail,
+      memoryIds: finalMemoryIds,
+    });
+  }
+
+  return repaired.length > 0 ? repaired.slice(0, 4) : fallback;
+}
+
+function sanitizeLowQualityExamples(
+  value: unknown,
+  fallback: DeepAnalysisQualityIssue[],
+  validMemoryIds: Set<string>,
+  diagnostics: ReturnType<typeof createRepairDiagnostics>,
+): DeepAnalysisQualityIssue[] {
+  if (!Array.isArray(value)) {
+    return fallback;
+  }
+
+  const fallbackByMemoryId = new Map(
+    fallback.map((item) => [item.memoryId, item] as const),
+  );
+  const repaired: DeepAnalysisQualityIssue[] = [];
+
+  for (const item of value) {
+    if (!isRecord(item)) {
+      noteRepair(diagnostics);
+      continue;
+    }
+
+    const memoryId = normalizeEvidenceIds([item.memoryId], validMemoryIds, diagnostics, 1)[0] ?? null;
+    if (!memoryId) {
+      noteRepair(diagnostics);
+      continue;
+    }
+
+    repaired.push({
+      memoryId,
+      reason: trimToString(item.reason) ?? fallbackByMemoryId.get(memoryId)?.reason ?? 'Low-information memory',
+    });
+  }
+
+  return repaired.length > 0 ? repaired.slice(0, 10) : fallback;
+}
+
+function sanitizeDuplicateClusters(
+  value: unknown,
+  fallback: DeepAnalysisReportDocument['quality']['duplicateClusters'],
+  validMemoryIds: Set<string>,
+  diagnostics: ReturnType<typeof createRepairDiagnostics>,
+): DeepAnalysisReportDocument['quality']['duplicateClusters'] {
+  if (!Array.isArray(value)) {
+    return fallback;
+  }
+
+  const repaired = value.flatMap((item) => {
+    if (!isRecord(item)) {
+      noteRepair(diagnostics);
+      return [];
+    }
+
+    const canonicalMemoryId = normalizeEvidenceIds([item.canonicalMemoryId], validMemoryIds, diagnostics, 1)[0] ?? null;
+    const duplicateMemoryIds = normalizeEvidenceIds(item.duplicateMemoryIds, validMemoryIds, diagnostics, 12)
+      .filter((memoryId) => memoryId !== canonicalMemoryId);
+
+    if (!canonicalMemoryId || duplicateMemoryIds.length === 0) {
+      noteRepair(diagnostics);
+      return [];
+    }
+
+    return [{
+      canonicalMemoryId,
+      duplicateMemoryIds,
+    }];
+  });
+
+  return repaired.length > 0 ? repaired.slice(0, 10) : fallback;
+}
+
+function sanitizeProductSignals(
+  value: unknown,
+  fallback: DeepAnalysisReportDocument['productSignals'],
+  diagnostics: ReturnType<typeof createRepairDiagnostics>,
+): DeepAnalysisReportDocument['productSignals'] {
+  if (!isRecord(value)) {
+    return fallback;
+  }
+
+  const candidateNodes = Array.isArray(value.candidateNodes)
+    ? value.candidateNodes.flatMap((item) => {
+      if (!isRecord(item)) {
+        noteRepair(diagnostics);
+        return [];
+      }
+
+      const label = trimToString(item.label);
+      const kind = trimToString(item.kind);
+      if (!label || !kind) {
+        noteRepair(diagnostics);
+        return [];
+      }
+
+      return [{
+        label,
+        kind,
+        count: normalizePositiveNumber(item.count, 1),
+      }];
+    }).slice(0, 8)
+    : fallback.candidateNodes;
+  const candidateEdges = Array.isArray(value.candidateEdges)
+    ? value.candidateEdges.flatMap((item) => {
+      if (!isRecord(item)) {
+        noteRepair(diagnostics);
+        return [];
+      }
+
+      const source = trimToString(item.source);
+      const relation = trimToString(item.relation);
+      const target = trimToString(item.target);
+      if (!source || !relation || !target) {
+        noteRepair(diagnostics);
+        return [];
+      }
+
+      return [{
+        source,
+        relation,
+        target,
+        confidence: normalizeConfidence(item.confidence, 0.5),
+      }];
+    }).slice(0, 10)
+    : fallback.candidateEdges;
+  const searchSeeds = normalizeTextList(
+    value.searchSeeds,
+    fallback.searchSeeds,
+    diagnostics,
+    8,
+  );
+
+  return {
+    candidateNodes: candidateNodes.length > 0 ? candidateNodes : fallback.candidateNodes,
+    candidateEdges: candidateEdges.length > 0 ? candidateEdges : fallback.candidateEdges,
+    searchSeeds,
+  };
+}
+
 function createInternalComment(model: string): InternalCommentPayload {
   return {
     version: 1,
@@ -1169,6 +1752,7 @@ export class DeepAnalysisReportProcessorService {
       const payloadBuffer = await this.storage.getObjectBuffer(reportRecord.sourceSnapshotObjectKey);
       const payload = gunzipJson<SourceSnapshotPayload>(payloadBuffer);
       const prepared = this.prepareMemories(payload.memories);
+      const memoryIds = new Set(payload.memories.map((memory) => memory.id));
       const totalChunks = this.buildChunkCount(prepared.uniqueMemories.length);
       const chunkConcurrency = this.buildChunkConcurrency(totalChunks);
       currentStage = DeepAnalysisReportStage.CHUNK_ANALYSIS;
@@ -1227,8 +1811,20 @@ export class DeepAnalysisReportProcessorService {
         chunkInsights,
         corpusSignals,
       );
-      let report = synthesisOutcome.report;
-      latestSynthesisReport = synthesisOutcome.fallbackUsed ? null : synthesisOutcome.report;
+      const rawSynthesisReport = synthesisOutcome.fallbackUsed ? null : synthesisOutcome.report;
+      latestSynthesisReport = rawSynthesisReport;
+      const repairOutcome = rawSynthesisReport
+        ? this.normalizeAndRepairSynthesizedReport(
+          reportRecord.id,
+          rawSynthesisReport,
+          reportRecord.lang,
+          prepared,
+          corpusSignals,
+          memoryIds,
+          internalComment,
+        )
+        : null;
+      let report = repairOutcome?.report ?? synthesisOutcome.report;
       appendInternalEvent(internalComment, 'info', currentStage, 'deep_analysis_global_synthesis_completed', {
         reportId: reportRecord.id,
         durationMs: synthesisOutcome.durationMs,
@@ -1248,8 +1844,6 @@ export class DeepAnalysisReportProcessorService {
         stage: DeepAnalysisReportStage.VALIDATE,
         progressPercent: 90,
       });
-
-      const memoryIds = new Set(payload.memories.map((memory) => memory.id));
 
       try {
         validateReport(
@@ -1935,6 +2529,155 @@ export class DeepAnalysisReportProcessorService {
     };
   }
 
+  private normalizeAndRepairSynthesizedReport(
+    reportId: string,
+    report: DeepAnalysisReportDocument,
+    lang: string,
+    corpus: PreparedCorpus,
+    corpusSignals: CorpusSignals,
+    validMemoryIds: Set<string>,
+    internalComment: InternalCommentPayload,
+  ): ReportRepairOutcome {
+    const diagnostics = createRepairDiagnostics();
+    const fallbackReport = this.buildHeuristicReport(lang, corpus, corpusSignals);
+    const rawReport: Record<string, unknown> = isRecord(report) ? report : {};
+    const rawOverview: Record<string, unknown> = isRecord(rawReport.overview) ? rawReport.overview : {};
+    const rawPersona: Record<string, unknown> = isRecord(rawReport.persona) ? rawReport.persona : {};
+    const rawEntities: Record<string, unknown> = isRecord(rawReport.entities) ? rawReport.entities : {};
+    const rawQuality: Record<string, unknown> = isRecord(rawReport.quality) ? rawReport.quality : {};
+
+    const repairedReport: DeepAnalysisReportDocument = {
+      overview: {
+        memoryCount: corpus.originalCount,
+        deduplicatedMemoryCount: corpus.deduplicatedCount,
+        generatedAt: trimToString(rawOverview.generatedAt) ?? fallbackReport.overview.generatedAt,
+        lang,
+        timeSpan: {
+          start: trimToString(rawOverview.timeSpan && isRecord(rawOverview.timeSpan) ? rawOverview.timeSpan.start : null)
+            ?? fallbackReport.overview.timeSpan.start,
+          end: trimToString(rawOverview.timeSpan && isRecord(rawOverview.timeSpan) ? rawOverview.timeSpan.end : null)
+            ?? fallbackReport.overview.timeSpan.end,
+        },
+      },
+      persona: {
+        summary: (trimToString(rawPersona.summary)?.length ?? 0) >= 80
+          ? trimToString(rawPersona.summary) ?? fallbackReport.persona.summary
+          : fallbackReport.persona.summary,
+        workingStyle: normalizeTextList(rawPersona.workingStyle, fallbackReport.persona.workingStyle ?? [], diagnostics, 5),
+        goals: normalizeTextList(rawPersona.goals, fallbackReport.persona.goals ?? [], diagnostics, 5),
+        preferences: normalizeTextList(rawPersona.preferences, fallbackReport.persona.preferences ?? [], diagnostics, 5),
+        constraints: normalizeTextList(rawPersona.constraints, fallbackReport.persona.constraints ?? [], diagnostics, 5),
+        decisionSignals: normalizeTextList(rawPersona.decisionSignals, fallbackReport.persona.decisionSignals ?? [], diagnostics, 5),
+        notableRoutines: normalizeTextList(rawPersona.notableRoutines, fallbackReport.persona.notableRoutines ?? [], diagnostics, 5),
+        contradictionsOrTensions: normalizeTextList(
+          rawPersona.contradictionsOrTensions,
+          fallbackReport.persona.contradictionsOrTensions ?? [],
+          diagnostics,
+          5,
+        ),
+        evidenceHighlights: sanitizeEvidenceHighlights(
+          rawPersona.evidenceHighlights,
+          fallbackReport.persona.evidenceHighlights ?? [],
+          validMemoryIds,
+          diagnostics,
+        ),
+      },
+      themeLandscape: {
+        highlights: sanitizeThemeHighlights(
+          rawReport.themeLandscape,
+          fallbackReport.themeLandscape.highlights,
+          diagnostics,
+        ),
+      },
+      entities: {
+        people: sanitizeEntityGroups(rawEntities.people, fallbackReport.entities.people, validMemoryIds, diagnostics),
+        teams: sanitizeEntityGroups(rawEntities.teams, fallbackReport.entities.teams, validMemoryIds, diagnostics),
+        projects: sanitizeEntityGroups(rawEntities.projects, fallbackReport.entities.projects, validMemoryIds, diagnostics),
+        tools: sanitizeEntityGroups(rawEntities.tools, fallbackReport.entities.tools, validMemoryIds, diagnostics),
+        places: sanitizeEntityGroups(rawEntities.places, fallbackReport.entities.places, validMemoryIds, diagnostics),
+      },
+      relationships: sanitizeRelationships(
+        rawReport.relationships,
+        fallbackReport.relationships,
+        validMemoryIds,
+        diagnostics,
+      ),
+      discoveries: sanitizeDiscoveries(
+        rawReport.discoveries,
+        fallbackReport.discoveries ?? [],
+        validMemoryIds,
+        diagnostics,
+      ),
+      quality: {
+        duplicateRatio: fallbackReport.quality.duplicateRatio,
+        duplicateMemoryCount: fallbackReport.quality.duplicateMemoryCount,
+        noisyMemoryCount: fallbackReport.quality.noisyMemoryCount,
+        duplicateClusters: sanitizeDuplicateClusters(
+          rawQuality.duplicateClusters,
+          fallbackReport.quality.duplicateClusters,
+          validMemoryIds,
+          diagnostics,
+        ),
+        lowQualityExamples: sanitizeLowQualityExamples(
+          rawQuality.lowQualityExamples,
+          fallbackReport.quality.lowQualityExamples,
+          validMemoryIds,
+          diagnostics,
+        ),
+        coverageGaps: normalizeTextList(
+          rawQuality.coverageGaps,
+          fallbackReport.quality.coverageGaps,
+          diagnostics,
+          6,
+        ),
+      },
+      recommendations: normalizeTextList(
+        rawReport.recommendations,
+        fallbackReport.recommendations,
+        diagnostics,
+        6,
+      ),
+      productSignals: sanitizeProductSignals(
+        rawReport.productSignals,
+        fallbackReport.productSignals,
+        diagnostics,
+      ),
+    };
+
+    repairedReport.quality.noisyMemoryCount = repairedReport.quality.lowQualityExamples.length;
+
+    if (diagnostics.repairCount > 0 || diagnostics.invalidEvidenceIds.length > 0) {
+      const rawPreview = serializeRawPreview(report);
+      if (rawPreview) {
+        appendRawResponse(internalComment, {
+          stage: DeepAnalysisReportStage.GLOBAL_SYNTHESIS,
+          reason: 'report_repaired',
+          source: 'parsed_report',
+          preview: rawPreview.preview,
+          truncated: rawPreview.truncated,
+        });
+      }
+      appendInternalEvent(internalComment, 'info', DeepAnalysisReportStage.GLOBAL_SYNTHESIS, 'deep_analysis_report_repaired', {
+        reportId,
+        repairCount: diagnostics.repairCount,
+        invalidEvidenceIdCount: diagnostics.invalidEvidenceIds.length,
+        invalidEvidenceIdsSample: diagnostics.invalidEvidenceIds.slice(0, 5).join(', ') || null,
+      });
+      this.logInfo('deep_analysis_report_repaired', {
+        reportId,
+        repairCount: diagnostics.repairCount,
+        invalidEvidenceIdCount: diagnostics.invalidEvidenceIds.length,
+        invalidEvidenceIdsSample: diagnostics.invalidEvidenceIds.slice(0, 5).join(', ') || null,
+      });
+    }
+
+    return {
+      report: repairedReport,
+      repairCount: diagnostics.repairCount,
+      invalidEvidenceIds: diagnostics.invalidEvidenceIds,
+    };
+  }
+
   private async synthesizeReport(
     reportId: string,
     internalComment: InternalCommentPayload,
@@ -1949,6 +2692,12 @@ export class DeepAnalysisReportProcessorService {
       [
         'You synthesize a deep memory analysis report and must return JSON only.',
         'Preserve the exact top-level keys: overview, persona, themeLandscape, entities, relationships, discoveries, quality, recommendations, productSignals.',
+        'Use only real memory ids copied verbatim from the provided inputs.',
+        'Never emit chunk ids, chunk_insight ids, array indexes, placeholders, or any synthesized ids inside evidenceMemoryIds or memoryIds.',
+        'themeLandscape must be an object with shape {"highlights":[{"name":string,"count":number,"description":string}]}.',
+        'entities.people, entities.teams, entities.projects, entities.tools, and entities.places must each be arrays of objects {label, count, evidenceMemoryIds}.',
+        'relationships must be objects {source, relation, target, confidence, evidenceMemoryIds, evidenceExcerpts}.',
+        'discoveries must be objects {id, kind, title, summary, confidence, evidenceMemoryIds}.',
         'Do not output stopwords or generic terms such as the, and, for, user, agent, assistant, self, team, project, task, system, memory, workflow.',
         'Persona.summary must be 2-4 strong sentences describing sustained behavior, priorities, and routines across the corpus.',
         'Persona fields must summarize stable patterns using evidence-based statements, not one-off facts.',

@@ -901,7 +901,7 @@ describe('deep analysis report processor service', () => {
     ]);
   });
 
-  it('stores the raw synthesis report preview when validation fails and falls back to heuristic output', async () => {
+  it('repairs synthesized reports with invalid evidence ids and preserves LLM narrative fields', async () => {
     const repository = {
       getDeepAnalysisReport: jest.fn(async () => ({
         id: 'dar_validation_failure',
@@ -985,20 +985,18 @@ describe('deep analysis report processor service', () => {
           },
         ],
       },
-      themeLandscape: {
-        highlights: [
-          {
-            name: 'dashboard roadmap',
-            count: 2,
-            description: 'Repeated dashboard planning and reporting work.',
-          },
-        ],
-      },
+      themeLandscape: [
+        {
+          name: 'dashboard roadmap',
+          count: 2,
+          description: 'Repeated dashboard planning and reporting work.',
+        },
+      ],
       entities: {
-        people: [{ label: 'Alice Johnson', count: 1, evidenceMemoryIds: ['mem_1'] }],
-        teams: [{ label: 'Platform Team', count: 1, evidenceMemoryIds: ['mem_2'] }],
-        projects: [{ label: 'dashboard roadmap', count: 2, evidenceMemoryIds: ['mem_1', 'mem_4'] }],
-        tools: [{ label: 'React', count: 1, evidenceMemoryIds: ['mem_1'] }],
+        people: [{ label: 'Alice Johnson', role: 'Partner', count: 1, evidenceMemoryIds: ['chunk_insight_2'] }],
+        teams: [{ label: 'Platform Team', function: 'Operations', count: 1, evidenceMemoryIds: ['mem_2'] }],
+        projects: [{ label: 'dashboard roadmap', description: 'Roadmap work', count: 2, evidenceMemoryIds: ['chunk_insight_3'] }],
+        tools: [{ label: 'React', category: 'frontend', count: 1, evidenceMemoryIds: ['mem_1'] }],
         places: [],
       },
       relationships: [],
@@ -1099,16 +1097,60 @@ describe('deep analysis report processor service', () => {
       }),
     );
 
+    expect(storage.putJson).toHaveBeenCalledTimes(1);
+    const [, storedReport] = storage.putJson.mock.calls[0] as unknown as [string, {
+      persona: { summary: string };
+      themeLandscape: { highlights: Array<{ name: string; description: string }> };
+      entities: {
+        people: Array<{ label: string; evidenceMemoryIds: string[] }>;
+        projects: Array<{ label: string; evidenceMemoryIds: string[] }>;
+      };
+      discoveries: Array<{ title: string; evidenceMemoryIds: string[] }>;
+    }];
+
+    expect(storedReport.persona.summary).toBe(invalidSynthesisReport.persona.summary);
+    expect(storedReport.themeLandscape.highlights).toEqual([
+      expect.objectContaining({
+        name: 'dashboard roadmap',
+        description: 'Repeated dashboard planning and reporting work.',
+      }),
+    ]);
+    expect(storedReport.entities.people).toEqual([
+      expect.objectContaining({
+        label: 'Alice Johnson',
+        evidenceMemoryIds: ['mem_1'],
+      }),
+    ]);
+    expect(storedReport.entities.projects).toEqual([
+      expect.objectContaining({
+        label: 'dashboard roadmap',
+        evidenceMemoryIds: ['mem_1', 'mem_4'],
+      }),
+    ]);
+    expect(storedReport.discoveries).toEqual([
+      expect.objectContaining({
+        title: 'Focus area',
+      }),
+    ]);
+    const allEvidenceIds = [
+      ...storedReport.entities.people.flatMap((item) => item.evidenceMemoryIds),
+      ...storedReport.entities.projects.flatMap((item) => item.evidenceMemoryIds),
+      ...storedReport.discoveries.flatMap((item) => item.evidenceMemoryIds),
+    ];
+    expect(storedReport.discoveries[0]?.evidenceMemoryIds).toEqual(expect.arrayContaining(['mem_1', 'mem_4']));
+    expect(allEvidenceIds).not.toEqual(expect.arrayContaining([
+      'chunk_insight_2',
+      'chunk_insight_3',
+      'missing_mem_1',
+    ]));
+    expect(allEvidenceIds.every((memoryId) => ['mem_1', 'mem_2', 'mem_3', 'mem_4'].includes(memoryId))).toBe(true);
+
     const finalCall = (
       repository.updateDeepAnalysisReport.mock.calls as unknown as Array<[string, { internalComment?: string }]>
     ).at(-1);
     const finalInternalComment = JSON.parse(String(finalCall?.[1]?.internalComment)) as {
       events: Array<{ event: string }>;
-      runtimeErrors: Array<{
-        stage: string;
-        errorCode: string | null;
-        errorMessage: string;
-      }>;
+      runtimeErrors: Array<unknown>;
       rawResponses: Array<{
         stage: string;
         reason: string;
@@ -1118,22 +1160,25 @@ describe('deep analysis report processor service', () => {
     };
 
     expect(finalInternalComment.events.map((item) => item.event)).toEqual(expect.arrayContaining([
-      'deep_analysis_validation_failed',
+      'deep_analysis_report_repaired',
       'deep_analysis_report_completed',
     ]));
-    expect(finalInternalComment.runtimeErrors).toEqual([
+    expect(finalInternalComment.events).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        stage: 'VALIDATE',
-        errorCode: 'DEEP_ANALYSIS_REPORT_INVALID',
-        errorMessage: expect.stringContaining('missing_mem_1'),
+        event: 'deep_analysis_report_repaired',
+        fields: expect.objectContaining({
+          invalidEvidenceIdCount: 3,
+          invalidEvidenceIdsSample: expect.stringContaining('chunk_insight_2'),
+        }),
       }),
-    ]);
+    ]));
+    expect(finalInternalComment.runtimeErrors).toEqual([]);
     expect(finalInternalComment.rawResponses).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        stage: 'VALIDATE',
-        reason: 'report_validation_failed',
+        stage: 'GLOBAL_SYNTHESIS',
+        reason: 'report_repaired',
         source: 'parsed_report',
-        preview: expect.stringContaining('missing_mem_1'),
+        preview: expect.stringContaining('chunk_insight_2'),
       }),
     ]));
   });
