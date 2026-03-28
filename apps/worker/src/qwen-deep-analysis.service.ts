@@ -12,6 +12,12 @@ export interface QwenUsageRecord {
   usageMissing: boolean;
 }
 
+export interface QwenRawResponse {
+  source: 'message_content' | 'response_payload';
+  preview: string;
+  truncated: boolean;
+}
+
 export interface QwenRequestMeta {
   stage: QwenAuditStage;
   success: boolean;
@@ -28,10 +34,40 @@ export interface QwenJsonResult<T> {
   parsed: T | null;
   usage: QwenUsageRecord | null;
   requestMeta: QwenRequestMeta;
+  rawResponse: QwenRawResponse | null;
 }
+
+const RAW_RESPONSE_PREVIEW_LIMIT = 6000;
 
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
+}
+
+function buildRawResponse(value: unknown, source: QwenRawResponse['source']): QwenRawResponse | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  let serialized: string;
+  if (typeof value === 'string') {
+    serialized = value;
+  } else {
+    try {
+      serialized = JSON.stringify(value);
+    } catch {
+      serialized = String(value);
+    }
+  }
+
+  if (serialized.length === 0) {
+    return null;
+  }
+
+  return {
+    source,
+    preview: serialized.slice(0, RAW_RESPONSE_PREVIEW_LIMIT),
+    truncated: serialized.length > RAW_RESPONSE_PREVIEW_LIMIT,
+  };
 }
 
 @Injectable()
@@ -54,6 +90,7 @@ export class QwenDeepAnalysisService {
       return {
         parsed: null,
         usage: null,
+        rawResponse: null,
         requestMeta: {
           stage,
           success: false,
@@ -72,6 +109,7 @@ export class QwenDeepAnalysisService {
       return {
         parsed: null,
         usage: null,
+        rawResponse: null,
         requestMeta: {
           stage,
           success: false,
@@ -151,6 +189,7 @@ export class QwenDeepAnalysisService {
         return {
           parsed: null,
           usage,
+          rawResponse: buildRawResponse(payload, 'response_payload'),
           requestMeta: {
             stage,
             success: false,
@@ -169,6 +208,7 @@ export class QwenDeepAnalysisService {
         return {
           parsed: null,
           usage,
+          rawResponse: buildRawResponse(payload, 'response_payload'),
           requestMeta: {
             stage,
             success: false,
@@ -187,6 +227,7 @@ export class QwenDeepAnalysisService {
         return {
           parsed: JSON.parse(content) as T,
           usage,
+          rawResponse: null,
           requestMeta: {
             stage,
             success: true,
@@ -205,6 +246,7 @@ export class QwenDeepAnalysisService {
         return {
           parsed: null,
           usage,
+          rawResponse: buildRawResponse(content, 'message_content'),
           requestMeta: {
             stage,
             success: false,
@@ -236,6 +278,7 @@ export class QwenDeepAnalysisService {
           totalTokens: null,
           usageMissing: true,
         },
+        rawResponse: null,
         requestMeta: {
           stage,
           success: false,

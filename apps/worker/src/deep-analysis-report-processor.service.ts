@@ -191,6 +191,15 @@ interface InternalCommentRuntimeError {
   isTrimError: boolean;
 }
 
+interface InternalCommentRawResponse {
+  at: string;
+  stage: string;
+  reason: 'qwen_request_failed' | 'qwen_json_parse_failed' | 'report_validation_failed' | 'report_processing_failed';
+  source: 'message_content' | 'response_payload' | 'parsed_report';
+  preview: string;
+  truncated: boolean;
+}
+
 interface InternalCommentPayload {
   version: 1;
   provider: 'qwen';
@@ -199,6 +208,7 @@ interface InternalCommentPayload {
   calls: InternalCommentCall[];
   events: InternalCommentEvent[];
   runtimeErrors: InternalCommentRuntimeError[];
+  rawResponses: InternalCommentRawResponse[];
 }
 
 interface ChunkAnalysisSummary {
@@ -291,6 +301,8 @@ const INTERNAL_COMMENT_STAGE_ORDER: Record<QwenAuditStage, number> = {
 const INTERNAL_COMMENT_EVENT_LIMIT = 80;
 const INTERNAL_COMMENT_RUNTIME_ERROR_LIMIT = 10;
 const INTERNAL_COMMENT_STACK_LIMIT = 4000;
+const INTERNAL_COMMENT_RAW_RESPONSE_LIMIT = 10;
+const INTERNAL_COMMENT_RAW_RESPONSE_PREVIEW_LIMIT = 6000;
 
 function chunkArray<T>(items: T[], size: number): T[][] {
   const chunks: T[][] = [];
@@ -797,13 +809,15 @@ function buildPreview(report: DeepAnalysisReportDocument): DeepAnalysisReportPre
 }
 
 function validateMemoryReferences(memoryIds: Set<string>, ids: string[], errorMessage: string): void {
-  for (const memoryId of ids) {
-    if (!memoryIds.has(memoryId)) {
-      throw new AppError(errorMessage, {
-        statusCode: 500,
-        code: 'DEEP_ANALYSIS_REPORT_INVALID',
-      });
-    }
+  const unknownMemoryIds = uniqueStrings(ids.filter((memoryId) => !memoryIds.has(memoryId)), 5);
+  if (unknownMemoryIds.length > 0) {
+    const suffix = unknownMemoryIds.length === 1
+      ? unknownMemoryIds[0]
+      : `${unknownMemoryIds.join(', ')}`;
+    throw new AppError(`${errorMessage}: ${suffix}`, {
+      statusCode: 500,
+      code: 'DEEP_ANALYSIS_REPORT_INVALID',
+    });
   }
 }
 
@@ -954,6 +968,7 @@ function createInternalComment(model: string): InternalCommentPayload {
     calls: [],
     events: [],
     runtimeErrors: [],
+    rawResponses: [],
   };
 }
 
@@ -1010,6 +1025,63 @@ function appendRuntimeError(
   }
 }
 
+function serializeRawPreview(
+  value: unknown,
+  limit = INTERNAL_COMMENT_RAW_RESPONSE_PREVIEW_LIMIT,
+): { preview: string; truncated: boolean } | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  let serialized: string;
+  if (typeof value === 'string') {
+    serialized = value;
+  } else {
+    try {
+      serialized = JSON.stringify(value);
+    } catch {
+      serialized = String(value);
+    }
+  }
+
+  if (serialized.length === 0) {
+    return null;
+  }
+
+  return {
+    preview: serialized.slice(0, limit),
+    truncated: serialized.length > limit,
+  };
+}
+
+function appendRawResponse(
+  internalComment: InternalCommentPayload,
+  entry: Omit<InternalCommentRawResponse, 'at'>,
+): void {
+  const lastEntry = internalComment.rawResponses.at(-1);
+  if (
+    lastEntry
+    && lastEntry.stage === entry.stage
+    && lastEntry.reason === entry.reason
+    && lastEntry.source === entry.source
+    && lastEntry.preview === entry.preview
+  ) {
+    return;
+  }
+
+  internalComment.rawResponses.push({
+    at: new Date().toISOString(),
+    ...entry,
+  });
+
+  if (internalComment.rawResponses.length > INTERNAL_COMMENT_RAW_RESPONSE_LIMIT) {
+    internalComment.rawResponses.splice(
+      0,
+      internalComment.rawResponses.length - INTERNAL_COMMENT_RAW_RESPONSE_LIMIT,
+    );
+  }
+}
+
 function parseInternalComment(
   value: string | null | undefined,
   fallbackModel: string,
@@ -1038,6 +1110,9 @@ function parseInternalComment(
       events: Array.isArray(parsed.events) ? parsed.events as InternalCommentEvent[] : [],
       runtimeErrors: Array.isArray(parsed.runtimeErrors)
         ? parsed.runtimeErrors as InternalCommentRuntimeError[]
+        : [],
+      rawResponses: Array.isArray(parsed.rawResponses)
+        ? parsed.rawResponses as InternalCommentRawResponse[]
         : [],
     };
   } catch {
@@ -1069,6 +1144,7 @@ export class DeepAnalysisReportProcessorService {
       failureCount: 0,
     };
     let currentStage: DeepAnalysisReportStage = DeepAnalysisReportStage.PREPROCESS;
+    let latestSynthesisReport: DeepAnalysisReportDocument | null = null;
 
     if (reportRecord.status === DeepAnalysisReportStatus.COMPLETED) {
       return;
@@ -1152,6 +1228,7 @@ export class DeepAnalysisReportProcessorService {
         corpusSignals,
       );
       let report = synthesisOutcome.report;
+      latestSynthesisReport = synthesisOutcome.fallbackUsed ? null : synthesisOutcome.report;
       appendInternalEvent(internalComment, 'info', currentStage, 'deep_analysis_global_synthesis_completed', {
         reportId: reportRecord.id,
         durationMs: synthesisOutcome.durationMs,
@@ -1183,6 +1260,16 @@ export class DeepAnalysisReportProcessorService {
         );
       } catch (error) {
         appendRuntimeError(internalComment, currentStage, error, 'DEEP_ANALYSIS_REPORT_INVALID');
+        const rawPreview = serializeRawPreview(latestSynthesisReport ?? report);
+        if (rawPreview) {
+          appendRawResponse(internalComment, {
+            stage: currentStage,
+            reason: 'report_validation_failed',
+            source: 'parsed_report',
+            preview: rawPreview.preview,
+            truncated: rawPreview.truncated,
+          });
+        }
         appendInternalEvent(internalComment, 'warn', currentStage, 'deep_analysis_validation_failed', {
           reportId: reportRecord.id,
           errorCode: 'DEEP_ANALYSIS_REPORT_INVALID',
@@ -1226,6 +1313,21 @@ export class DeepAnalysisReportProcessorService {
       });
     } catch (error) {
       const errorCode = error instanceof AppError ? error.code : 'DEEP_ANALYSIS_PROCESSING_FAILED';
+      if (
+        latestSynthesisReport
+        && (currentStage === DeepAnalysisReportStage.GLOBAL_SYNTHESIS || currentStage === DeepAnalysisReportStage.VALIDATE)
+      ) {
+        const rawPreview = serializeRawPreview(latestSynthesisReport);
+        if (rawPreview) {
+          appendRawResponse(internalComment, {
+            stage: currentStage,
+            reason: 'report_processing_failed',
+            source: 'parsed_report',
+            preview: rawPreview.preview,
+            truncated: rawPreview.truncated,
+          });
+        }
+      }
       appendRuntimeError(internalComment, currentStage, error, errorCode);
       appendInternalEvent(internalComment, 'error', currentStage, 'deep_analysis_report_failed', {
         reportId: reportRecord.id,
@@ -1925,6 +2027,17 @@ export class DeepAnalysisReportProcessorService {
       errorCode: result.requestMeta.errorCode,
       errorMessage: result.requestMeta.errorMessage,
     });
+    if (result.rawResponse) {
+      appendRawResponse(internalComment, {
+        stage: result.requestMeta.stage,
+        reason: result.requestMeta.errorCode === 'QWEN_JSON_PARSE_FAILED'
+          ? 'qwen_json_parse_failed'
+          : 'qwen_request_failed',
+        source: result.rawResponse.source,
+        preview: result.rawResponse.preview,
+        truncated: result.rawResponse.truncated,
+      });
+    }
     internalComment.calls.sort((left, right) =>
       INTERNAL_COMMENT_STAGE_ORDER[left.stage] - INTERNAL_COMMENT_STAGE_ORDER[right.stage] ||
       left.index - right.index ||

@@ -121,6 +121,7 @@ describe('qwen deep analysis service', () => {
       httpStatus: 200,
       parseSucceeded: true,
     });
+    expect(result.rawResponse).toBeNull();
     expect(result.usage).toEqual({
       model: TEST_QWEN_MODEL,
       promptTokens: 123,
@@ -179,6 +180,11 @@ describe('qwen deep analysis service', () => {
       httpStatus: 200,
       parseSucceeded: false,
       errorCode: 'QWEN_JSON_PARSE_FAILED',
+    });
+    expect(result.rawResponse).toEqual({
+      source: 'message_content',
+      preview: '{bad json}',
+      truncated: false,
     });
     expect(result.usage).toEqual({
       model: TEST_QWEN_MODEL,

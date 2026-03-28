@@ -156,6 +156,11 @@ function createSynthesisResult() {
       requestedAt: '2026-03-28T00:00:02.000Z',
       finishedAt: '2026-03-28T00:00:03.000Z',
     },
+    rawResponse: {
+      source: 'message_content' as const,
+      preview: '{"summary": invalid json',
+      truncated: false,
+    },
   };
 }
 
@@ -896,6 +901,243 @@ describe('deep analysis report processor service', () => {
     ]);
   });
 
+  it('stores the raw synthesis report preview when validation fails and falls back to heuristic output', async () => {
+    const repository = {
+      getDeepAnalysisReport: jest.fn(async () => ({
+        id: 'dar_validation_failure',
+        status: 'QUEUED',
+        lang: 'en',
+        sourceSnapshotObjectKey: 'deep-analysis/reports/dar_validation_failure/source.json.gz',
+        internalComment: null,
+      })),
+      updateDeepAnalysisReport: jest.fn(async () => undefined),
+    };
+    const storage = {
+      getObjectBuffer: jest.fn(async () => gzipJson({
+        fetchedAt: '2026-03-28T00:00:00Z',
+        memoryCount: 4,
+        memories: [
+          {
+            id: 'mem_1',
+            content: 'Prefer structured memory capture and work with Alice Johnson on the dashboard roadmap.',
+            createdAt: '2026-03-20T00:00:00Z',
+            updatedAt: '2026-03-20T00:00:00Z',
+            memoryType: 'insight',
+            tags: ['dashboard-roadmap'],
+            metadata: null,
+          },
+          {
+            id: 'mem_2',
+            content: 'Every morning Bosn reviews traffic dashboards and prioritizes concise but detailed summaries for the Platform Team.',
+            createdAt: '2026-03-21T00:00:00Z',
+            updatedAt: '2026-03-21T00:00:00Z',
+            memoryType: 'insight',
+            tags: ['traffic-ops'],
+            metadata: null,
+          },
+          {
+            id: 'mem_3',
+            content: 'Need to automate duplicate cleanup for memory analysis while keeping canonical entries stable.',
+            createdAt: '2026-03-22T00:00:00Z',
+            updatedAt: '2026-03-22T00:00:00Z',
+            memoryType: 'insight',
+            tags: ['memory-analysis'],
+            metadata: null,
+          },
+          {
+            id: 'mem_4',
+            content: 'Bosn plans to keep dashboard reporting workflows durable and document tradeoffs explicitly.',
+            createdAt: '2026-03-23T00:00:00Z',
+            updatedAt: '2026-03-23T00:00:00Z',
+            memoryType: 'insight',
+            tags: ['dashboard-roadmap'],
+            metadata: null,
+          },
+        ],
+      })),
+      putJson: jest.fn(async () => undefined),
+    };
+    const invalidSynthesisReport = {
+      overview: {
+        memoryCount: 4,
+        deduplicatedMemoryCount: 4,
+        generatedAt: '2026-03-28T00:00:05.000Z',
+        lang: 'en',
+        timeSpan: {
+          start: '2026-03-20T00:00:00.000Z',
+          end: '2026-03-23T00:00:00.000Z',
+        },
+      },
+      persona: {
+        summary: 'Bosn consistently structures dashboard and automation work around review loops, explicit tradeoffs, and durable operating habits that can survive repeated context switching.',
+        workingStyle: ['Uses structured reviews and staged rollout decisions.'],
+        goals: ['Keep memory insight workflows durable and actionable.'],
+        preferences: ['Concise but information-dense summaries.'],
+        constraints: ['Do not delete canonical memories without evidence.'],
+        decisionSignals: ['Balances speed and correctness in dashboard work.'],
+        notableRoutines: ['Reviews dashboards every morning.'],
+        contradictionsOrTensions: ['Wants concise output without losing implementation detail.'],
+        evidenceHighlights: [
+          {
+            title: 'Dashboard review',
+            detail: 'Structured review loop around dashboards and prioritization.',
+            memoryIds: ['mem_1'],
+          },
+        ],
+      },
+      themeLandscape: {
+        highlights: [
+          {
+            name: 'dashboard roadmap',
+            count: 2,
+            description: 'Repeated dashboard planning and reporting work.',
+          },
+        ],
+      },
+      entities: {
+        people: [{ label: 'Alice Johnson', count: 1, evidenceMemoryIds: ['mem_1'] }],
+        teams: [{ label: 'Platform Team', count: 1, evidenceMemoryIds: ['mem_2'] }],
+        projects: [{ label: 'dashboard roadmap', count: 2, evidenceMemoryIds: ['mem_1', 'mem_4'] }],
+        tools: [{ label: 'React', count: 1, evidenceMemoryIds: ['mem_1'] }],
+        places: [],
+      },
+      relationships: [],
+      discoveries: [
+        {
+          id: 'focus:bad-memory',
+          kind: 'focus_area' as const,
+          title: 'Focus area',
+          summary: 'The report intentionally references a bad memory id for validation diagnostics.',
+          confidence: 0.82,
+          evidenceMemoryIds: ['missing_mem_1'],
+        },
+      ],
+      quality: {
+        duplicateRatio: 0,
+        duplicateMemoryCount: 0,
+        noisyMemoryCount: 0,
+        duplicateClusters: [],
+        lowQualityExamples: [],
+        coverageGaps: [],
+      },
+      recommendations: ['Keep the dashboard roadmap well documented.'],
+      productSignals: {
+        candidateNodes: [],
+        candidateEdges: [],
+        searchSeeds: ['dashboard roadmap'],
+      },
+    };
+    const qwen = {
+      getConfiguredModel: jest.fn(() => TEST_QWEN_MODEL),
+      createJson: jest
+        .fn()
+        .mockImplementationOnce(async () => createChunkResult({
+          parsed: {
+            summary: 'dashboard collaboration and reporting routines',
+            themes: [{ name: 'dashboard roadmap', memoryIds: ['mem_1', 'mem_4'] }],
+            entities: {
+              people: ['Alice Johnson', 'Bosn'],
+              teams: ['Platform Team'],
+              projects: ['dashboard roadmap'],
+              tools: ['React'],
+              places: [],
+            },
+            personaSignals: {
+              workingStyle: ['Prefers structured reviews and staged rollout decisions.'],
+              goals: ['Keep memory workflows durable.'],
+              preferences: ['Concise but information-dense summaries.'],
+              constraints: ['Do not delete canonical memories.'],
+              decisionSignals: ['Balances speed and correctness in dashboard work.'],
+              notableRoutines: ['Reviews dashboards every morning.'],
+              contradictionsOrTensions: ['Wants concise output without losing implementation detail.'],
+            },
+            relationships: [],
+          },
+        }))
+        .mockImplementationOnce(async () => ({
+          parsed: invalidSynthesisReport,
+          usage: {
+            model: TEST_QWEN_MODEL,
+            promptTokens: 100,
+            completionTokens: 40,
+            totalTokens: 140,
+            usageMissing: false,
+          },
+          requestMeta: {
+            stage: 'global_synthesis' as const,
+            success: true,
+            requested: true,
+            httpStatus: 200,
+            parseSucceeded: true,
+            errorCode: null,
+            errorMessage: null,
+            requestedAt: '2026-03-28T00:00:02.000Z',
+            finishedAt: '2026-03-28T00:00:03.000Z',
+          },
+          rawResponse: null,
+        })),
+    };
+    const processor = new DeepAnalysisReportProcessorService(
+      repository as never,
+      storage as never,
+      qwen as never,
+      createConfig() as never,
+    );
+
+    await processor.process({
+      messageType: 'deep_report',
+      reportId: 'dar_validation_failure',
+      traceId: 'trace_validation_failure',
+    });
+
+    expect(repository.updateDeepAnalysisReport).toHaveBeenLastCalledWith(
+      'dar_validation_failure',
+      expect.objectContaining({
+        status: 'COMPLETED',
+        stage: 'COMPLETE',
+        internalComment: expect.any(String),
+      }),
+    );
+
+    const finalCall = (
+      repository.updateDeepAnalysisReport.mock.calls as unknown as Array<[string, { internalComment?: string }]>
+    ).at(-1);
+    const finalInternalComment = JSON.parse(String(finalCall?.[1]?.internalComment)) as {
+      events: Array<{ event: string }>;
+      runtimeErrors: Array<{
+        stage: string;
+        errorCode: string | null;
+        errorMessage: string;
+      }>;
+      rawResponses: Array<{
+        stage: string;
+        reason: string;
+        source: string;
+        preview: string;
+      }>;
+    };
+
+    expect(finalInternalComment.events.map((item) => item.event)).toEqual(expect.arrayContaining([
+      'deep_analysis_validation_failed',
+      'deep_analysis_report_completed',
+    ]));
+    expect(finalInternalComment.runtimeErrors).toEqual([
+      expect.objectContaining({
+        stage: 'VALIDATE',
+        errorCode: 'DEEP_ANALYSIS_REPORT_INVALID',
+        errorMessage: expect.stringContaining('missing_mem_1'),
+      }),
+    ]);
+    expect(finalInternalComment.rawResponses).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 'VALIDATE',
+        reason: 'report_validation_failed',
+        source: 'parsed_report',
+        preview: expect.stringContaining('missing_mem_1'),
+      }),
+    ]));
+  });
+
   it('keeps internal comment audit consistent when chunks finish out of order and one times out', async () => {
     const memories = Array.from({ length: 181 }, (_, index) => ({
       id: `mem_${index + 1}`,
@@ -1008,6 +1250,12 @@ describe('deep analysis report processor service', () => {
         success: boolean;
         errorCode: string | null;
       }>;
+      rawResponses: Array<{
+        stage: string;
+        reason: string;
+        source: string;
+        preview: string;
+      }>;
     };
     expect(finalInternalComment.aggregate).toEqual({
       requestCount: 3,
@@ -1035,6 +1283,14 @@ describe('deep analysis report processor service', () => {
         index: 1,
         success: false,
         errorCode: 'QWEN_JSON_PARSE_FAILED',
+      }),
+    ]);
+    expect(finalInternalComment.rawResponses).toEqual([
+      expect.objectContaining({
+        stage: 'global_synthesis',
+        reason: 'qwen_json_parse_failed',
+        source: 'message_content',
+        preview: '{"summary": invalid json',
       }),
     ]);
   });
