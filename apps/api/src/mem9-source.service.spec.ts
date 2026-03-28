@@ -46,6 +46,7 @@ function createConfig(overrides?: Partial<AppConfig['analysis']>): AppConfig {
       qwenApiKey: undefined,
       qwenModel: 'qwen3.5-pro',
       qwenRequestTimeoutMs: 120000,
+      deepAnalysisChunkConcurrency: 5,
       ...overrides,
     },
     goVerify: {

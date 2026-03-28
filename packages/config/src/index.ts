@@ -37,6 +37,7 @@ const envSchema = z.object({
   QWEN_API_KEY: z.string().min(1).optional(),
   QWEN_MODEL: z.string().min(1).default('qwen3.5-pro'),
   QWEN_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(120000),
+  DEEP_ANALYSIS_CHUNK_CONCURRENCY: z.coerce.number().int().positive().default(5),
   JOB_RESULT_TTL_SECONDS: z.coerce.number().int().positive().default(86400),
   PAYLOAD_RETENTION_DAYS: z.coerce.number().int().positive().default(7),
   DEFAULT_BATCH_SIZE: z.coerce.number().int().positive().default(100),
@@ -122,6 +123,7 @@ export interface AppConfig {
     qwenApiKey?: string;
     qwenModel: string;
     qwenRequestTimeoutMs: number;
+    deepAnalysisChunkConcurrency: number;
   };
   goVerify: {
     mode: AppEnv['GO_VERIFY_MODE'];
@@ -188,6 +190,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
       qwenApiKey: env.QWEN_API_KEY,
       qwenModel: env.QWEN_MODEL,
       qwenRequestTimeoutMs: env.QWEN_REQUEST_TIMEOUT_MS,
+      deepAnalysisChunkConcurrency: env.DEEP_ANALYSIS_CHUNK_CONCURRENCY,
     },
     goVerify: {
       mode: env.GO_VERIFY_MODE,

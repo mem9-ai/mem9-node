@@ -98,6 +98,11 @@ variable "qwen_request_timeout_ms" {
   default = 120000
 }
 
+variable "deep_analysis_chunk_concurrency" {
+  type    = number
+  default = 5
+}
+
 variable "qwen_api_key" {
   type      = string
   sensitive = true

@@ -68,6 +68,7 @@ function createConfig(overrides?: {
       qwenApiKey: undefined,
       qwenModel: 'qwen3.5-pro',
       qwenRequestTimeoutMs: 120000,
+      deepAnalysisChunkConcurrency: 5,
       ...overrides?.analysis,
     },
     goVerify: {

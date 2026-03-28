@@ -86,6 +86,7 @@ export class QwenDeepAnalysisService {
         body: JSON.stringify({
           model: this.config.analysis.qwenModel,
           temperature: 0.2,
+          enable_thinking: false,
           response_format: {
             type: 'json_object',
           },
