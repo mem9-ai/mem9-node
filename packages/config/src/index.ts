@@ -28,6 +28,10 @@ const envSchema = z.object({
   SQS_ANALYSIS_LLM_DLQ_URL: z.string().min(1).default('http://127.0.0.1:4566/000000000000/analysis-llm-dlq'),
   MEM9_SOURCE_API_BASE_URL: z.string().url().default('http://127.0.0.1:8080/v1alpha2/mem9s'),
   MEM9_SOURCE_PAGE_SIZE: z.coerce.number().int().positive().max(200).default(200),
+  MEM9_SOURCE_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(10000),
+  MEM9_SOURCE_FETCH_RETRIES: z.coerce.number().int().min(0).max(5).default(2),
+  MEM9_SOURCE_FETCH_RETRY_BASE_MS: z.coerce.number().int().positive().default(250),
+  MEM9_SOURCE_DELETE_CONCURRENCY: z.coerce.number().int().positive().max(20).default(4),
   DEEP_ANALYSIS_DAILY_LIMIT_BYPASS_FINGERPRINTS: z.string().optional(),
   QWEN_API_BASE_URL: z.string().url().default('https://dashscope.aliyuncs.com/compatible-mode/v1'),
   QWEN_API_KEY: z.string().min(1).optional(),
@@ -108,6 +112,10 @@ export interface AppConfig {
     taxonomyVersion: string;
     mem9SourceApiBaseUrl: string;
     mem9SourcePageSize: number;
+    mem9SourceRequestTimeoutMs: number;
+    mem9SourceFetchRetries: number;
+    mem9SourceFetchRetryBaseMs: number;
+    mem9SourceDeleteConcurrency: number;
     deepAnalysisDailyLimitBypassFingerprints: string[];
     qwenApiBaseUrl: string;
     qwenApiKey?: string;
@@ -166,6 +174,10 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
       taxonomyVersion: env.TAXONOMY_VERSION,
       mem9SourceApiBaseUrl: env.MEM9_SOURCE_API_BASE_URL,
       mem9SourcePageSize: env.MEM9_SOURCE_PAGE_SIZE,
+      mem9SourceRequestTimeoutMs: env.MEM9_SOURCE_REQUEST_TIMEOUT_MS,
+      mem9SourceFetchRetries: env.MEM9_SOURCE_FETCH_RETRIES,
+      mem9SourceFetchRetryBaseMs: env.MEM9_SOURCE_FETCH_RETRY_BASE_MS,
+      mem9SourceDeleteConcurrency: env.MEM9_SOURCE_DELETE_CONCURRENCY,
       deepAnalysisDailyLimitBypassFingerprints: env.DEEP_ANALYSIS_DAILY_LIMIT_BYPASS_FINGERPRINTS
         ?.split(',')
         .map((value) => value.trim().toLowerCase())

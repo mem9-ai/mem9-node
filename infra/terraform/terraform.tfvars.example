@@ -33,5 +33,9 @@ analysis_payload_bucket_name = "mem9-apse1-payloads-example"
 payload_retention_days       = 7
 
 mem9_source_api_base_url = "http://internal-mem9-service/v1alpha2/mem9s"
+mem9_source_request_timeout_ms = 10000
+mem9_source_fetch_retries      = 2
+mem9_source_fetch_retry_base_ms = 250
+mem9_source_delete_concurrency  = 4
 qwen_api_base_url        = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 qwen_model               = "qwen3.5-pro"

@@ -47,6 +47,10 @@ resource "aws_ecs_task_definition" "api" {
       environment = [
         { name = "MEM9_SOURCE_API_BASE_URL", value = var.mem9_source_api_base_url },
         { name = "MEM9_SOURCE_PAGE_SIZE", value = "200" },
+        { name = "MEM9_SOURCE_REQUEST_TIMEOUT_MS", value = tostring(var.mem9_source_request_timeout_ms) },
+        { name = "MEM9_SOURCE_FETCH_RETRIES", value = tostring(var.mem9_source_fetch_retries) },
+        { name = "MEM9_SOURCE_FETCH_RETRY_BASE_MS", value = tostring(var.mem9_source_fetch_retry_base_ms) },
+        { name = "MEM9_SOURCE_DELETE_CONCURRENCY", value = tostring(var.mem9_source_delete_concurrency) },
         { name = "NODE_ENV", value = "production" },
         { name = "PORT", value = "3000" },
         { name = "TAXONOMY_VERSION", value = "v3" },

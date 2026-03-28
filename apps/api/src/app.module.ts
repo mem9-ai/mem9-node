@@ -22,7 +22,9 @@ import { HealthService } from './common/health.service';
 import { RateLimitGuard } from './common/rate-limit.guard';
 import { RequestAuditInterceptor } from './common/request-audit.interceptor';
 import { DeepAnalysisController } from './deep-analysis.controller';
+import { DeepAnalysisDuplicateOpsService } from './deep-analysis-duplicate-ops.service';
 import { DeepAnalysisService } from './deep-analysis.service';
+import { DeepAnalysisSourcePreparationService } from './deep-analysis-source-preparation.service';
 import { HealthController } from './health.controller';
 import { Mem9SourceService } from './mem9-source.service';
 
@@ -67,6 +69,8 @@ const appConfig = loadConfig();
     RateLimitWindowService,
     AnalysisJobsService,
     DeepAnalysisService,
+    DeepAnalysisDuplicateOpsService,
+    DeepAnalysisSourcePreparationService,
     Mem9SourceService,
     ApiKeyGuard,
     RateLimitGuard,

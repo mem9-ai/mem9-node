@@ -19,13 +19,16 @@ scripts/     local bootstrap helpers
 
 ## Local Development
 
-1. `cp .env.example .env`
-2. `docker compose up -d`
-3. `pnpm install`
-4. `pnpm prisma:generate`
-5. `pnpm migrate`
-6. `pnpm seed`
-7. `pnpm dev`
+Use Node 22 before installing dependencies. This repo ships [`.nvmrc`](/Users/bosn/git/mem9-node/.nvmrc) and the workspace scripts assume that runtime.
+
+1. `nvm use` or otherwise switch to Node 22
+2. `cp .env.example .env`
+3. `docker compose up -d`
+4. `pnpm install`
+5. `pnpm prisma:generate`
+6. `pnpm migrate`
+7. `pnpm seed`
+8. `pnpm dev`
 
 API docs: [http://127.0.0.1:3000/docs](http://127.0.0.1:3000/docs)
 
@@ -42,6 +45,7 @@ Worker health: `http://127.0.0.1:3001/health/live`
 - Typecheck: `pnpm typecheck`
 - Test: `pnpm test`
 - Build: `pnpm build`
+- Verify: `pnpm verify`
 
 ## API Flow
 
@@ -114,6 +118,6 @@ curl -H 'x-mem9-api-key: your-mem9-key' \
 
 ## Known Local Constraints
 
-- This workspace currently targets Node 22 but the shell that built it reported Node 25. Runtime should use Node 22 or the provided Dockerfiles.
+- Runtime should use Node 22 or the provided Dockerfiles.
 - Full `pnpm migrate` and `pnpm seed` require MySQL/Redis/LocalStack to be running.
 - The worker health server is intentionally minimal; ECS readiness should normally be driven by container health and queue lag metrics.

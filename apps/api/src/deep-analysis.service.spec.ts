@@ -1,12 +1,6 @@
 import type { AppConfig } from '@mem9/config';
-import { gunzipJson, gzipJson } from '@mem9/shared';
 
 import { DeepAnalysisService } from './deep-analysis.service';
-
-async function flushBackgroundTasks(): Promise<void> {
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  await Promise.resolve();
-}
 
 function createContext() {
   const apiKeyFingerprint = Buffer.alloc(32, 7);
@@ -19,13 +13,13 @@ function createContext() {
 }
 
 function createConfig(overrides?: {
-  app?: Partial<AppConfig["app"]>;
-  database?: Partial<AppConfig["database"]>;
-  redis?: Partial<AppConfig["redis"]>;
-  aws?: Partial<AppConfig["aws"]>;
-  analysis?: Partial<AppConfig["analysis"]>;
-  goVerify?: Partial<AppConfig["goVerify"]>;
-  sqs?: Partial<AppConfig["sqs"]>;
+  app?: Partial<AppConfig['app']>;
+  database?: Partial<AppConfig['database']>;
+  redis?: Partial<AppConfig['redis']>;
+  aws?: Partial<AppConfig['aws']>;
+  analysis?: Partial<AppConfig['analysis']>;
+  goVerify?: Partial<AppConfig['goVerify']>;
+  sqs?: Partial<AppConfig['sqs']>;
 }): AppConfig {
   return {
     app: {
@@ -65,6 +59,10 @@ function createConfig(overrides?: {
       taxonomyVersion: 'v3',
       mem9SourceApiBaseUrl: 'http://127.0.0.1:8080/v1alpha2/mem9s',
       mem9SourcePageSize: 200,
+      mem9SourceRequestTimeoutMs: 10000,
+      mem9SourceFetchRetries: 2,
+      mem9SourceFetchRetryBaseMs: 250,
+      mem9SourceDeleteConcurrency: 4,
       deepAnalysisDailyLimitBypassFingerprints: [],
       qwenApiBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
       qwenApiKey: undefined,
@@ -90,19 +88,19 @@ function createService(overrides?: {
   repository?: Record<string, unknown>;
   source?: Record<string, unknown>;
   storage?: Record<string, unknown>;
-  queue?: Record<string, unknown>;
+  sourcePreparation?: Record<string, unknown>;
+  duplicateOps?: Record<string, unknown>;
   config?: {
-    app?: Partial<AppConfig["app"]>;
-    database?: Partial<AppConfig["database"]>;
-    redis?: Partial<AppConfig["redis"]>;
-    aws?: Partial<AppConfig["aws"]>;
-    analysis?: Partial<AppConfig["analysis"]>;
-    goVerify?: Partial<AppConfig["goVerify"]>;
-    sqs?: Partial<AppConfig["sqs"]>;
+    app?: Partial<AppConfig['app']>;
+    database?: Partial<AppConfig['database']>;
+    redis?: Partial<AppConfig['redis']>;
+    aws?: Partial<AppConfig['aws']>;
+    analysis?: Partial<AppConfig['analysis']>;
+    goVerify?: Partial<AppConfig['goVerify']>;
+    sqs?: Partial<AppConfig['sqs']>;
   };
 }) {
   const repository = {
-    findDeepAnalysisReportByDay: jest.fn(async () => null),
     findDeepAnalysisReportsByDayPrefix: jest.fn(async () => []),
     createDeepAnalysisReport: jest.fn(async () => ({
       id: 'dar_1',
@@ -113,7 +111,6 @@ function createService(overrides?: {
       memoryCount: 1001,
       sourceSnapshotObjectKey: 'deep-analysis/reports/snapshot_1/source.json.gz',
     })),
-    updateDeepAnalysisReport: jest.fn(async () => undefined),
     listOwnedDeepAnalysisReports: jest.fn(async () => ({
       reports: [],
       total: 0,
@@ -135,37 +132,35 @@ function createService(overrides?: {
       reportObjectKey: null,
       sourceSnapshotObjectKey: 'deep-analysis/reports/snapshot_1/source.json.gz',
     })),
-    deleteDeepAnalysisReport: jest.fn(async () => undefined),
     ...overrides?.repository,
   };
   const source = {
     countMemories: jest.fn(async () => 1001),
-    fetchAllMemories: jest.fn(async () => [
-      {
-        id: 'mem_1',
-        content: 'Prefer React for dashboard work',
-        createdAt: '2026-03-20T00:00:00Z',
-        updatedAt: '2026-03-20T00:00:00Z',
-        memoryType: 'insight',
-        tags: ['dashboard'],
-        metadata: null,
-      },
-    ]),
-    deleteMemories: jest.fn(async (_apiKey: string, memoryIds: string[]) => ({
-      deletedMemoryIds: memoryIds,
-      failedMemoryIds: [],
-    })),
     ...overrides?.source,
   };
   const storage = {
-    putCompressedJson: jest.fn(async () => undefined),
     getObjectBuffer: jest.fn(async () => Buffer.from('{}')),
-    deleteObject: jest.fn(async () => undefined),
     ...overrides?.storage,
   };
-  const queue = {
-    enqueueLlmMessage: jest.fn(async () => undefined),
-    ...overrides?.queue,
+  const sourcePreparation = {
+    schedule: jest.fn(),
+    ...overrides?.sourcePreparation,
+  };
+  const duplicateOps = {
+    deleteDuplicateMemories: jest.fn(async () => ({
+      reportId: 'dar_1',
+      deletedCount: 1,
+      deletedMemoryIds: ['mem_2'],
+      failedMemoryIds: [],
+    })),
+    deleteReport: jest.fn(async () => ({
+      reportId: 'dar_1',
+    })),
+    downloadDuplicateCleanupCsv: jest.fn(async () => ({
+      filename: 'duplicates.csv',
+      content: 'duplicateMemoryId\nmem_2\n',
+    })),
+    ...overrides?.duplicateOps,
   };
   const config = createConfig(overrides?.config);
 
@@ -173,13 +168,14 @@ function createService(overrides?: {
     repository,
     source,
     storage,
-    queue,
-    config,
+    sourcePreparation,
+    duplicateOps,
     service: new DeepAnalysisService(
       repository as never,
       source as never,
       storage as never,
-      queue as never,
+      sourcePreparation as never,
+      duplicateOps as never,
       config,
     ),
   };
@@ -187,7 +183,7 @@ function createService(overrides?: {
 
 describe('deep analysis service', () => {
   it('returns an already-running error when a report exists for the same day in production', async () => {
-    const { service } = createService({
+    const { service, sourcePreparation } = createService({
       repository: {
         findDeepAnalysisReportsByDayPrefix: jest.fn(async () => [{
           id: 'dar_existing',
@@ -207,10 +203,12 @@ describe('deep analysis service', () => {
         reportId: 'dar_existing',
       },
     });
+
+    expect(sourcePreparation.schedule).not.toHaveBeenCalled();
   });
 
   it('rejects requests with too few memories in production', async () => {
-    const { service, source, storage, queue } = createService({
+    const { service, sourcePreparation } = createService({
       source: {
         countMemories: jest.fn(async () => 999),
       },
@@ -229,31 +227,16 @@ describe('deep analysis service', () => {
       },
     });
 
-    expect(source.fetchAllMemories).not.toHaveBeenCalled();
-    expect(storage.putCompressedJson).not.toHaveBeenCalled();
-    expect(queue.enqueueLlmMessage).not.toHaveBeenCalled();
+    expect(sourcePreparation.schedule).not.toHaveBeenCalled();
   });
 
-  it('returns quickly, then uploads the source snapshot and enqueues the LLM job in production', async () => {
-    const memories = Array.from({ length: 1001 }, (_, index) => ({
-      id: `mem_${index + 1}`,
-      content: `Memory ${index + 1} about React and Alice`,
-      createdAt: `2026-03-${String((index % 28) + 1).padStart(2, '0')}T00:00:00Z`,
-      updatedAt: `2026-03-${String((index % 28) + 1).padStart(2, '0')}T00:00:00Z`,
-      memoryType: 'insight',
-      tags: ['project-a'],
-      metadata: null,
-    }));
-    const { service, storage, queue, repository } = createService({
-      source: {
-        countMemories: jest.fn(async () => memories.length),
-        fetchAllMemories: jest.fn(async () => memories),
-      },
+  it('creates a report and delegates source preparation', async () => {
+    const { service, repository, sourcePreparation } = createService({
       repository: {
         createDeepAnalysisReport: jest.fn(async (input: {
+          requestDayKey: string;
           memoryCount: number;
           sourceSnapshotObjectKey: string;
-          requestDayKey: string;
         }) => ({
           id: 'dar_created',
           status: 'QUEUED',
@@ -277,133 +260,30 @@ describe('deep analysis service', () => {
       status: 'QUEUED',
       stage: 'FETCH_SOURCE',
       progressPercent: 0,
-      memoryCount: memories.length,
-    });
-    expect(storage.putCompressedJson).not.toHaveBeenCalled();
-    expect(queue.enqueueLlmMessage).not.toHaveBeenCalled();
-
-    await flushBackgroundTasks();
-
-    expect(storage.putCompressedJson).toHaveBeenCalledTimes(1);
-    const [objectKey, payload] = storage.putCompressedJson.mock.calls[0] as unknown as [string, Buffer];
-    expect(String(objectKey)).toMatch(/^deep-analysis\/reports\/snapshot_/);
-    const snapshot = gunzipJson<{ memoryCount: number; memories: Array<{ id: string }> }>(payload as Buffer);
-    expect(snapshot.memoryCount).toBe(memories.length);
-    expect(snapshot.memories).toHaveLength(memories.length);
-    expect(queue.enqueueLlmMessage).toHaveBeenCalledWith({
-      messageType: 'deep_report',
-      reportId: 'dar_created',
-      traceId: 'req_1',
+      memoryCount: 1001,
     });
     expect(repository.createDeepAnalysisReport).toHaveBeenCalledWith(
       expect.objectContaining({
         requestDayKey: '2026-03-28@Asia/Shanghai',
       }),
     );
-    expect(repository.updateDeepAnalysisReport).toHaveBeenNthCalledWith(
-      1,
-      'dar_created',
+    expect(sourcePreparation.schedule).toHaveBeenCalledWith(
       expect.objectContaining({
-        status: 'PREPARING',
-        stage: 'FETCH_SOURCE',
-        progressPercent: 5,
-      }),
-    );
-  });
-
-  it('returns before source fetching finishes', async () => {
-    let releaseFetch: (() => void) | undefined;
-    const fetchStarted = new Promise<void>((resolve) => {
-      releaseFetch = resolve;
-    });
-    const fetchAllMemories = jest.fn(async () => {
-      await fetchStarted;
-      return [{
-        id: 'mem_1',
-        content: 'Memory 1',
-        createdAt: '2026-03-20T00:00:00Z',
-        updatedAt: '2026-03-20T00:00:00Z',
-        memoryType: 'insight',
-        tags: [],
-        metadata: null,
-      }];
-    });
-    const { service, queue } = createService({
-      source: {
-        countMemories: jest.fn(async () => 1001),
-        fetchAllMemories,
-      },
-    });
-
-    const response = await service.createReport(createContext(), {
-      lang: 'zh-CN',
-      timezone: 'Asia/Shanghai',
-    });
-
-    expect(response.reportId).toBe('dar_1');
-    expect(fetchAllMemories).not.toHaveBeenCalled();
-
-    await flushBackgroundTasks();
-    expect(fetchAllMemories).toHaveBeenCalledTimes(1);
-    expect(queue.enqueueLlmMessage).not.toHaveBeenCalled();
-
-    if (releaseFetch) {
-      releaseFetch();
-    }
-    await flushBackgroundTasks();
-    expect(queue.enqueueLlmMessage).toHaveBeenCalledTimes(1);
-  });
-
-  it('marks the report failed if source snapshot preparation fails', async () => {
-    const { service, repository, queue } = createService({
-      source: {
-        countMemories: jest.fn(async () => 1001),
-        fetchAllMemories: jest.fn(async () => {
-          throw new Error('upstream timeout');
-        }),
-      },
-    });
-
-    await service.createReport(createContext(), {
-      lang: 'zh-CN',
-      timezone: 'Asia/Shanghai',
-    });
-    await flushBackgroundTasks();
-
-    expect(queue.enqueueLlmMessage).not.toHaveBeenCalled();
-    expect(repository.updateDeepAnalysisReport).toHaveBeenLastCalledWith(
-      'dar_1',
-      expect.objectContaining({
-        status: 'FAILED',
-        stage: 'FETCH_SOURCE',
-        errorCode: 'DEEP_ANALYSIS_SOURCE_PREP_FAILED',
+        reportId: 'dar_created',
+        rawApiKey: 'space-key',
+        traceId: 'req_1',
       }),
     );
   });
 
   it('bypasses daily-limit and count gates outside production', async () => {
-    const memories = [
-      {
-        id: 'mem_local_1',
-        content: 'Tiny sample memory',
-        createdAt: '2026-03-20T00:00:00Z',
-        updatedAt: '2026-03-20T00:00:00Z',
-        memoryType: 'insight',
-        tags: [],
-        metadata: null,
-      },
-    ];
-    const { service, repository, source } = createService({
+    const { service, repository } = createService({
       config: {
         app: {
           env: 'development',
         },
       },
       repository: {
-        findDeepAnalysisReportsByDayPrefix: jest.fn(async () => [{
-          id: 'dar_old',
-          status: 'COMPLETED',
-        }]),
         createDeepAnalysisReport: jest.fn(async (input: {
           requestDayKey: string;
           memoryCount: number;
@@ -419,7 +299,6 @@ describe('deep analysis service', () => {
       },
       source: {
         countMemories: jest.fn(async () => 12),
-        fetchAllMemories: jest.fn(async () => memories),
       },
     });
 
@@ -429,7 +308,6 @@ describe('deep analysis service', () => {
     });
 
     expect(response.reportId).toBe('dar_local');
-    expect(source.countMemories).toHaveBeenCalled();
     expect(repository.findDeepAnalysisReportsByDayPrefix).not.toHaveBeenCalled();
     expect(repository.createDeepAnalysisReport).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -439,7 +317,7 @@ describe('deep analysis service', () => {
     );
   });
 
-  it('allows a production rerun for bypass fingerprints while keeping the same day prefix', async () => {
+  it('allows production reruns for bypass fingerprints while keeping the same day prefix', async () => {
     const context = createContext();
     const { service, repository } = createService({
       config: {
@@ -465,18 +343,6 @@ describe('deep analysis service', () => {
           requestDayKey: input.requestDayKey,
         })),
       },
-      source: {
-        countMemories: jest.fn(async () => 1001),
-        fetchAllMemories: jest.fn(async () => Array.from({ length: 1001 }, (_, index) => ({
-          id: `mem_${index + 1}`,
-          content: `Memory ${index + 1}`,
-          createdAt: '2026-03-20T00:00:00Z',
-          updatedAt: '2026-03-20T00:00:00Z',
-          memoryType: 'insight',
-          tags: [],
-          metadata: null,
-        }))),
-      },
     });
 
     const response = await service.createReport(context, {
@@ -492,8 +358,8 @@ describe('deep analysis service', () => {
     );
   });
 
-  it('lists reports, loads report details, and exports duplicate cleanup csv', async () => {
-    const reportDocument = {
+  it('lists reports and loads report details from storage', async () => {
+    const document = {
       overview: {
         memoryCount: 1001,
         deduplicatedMemoryCount: 900,
@@ -504,80 +370,8 @@ describe('deep analysis service', () => {
           end: '2026-03-28T00:00:00Z',
         },
       },
-      persona: {
-        summary: 'The user prefers structured engineering workflows.',
-        workingStyle: ['Works iteratively with strong review loops.'],
-        goals: [],
-        preferences: [],
-        constraints: [],
-        decisionSignals: [],
-        notableRoutines: [],
-        contradictionsOrTensions: [],
-        evidenceHighlights: [],
-      },
-      themeLandscape: {
-        highlights: [],
-      },
-      entities: {
-        people: [],
-        teams: [],
-        projects: [],
-        tools: [],
-        places: [],
-      },
-      relationships: [],
-      discoveries: [
-        {
-          id: 'focus:engineering',
-          kind: 'focus_area',
-          title: 'Focus area: engineering',
-          summary: 'Engineering memories dominate the corpus.',
-          confidence: 0.8,
-          evidenceMemoryIds: ['mem_2'],
-        },
-      ],
-      quality: {
-        duplicateRatio: 0.1,
-        duplicateMemoryCount: 2,
-        noisyMemoryCount: 5,
-        duplicateClusters: [
-          {
-            canonicalMemoryId: 'mem_1',
-            duplicateMemoryIds: ['mem_2', 'mem_3'],
-          },
-        ],
-        lowQualityExamples: [],
-        coverageGaps: [],
-      },
-      recommendations: [],
-      productSignals: {
-        candidateNodes: [],
-        candidateEdges: [],
-        searchSeeds: [],
-      },
     };
-    const sourceSnapshot = gzipJson({
-      fetchedAt: '2026-03-28T00:00:00Z',
-      memoryCount: 3,
-      memories: [
-        {
-          id: 'mem_1',
-          content: 'Canonical memory about React dashboards',
-          createdAt: '2026-03-01T00:00:00Z',
-        },
-        {
-          id: 'mem_2',
-          content: 'Canonical memory about React dashboards',
-          createdAt: '2026-03-02T00:00:00Z',
-        },
-        {
-          id: 'mem_3',
-          content: 'Canonical memory about React dashboards',
-          createdAt: '2026-03-03T00:00:00Z',
-        },
-      ],
-    });
-    const { service } = createService({
+    const { service, repository } = createService({
       repository: {
         listOwnedDeepAnalysisReports: jest.fn(async () => ({
           reports: [
@@ -617,200 +411,39 @@ describe('deep analysis service', () => {
           completedAt: new Date('2026-03-28T00:05:00Z'),
           errorCode: null,
           errorMessage: null,
-          previewJson: {
-            generatedAt: '2026-03-28T00:05:00Z',
-            summary: 'Engineering-heavy corpus.',
-            topThemes: ['engineering'],
-            keyRecommendations: ['Deduplicate repeated notes'],
-          },
-          reportObjectKey: 'deep-analysis/reports/dar_1/report.json',
-          sourceSnapshotObjectKey: 'deep-analysis/reports/dar_1/source.json.gz',
-        })),
-      },
-      storage: {
-        getObjectBuffer: jest.fn(async (key: string) => {
-          if (key.endsWith('source.json.gz')) {
-            return sourceSnapshot;
-          }
-          return Buffer.from(JSON.stringify(reportDocument));
-        }),
-      },
-    });
-
-    const list = await service.listReports(createContext(), { limit: 20, offset: 0 });
-    expect(list.total).toBe(1);
-    expect(list.reports[0]).toMatchObject({
-      id: 'dar_1',
-      status: 'COMPLETED',
-      preview: {
-        summary: 'Engineering-heavy corpus.',
-      },
-    });
-
-    const detail = await service.getReport(createContext(), 'dar_1');
-    expect(detail.report).toMatchObject({
-      overview: {
-        deduplicatedMemoryCount: 900,
-      },
-      persona: {
-        summary: 'The user prefers structured engineering workflows.',
-      },
-    });
-
-    const exported = await service.downloadDuplicateCleanupCsv(createContext(), 'dar_1');
-    expect(exported.filename).toBe('deep-analysis-dar_1-duplicate-cleanup.csv');
-    expect(exported.content).toContain('duplicateMemoryId');
-    expect(exported.content).toContain('mem_2');
-    expect(exported.content).toContain('mem_3');
-    expect(exported.content).not.toContain('"mem_1"');
-  });
-
-  it('deletes only duplicate memories from a completed report', async () => {
-    const reportDocument = {
-      overview: {
-        memoryCount: 1003,
-        deduplicatedMemoryCount: 1001,
-        generatedAt: '2026-03-28T00:05:00Z',
-        lang: 'zh-CN',
-        timeSpan: {
-          start: '2026-03-01T00:00:00Z',
-          end: '2026-03-28T00:00:00Z',
-        },
-      },
-      persona: {
-        summary: 'The user prefers structured engineering workflows.',
-      },
-      themeLandscape: {
-        highlights: [],
-      },
-      entities: {
-        people: [],
-        teams: [],
-        projects: [],
-        tools: [],
-        places: [],
-      },
-      relationships: [],
-      quality: {
-        duplicateRatio: 0.1,
-        duplicateMemoryCount: 2,
-        noisyMemoryCount: 0,
-        duplicateClusters: [
-          {
-            canonicalMemoryId: 'mem_1',
-            duplicateMemoryIds: ['mem_2', 'mem_3', 'mem_2'],
-          },
-        ],
-        lowQualityExamples: [],
-        coverageGaps: [],
-      },
-      recommendations: [],
-      productSignals: {
-        candidateNodes: [],
-        candidateEdges: [],
-        searchSeeds: [],
-      },
-    };
-    const { service, source } = createService({
-      repository: {
-        getOwnedDeepAnalysisReport: jest.fn(async () => ({
-          id: 'dar_1',
-          status: 'COMPLETED',
-          stage: 'COMPLETE',
-          progressPercent: 100,
-          lang: 'zh-CN',
-          timezone: 'Asia/Shanghai',
-          memoryCount: 1003,
-          requestedAt: new Date('2026-03-28T00:00:00Z'),
-          startedAt: new Date('2026-03-28T00:01:00Z'),
-          completedAt: new Date('2026-03-28T00:05:00Z'),
-          errorCode: null,
-          errorMessage: null,
           previewJson: null,
           reportObjectKey: 'deep-analysis/reports/dar_1/report.json',
           sourceSnapshotObjectKey: 'deep-analysis/reports/dar_1/source.json.gz',
         })),
       },
       storage: {
-        getObjectBuffer: jest.fn(async () => Buffer.from(JSON.stringify(reportDocument))),
-      },
-      source: {
-        deleteMemories: jest.fn(async (_apiKey: string, memoryIds: string[]) => ({
-          deletedMemoryIds: memoryIds.filter((value) => value !== 'mem_3'),
-          failedMemoryIds: memoryIds.filter((value) => value === 'mem_3'),
-        })),
+        getObjectBuffer: jest.fn(async () => Buffer.from(JSON.stringify(document))),
       },
     });
 
-    const result = await service.deleteDuplicateMemories(createContext(), 'dar_1');
-
-    expect(source.deleteMemories).toHaveBeenCalledWith('space-key', ['mem_2', 'mem_3']);
-    expect(result).toEqual({
-      reportId: 'dar_1',
-      deletedCount: 1,
-      deletedMemoryIds: ['mem_2'],
-      failedMemoryIds: ['mem_3'],
+    const context = createContext();
+    const listResponse = await service.listReports(context, {
+      limit: 20,
+      offset: 0,
     });
+    const detailResponse = await service.getReport(context, 'dar_1');
+
+    expect(listResponse.total).toBe(1);
+    expect(listResponse.reports[0]?.id).toBe('dar_1');
+    expect(repository.getOwnedDeepAnalysisReport).toHaveBeenCalledWith('dar_1', context.apiKeyFingerprint);
+    expect(detailResponse.report).toEqual(document);
   });
 
-  it('deletes one completed report and removes its stored payloads', async () => {
-    const { service, repository, storage } = createService({
-      repository: {
-        getOwnedDeepAnalysisReport: jest.fn(async () => ({
-          id: 'dar_1',
-          status: 'COMPLETED',
-          stage: 'COMPLETE',
-          progressPercent: 100,
-          lang: 'zh-CN',
-          timezone: 'Asia/Shanghai',
-          memoryCount: 1003,
-          requestedAt: new Date('2026-03-28T00:00:00Z'),
-          startedAt: new Date('2026-03-28T00:01:00Z'),
-          completedAt: new Date('2026-03-28T00:05:00Z'),
-          errorCode: null,
-          errorMessage: null,
-          previewJson: null,
-          reportObjectKey: 'deep-analysis/reports/dar_1/report.json',
-          sourceSnapshotObjectKey: 'deep-analysis/reports/dar_1/source.json.gz',
-        })),
-      },
-    });
+  it('delegates duplicate CSV download, duplicate deletion, and terminal report deletion', async () => {
+    const { service, duplicateOps } = createService();
+    const context = createContext();
 
-    const result = await service.deleteReport(createContext(), 'dar_1');
+    await service.downloadDuplicateCleanupCsv(context, 'dar_1');
+    await service.deleteDuplicateMemories(context, 'dar_1');
+    await service.deleteReport(context, 'dar_1');
 
-    expect(storage.deleteObject).toHaveBeenNthCalledWith(1, 'deep-analysis/reports/dar_1/report.json');
-    expect(storage.deleteObject).toHaveBeenNthCalledWith(2, 'deep-analysis/reports/dar_1/source.json.gz');
-    expect(repository.deleteDeepAnalysisReport).toHaveBeenCalledWith('dar_1');
-    expect(result).toEqual({ reportId: 'dar_1' });
-  });
-
-  it('rejects deleting a report that is still running', async () => {
-    const { service, repository, storage } = createService({
-      repository: {
-        getOwnedDeepAnalysisReport: jest.fn(async () => ({
-          id: 'dar_queued',
-          status: 'ANALYZING',
-          stage: 'CHUNK_ANALYSIS',
-          progressPercent: 42,
-          lang: 'zh-CN',
-          timezone: 'Asia/Shanghai',
-          memoryCount: 1003,
-          requestedAt: new Date('2026-03-28T00:00:00Z'),
-          startedAt: new Date('2026-03-28T00:01:00Z'),
-          completedAt: null,
-          errorCode: null,
-          errorMessage: null,
-          previewJson: null,
-          reportObjectKey: null,
-          sourceSnapshotObjectKey: 'deep-analysis/reports/dar_queued/source.json.gz',
-        })),
-      },
-    });
-
-    await expect(service.deleteReport(createContext(), 'dar_queued')).rejects.toMatchObject({
-      code: 'DEEP_ANALYSIS_REPORT_RUNNING',
-    });
-    expect(storage.deleteObject).not.toHaveBeenCalled();
-    expect(repository.deleteDeepAnalysisReport).not.toHaveBeenCalled();
+    expect(duplicateOps.downloadDuplicateCleanupCsv).toHaveBeenCalledWith(context, 'dar_1');
+    expect(duplicateOps.deleteDuplicateMemories).toHaveBeenCalledWith(context, 'dar_1');
+    expect(duplicateOps.deleteReport).toHaveBeenCalledWith(context, 'dar_1');
   });
 });
