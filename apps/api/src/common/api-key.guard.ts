@@ -31,6 +31,7 @@ export class ApiKeyGuard implements CanActivate {
     request.mem9Context = {
       apiKeyFingerprint: fingerprint,
       apiKeyFingerprintHex: fingerprintToHex(fingerprint),
+      rawApiKey: apiKey,
       requestId: request.id,
     };
 

@@ -48,3 +48,38 @@ variable "database_password" {
   type      = string
   sensitive = true
 }
+
+variable "app_pepper" {
+  type      = string
+  sensitive = true
+}
+
+variable "go_internal_shared_secret" {
+  type      = string
+  sensitive = true
+}
+
+variable "mem9_source_api_base_url" {
+  type = string
+}
+
+variable "qwen_api_base_url" {
+  type    = string
+  default = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+}
+
+variable "qwen_model" {
+  type    = string
+  default = "qwen3.5-pro"
+}
+
+variable "qwen_api_key" {
+  type      = string
+  sensitive = true
+}
+
+variable "deep_analysis_daily_limit_bypass_fingerprints" {
+  type      = string
+  default   = ""
+  sensitive = true
+}

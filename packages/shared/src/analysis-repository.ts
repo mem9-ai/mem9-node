@@ -3,11 +3,18 @@ import type {
   AnalysisJob,
   AnalysisJobBatch,
   ApiKeySubject,
+  DeepAnalysisReport,
   Prisma,
   RateLimitPolicy,
   TaxonomyRule,
 } from '@prisma/client';
-import { AnalysisJobBatchStatus, AnalysisJobStatus, ApiKeySubjectStatus } from '@prisma/client';
+import {
+  AnalysisJobBatchStatus,
+  AnalysisJobStatus,
+  ApiKeySubjectStatus,
+  DeepAnalysisReportStage,
+  DeepAnalysisReportStatus,
+} from '@prisma/client';
 
 import { AppError } from './errors';
 import { createPrefixedId } from './ids';
@@ -393,5 +400,126 @@ export class AnalysisRepository {
       updatedAt: rules[0]?.updatedAt ?? new Date(),
       rules,
     };
+  }
+
+  public async findDeepAnalysisReportByDay(
+    fingerprint: Buffer,
+    requestDayKey: string,
+  ): Promise<DeepAnalysisReport | null> {
+    return this.prisma.deepAnalysisReport.findFirst({
+      where: {
+        apiKeyFingerprint: toPrismaBytes(fingerprint),
+        requestDayKey,
+      },
+    });
+  }
+
+  public async findDeepAnalysisReportsByDayPrefix(
+    fingerprint: Buffer,
+    requestDayKeyPrefix: string,
+  ): Promise<DeepAnalysisReport[]> {
+    return this.prisma.deepAnalysisReport.findMany({
+      where: {
+        apiKeyFingerprint: toPrismaBytes(fingerprint),
+        requestDayKey: {
+          startsWith: requestDayKeyPrefix,
+        },
+      },
+      orderBy: {
+        requestedAt: 'desc',
+      },
+    });
+  }
+
+  public async createDeepAnalysisReport(data: {
+    fingerprint: Buffer;
+    requestDayKey: string;
+    lang: string;
+    timezone: string;
+    memoryCount: number;
+    sourceSnapshotObjectKey: string;
+  }): Promise<DeepAnalysisReport> {
+    return this.prisma.deepAnalysisReport.create({
+      data: {
+        id: createPrefixedId('dar'),
+        apiKeyFingerprint: toPrismaBytes(data.fingerprint),
+        requestDayKey: data.requestDayKey,
+        lang: data.lang,
+        timezone: data.timezone,
+        memoryCount: data.memoryCount,
+        sourceSnapshotObjectKey: data.sourceSnapshotObjectKey,
+        status: DeepAnalysisReportStatus.QUEUED,
+        stage: DeepAnalysisReportStage.FETCH_SOURCE,
+      },
+    });
+  }
+
+  public async listOwnedDeepAnalysisReports(
+    fingerprint: Buffer,
+    limit: number,
+    offset: number,
+  ): Promise<{ reports: DeepAnalysisReport[]; total: number }> {
+    const where = {
+      apiKeyFingerprint: toPrismaBytes(fingerprint),
+    };
+    const [reports, total] = await this.prisma.$transaction([
+      this.prisma.deepAnalysisReport.findMany({
+        where,
+        orderBy: {
+          requestedAt: 'desc',
+        },
+        take: limit,
+        skip: offset,
+      }),
+      this.prisma.deepAnalysisReport.count({ where }),
+    ]);
+
+    return { reports, total };
+  }
+
+  public async getOwnedDeepAnalysisReport(
+    reportId: string,
+    fingerprint: Buffer,
+  ): Promise<DeepAnalysisReport> {
+    const report = await this.prisma.deepAnalysisReport.findFirst({
+      where: {
+        id: reportId,
+        apiKeyFingerprint: toPrismaBytes(fingerprint),
+      },
+    });
+
+    if (report === null) {
+      throw new AppError('Deep analysis report not found', {
+        statusCode: 404,
+        code: 'DEEP_ANALYSIS_REPORT_NOT_FOUND',
+      });
+    }
+
+    return report;
+  }
+
+  public async getDeepAnalysisReport(reportId: string): Promise<DeepAnalysisReport> {
+    const report = await this.prisma.deepAnalysisReport.findUnique({
+      where: { id: reportId },
+    });
+
+    if (report === null) {
+      throw new AppError('Deep analysis report not found', {
+        statusCode: 404,
+        code: 'DEEP_ANALYSIS_REPORT_NOT_FOUND',
+      });
+    }
+
+    return report;
+  }
+
+  public async updateDeepAnalysisReport(
+    reportId: string,
+    data: Prisma.DeepAnalysisReportUncheckedUpdateInput,
+  ): Promise<DeepAnalysisReport> {
+    return this.prisma.deepAnalysisReport.update({
+      where: { id: reportId },
+      data,
+    });
   }
 }

@@ -15,7 +15,9 @@ import { LoggerModule } from 'nestjs-pino';
 
 
 import { BatchProcessorService } from './batch-processor.service';
+import { DeepAnalysisReportProcessorService } from './deep-analysis-report-processor.service';
 import { LlmFallbackService } from './llm-fallback.service';
+import { QwenDeepAnalysisService } from './qwen-deep-analysis.service';
 import { SqsConsumerService } from './sqs-consumer.service';
 import { WorkerHealthServer } from './worker-health.server';
 
@@ -44,8 +46,10 @@ const appConfig = loadConfig();
     GoVerifyService,
     RateLimitWindowService,
     BatchProcessorService,
+    DeepAnalysisReportProcessorService,
     SqsConsumerService,
     LlmFallbackService,
+    QwenDeepAnalysisService,
     WorkerHealthServer,
   ],
 })

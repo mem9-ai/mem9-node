@@ -5,7 +5,7 @@ import type { Message } from '@aws-sdk/client-sqs';
 import { ChangeMessageVisibilityCommand, DeleteMessageCommand, ReceiveMessageCommand, SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import type { AppConfig } from '@mem9/config';
 import { APP_CONFIG } from '@mem9/config';
-import type { AnalysisBatchMessage } from '@mem9/contracts';
+import type { AnalysisBatchMessage, AnalysisLlmQueueMessage } from '@mem9/contracts';
 import { Inject, Injectable } from '@nestjs/common';
 
 @Injectable()
@@ -110,6 +110,17 @@ export class S3PayloadStorageService {
     const bytes = await body.transformToByteArray();
     return Buffer.from(bytes);
   }
+
+  public async putJson(key: string, payload: unknown): Promise<void> {
+    await this.factory.s3.send(
+      new PutObjectCommand({
+        Bucket: this.factory.settings.aws.s3BucketAnalysisPayloads,
+        Key: key,
+        Body: JSON.stringify(payload),
+        ContentType: 'application/json',
+      }),
+    );
+  }
 }
 
 @Injectable()
@@ -125,10 +136,33 @@ export class SqsQueueService {
     );
   }
 
+  public async enqueueLlmMessage(message: AnalysisLlmQueueMessage): Promise<void> {
+    await this.factory.sqs.send(
+      new SendMessageCommand({
+        QueueUrl: this.factory.settings.aws.sqsAnalysisLlmQueueUrl,
+        MessageBody: JSON.stringify(message),
+      }),
+    );
+  }
+
   public async receiveBatchMessages(maxNumberOfMessages: number): Promise<Message[] | undefined> {
     const response = await this.factory.sqs.send(
       new ReceiveMessageCommand({
         QueueUrl: this.factory.settings.aws.sqsAnalysisBatchQueueUrl,
+        MaxNumberOfMessages: maxNumberOfMessages,
+        WaitTimeSeconds: this.factory.settings.sqs.waitTimeSeconds,
+        VisibilityTimeout: this.factory.settings.sqs.visibilityTimeoutSeconds,
+        MessageSystemAttributeNames: ['ApproximateReceiveCount'],
+      }),
+    );
+
+    return response.Messages;
+  }
+
+  public async receiveLlmMessages(maxNumberOfMessages: number): Promise<Message[] | undefined> {
+    const response = await this.factory.sqs.send(
+      new ReceiveMessageCommand({
+        QueueUrl: this.factory.settings.aws.sqsAnalysisLlmQueueUrl,
         MaxNumberOfMessages: maxNumberOfMessages,
         WaitTimeSeconds: this.factory.settings.sqs.waitTimeSeconds,
         VisibilityTimeout: this.factory.settings.sqs.visibilityTimeoutSeconds,
@@ -149,10 +183,29 @@ export class SqsQueueService {
     );
   }
 
+  public async extendLlmVisibility(receiptHandle: string): Promise<void> {
+    await this.factory.sqs.send(
+      new ChangeMessageVisibilityCommand({
+        QueueUrl: this.factory.settings.aws.sqsAnalysisLlmQueueUrl,
+        ReceiptHandle: receiptHandle,
+        VisibilityTimeout: this.factory.settings.sqs.visibilityTimeoutSeconds,
+      }),
+    );
+  }
+
   public async deleteMessage(receiptHandle: string): Promise<void> {
     await this.factory.sqs.send(
       new DeleteMessageCommand({
         QueueUrl: this.factory.settings.aws.sqsAnalysisBatchQueueUrl,
+        ReceiptHandle: receiptHandle,
+      }),
+    );
+  }
+
+  public async deleteLlmMessage(receiptHandle: string): Promise<void> {
+    await this.factory.sqs.send(
+      new DeleteMessageCommand({
+        QueueUrl: this.factory.settings.aws.sqsAnalysisLlmQueueUrl,
         ReceiptHandle: receiptHandle,
       }),
     );

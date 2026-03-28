@@ -2,6 +2,8 @@ import type {
   AnalysisCategory,
   AnalysisEventType,
   BatchStatus,
+  DeepAnalysisReportStage,
+  DeepAnalysisReportStatus,
   JobStatus,
   TaxonomyMatchType,
 } from './enums';
@@ -189,12 +191,201 @@ export interface AnalysisBatchMessage {
 }
 
 export interface AnalysisLlmMessage {
+  messageType: 'analysis_llm';
   jobId: string;
   batchIndex: number;
   memoryIds: string[];
   taxonomyVersion: string;
   traceId: string;
 }
+
+export interface DeepAnalysisMemorySnapshot {
+  id: string;
+  content: string;
+  createdAt: string;
+  updatedAt?: string;
+  memoryType?: string;
+  tags?: string[];
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface DeepAnalysisOverviewSection {
+  memoryCount: number;
+  deduplicatedMemoryCount: number;
+  generatedAt: string;
+  lang: string;
+  timeSpan: {
+    start: string | null;
+    end: string | null;
+  };
+}
+
+export interface DeepAnalysisPersonaSection {
+  summary: string;
+  workingStyle?: string[];
+  goals?: string[];
+  preferences?: string[];
+  constraints?: string[];
+  decisionSignals?: string[];
+  notableRoutines?: string[];
+  contradictionsOrTensions?: string[];
+  evidenceHighlights?: DeepAnalysisEvidenceHighlight[];
+  habits?: string[];
+}
+
+export interface DeepAnalysisThemeItem {
+  name: string;
+  count: number;
+  description: string;
+}
+
+export interface DeepAnalysisEntityGroup {
+  label: string;
+  count: number;
+  evidenceMemoryIds: string[];
+}
+
+export interface DeepAnalysisRelationship {
+  source: string;
+  relation: string;
+  target: string;
+  confidence: number;
+  evidenceMemoryIds: string[];
+  evidenceExcerpts: string[];
+}
+
+export interface DeepAnalysisQualityIssue {
+  memoryId: string;
+  reason: string;
+}
+
+export interface DeepAnalysisDuplicateCluster {
+  canonicalMemoryId: string;
+  duplicateMemoryIds: string[];
+}
+
+export interface DeepAnalysisEvidenceHighlight {
+  title: string;
+  detail: string;
+  memoryIds: string[];
+}
+
+export interface DeepAnalysisDuplicateExportRow {
+  duplicateMemoryId: string;
+  clusterIndex: number;
+  canonicalPreview: string;
+  duplicatePreview: string;
+  reason: string;
+}
+
+export interface DeepAnalysisDiscoveryCard {
+  id: string;
+  kind: 'focus_area' | 'collaborator' | 'routine' | 'decision' | 'hygiene' | 'opportunity';
+  title: string;
+  summary: string;
+  confidence: number;
+  evidenceMemoryIds: string[];
+}
+
+export interface DeepAnalysisCandidateNode {
+  label: string;
+  kind: string;
+  count: number;
+}
+
+export interface DeepAnalysisCandidateEdge {
+  source: string;
+  relation: string;
+  target: string;
+  confidence: number;
+}
+
+export interface DeepAnalysisReportDocument {
+  overview: DeepAnalysisOverviewSection;
+  persona: DeepAnalysisPersonaSection;
+  themeLandscape: {
+    highlights: DeepAnalysisThemeItem[];
+  };
+  entities: {
+    people: DeepAnalysisEntityGroup[];
+    teams: DeepAnalysisEntityGroup[];
+    projects: DeepAnalysisEntityGroup[];
+    tools: DeepAnalysisEntityGroup[];
+    places: DeepAnalysisEntityGroup[];
+  };
+  relationships: DeepAnalysisRelationship[];
+  discoveries?: DeepAnalysisDiscoveryCard[];
+  quality: {
+    duplicateRatio: number;
+    duplicateMemoryCount?: number;
+    noisyMemoryCount: number;
+    duplicateClusters: DeepAnalysisDuplicateCluster[];
+    lowQualityExamples: DeepAnalysisQualityIssue[];
+    coverageGaps: string[];
+  };
+  recommendations: string[];
+  productSignals: {
+    candidateNodes: DeepAnalysisCandidateNode[];
+    candidateEdges: DeepAnalysisCandidateEdge[];
+    searchSeeds: string[];
+  };
+}
+
+export interface DeepAnalysisReportPreview {
+  generatedAt: string;
+  summary: string;
+  topThemes: string[];
+  keyRecommendations: string[];
+}
+
+export interface CreateDeepAnalysisReportRequest {
+  lang: string;
+  timezone: string;
+}
+
+export interface CreateDeepAnalysisReportResponse {
+  reportId: string;
+  status: DeepAnalysisReportStatus;
+  stage: DeepAnalysisReportStage;
+  progressPercent: number;
+  requestedAt: string;
+  memoryCount: number;
+}
+
+export interface DeepAnalysisReportListItem {
+  id: string;
+  status: DeepAnalysisReportStatus;
+  stage: DeepAnalysisReportStage;
+  progressPercent: number;
+  lang: string;
+  timezone: string;
+  memoryCount: number;
+  requestedAt: string;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+  preview: DeepAnalysisReportPreview | null;
+}
+
+export interface DeepAnalysisReportDetail extends DeepAnalysisReportListItem {
+  report: DeepAnalysisReportDocument | null;
+}
+
+export interface ListDeepAnalysisReportsResponse {
+  reports: DeepAnalysisReportListItem[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface DeepAnalysisReportMessage {
+  messageType: 'deep_report';
+  reportId: string;
+  traceId: string;
+}
+
+export type AnalysisLlmQueueMessage = AnalysisLlmMessage | DeepAnalysisReportMessage;
 
 export interface ProgressEventPayload {
   progress: JobProgressSnapshot;

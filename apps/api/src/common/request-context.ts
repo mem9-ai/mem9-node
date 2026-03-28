@@ -5,6 +5,7 @@ import type { FastifyRequest } from 'fastify';
 export interface Mem9RequestContext {
   apiKeyFingerprint: Buffer;
   apiKeyFingerprintHex: string;
+  rawApiKey: string;
   requestId: string;
 }
 

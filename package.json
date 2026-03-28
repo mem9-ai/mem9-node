@@ -12,6 +12,7 @@
     "typecheck": "pnpm -r --workspace-concurrency=1 typecheck",
     "test": "jest --runInBand",
     "test:watch": "jest --watch",
+    "deep-analysis:fingerprint": "node scripts/derive-api-key-fingerprint.mjs",
     "taxonomy:v3:generate": "node scripts/generate-taxonomy-v3.mjs",
     "taxonomy:v3:check": "node scripts/check-taxonomy-v3.mjs",
     "taxonomy:v3:coverage": "node scripts/analyze-taxonomy-v3-coverage.mjs",
