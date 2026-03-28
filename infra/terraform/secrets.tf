@@ -10,6 +10,7 @@ resource "aws_secretsmanager_secret_version" "app" {
     APP_PEPPER                = var.app_pepper
     GO_INTERNAL_SHARED_SECRET = var.go_internal_shared_secret
     QWEN_API_KEY              = var.qwen_api_key
+    DEEP_ANALYSIS_DAILY_LIMIT_BYPASS_FINGERPRINTS = var.deep_analysis_daily_limit_bypass_fingerprints
   })
 }
 

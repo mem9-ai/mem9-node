@@ -37,6 +37,10 @@ resource "aws_ecs_task_definition" "api" {
         {
           name      = "QWEN_API_KEY"
           valueFrom = "${aws_secretsmanager_secret.app.arn}:QWEN_API_KEY::"
+        },
+        {
+          name      = "DEEP_ANALYSIS_DAILY_LIMIT_BYPASS_FINGERPRINTS"
+          valueFrom = "${aws_secretsmanager_secret.app.arn}:DEEP_ANALYSIS_DAILY_LIMIT_BYPASS_FINGERPRINTS::"
         }
       ]
 

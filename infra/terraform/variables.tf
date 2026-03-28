@@ -77,3 +77,9 @@ variable "qwen_api_key" {
   type      = string
   sensitive = true
 }
+
+variable "deep_analysis_daily_limit_bypass_fingerprints" {
+  type      = string
+  default   = ""
+  sensitive = true
+}

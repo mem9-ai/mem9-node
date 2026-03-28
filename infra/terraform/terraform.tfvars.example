@@ -27,6 +27,7 @@ database_password = "replace-with-strong-db-password"
 app_pepper                = "replace-with-32-plus-char-random-secret"
 go_internal_shared_secret = "replace-with-strong-internal-shared-secret"
 qwen_api_key              = "replace-with-qwen-api-key"
+deep_analysis_daily_limit_bypass_fingerprints = "fingerprint_hex_1,fingerprint_hex_2"
 
 analysis_payload_bucket_name = "mem9-apse1-payloads-example"
 payload_retention_days       = 7
