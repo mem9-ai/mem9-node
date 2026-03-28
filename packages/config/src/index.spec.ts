@@ -45,4 +45,13 @@ describe('loadConfig', () => {
       }),
     ).toThrow('AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be provided together');
   });
+
+  it('exposes mem9 source hardening defaults', () => {
+    const config = loadConfig(baseEnv);
+
+    expect(config.analysis.mem9SourceRequestTimeoutMs).toBe(10000);
+    expect(config.analysis.mem9SourceFetchRetries).toBe(2);
+    expect(config.analysis.mem9SourceFetchRetryBaseMs).toBe(250);
+    expect(config.analysis.mem9SourceDeleteConcurrency).toBe(4);
+  });
 });

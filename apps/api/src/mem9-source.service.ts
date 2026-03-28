@@ -64,11 +64,13 @@ export class Mem9SourceService {
     failedMemoryIds: string[];
   }> {
     const uniqueMemoryIds = [...new Set(memoryIds.filter((value) => value.trim().length > 0))];
-    const results = await Promise.all(
-      uniqueMemoryIds.map(async (memoryId) => ({
+    const results = await this.mapWithConcurrency(
+      uniqueMemoryIds,
+      this.config.analysis.mem9SourceDeleteConcurrency,
+      async (memoryId) => ({
         memoryId,
         deleted: await this.deleteMemory(apiKey, memoryId),
-      })),
+      }),
     );
 
     return {
@@ -88,19 +90,20 @@ export class Mem9SourceService {
       state: 'active',
       memory_type: 'pinned,insight',
     });
-    const response = await fetch(`${this.baseUrl()}/memories?${query.toString()}`, {
-      headers: {
-        'X-API-Key': apiKey,
-        'X-Mnemo-Agent-Id': 'mem9-deep-analysis',
+    const response = await this.requestWithRetry({
+      url: `${this.baseUrl()}/memories?${query.toString()}`,
+      init: {
+        headers: this.buildHeaders(apiKey),
       },
+      isSuccess: (value) => value.ok,
     });
 
-    if (!response.ok) {
+    if (!response || !response.ok) {
       throw new AppError('Failed to fetch memories from mem9 source API', {
         statusCode: 502,
         code: 'DEEP_ANALYSIS_SOURCE_FETCH_FAILED',
         details: {
-          status: response.status,
+          status: response?.status,
         },
       });
     }
@@ -115,19 +118,142 @@ export class Mem9SourceService {
   }
 
   private async deleteMemory(apiKey: string, memoryId: string): Promise<boolean> {
-    const response = await fetch(`${this.baseUrl()}/memories/${encodeURIComponent(memoryId)}`, {
-      method: 'DELETE',
-      headers: {
-        'X-API-Key': apiKey,
-        'X-Mnemo-Agent-Id': 'mem9-deep-analysis',
+    const response = await this.requestWithRetry({
+      url: `${this.baseUrl()}/memories/${encodeURIComponent(memoryId)}`,
+      init: {
+        method: 'DELETE',
+        headers: this.buildHeaders(apiKey),
       },
+      isSuccess: (value) => value.status === 204 || value.status === 404,
+      allowNonRetryableFailure: true,
     });
 
-    if (response.status === 204 || response.status === 404) {
-      return true;
+    return response?.status === 204 || response?.status === 404;
+  }
+
+  private async requestWithRetry({
+    url,
+    init,
+    isSuccess,
+    allowNonRetryableFailure = false,
+  }: {
+    url: string;
+    init: RequestInit;
+    isSuccess: (response: Response) => boolean;
+    allowNonRetryableFailure?: boolean;
+  }): Promise<Response | null> {
+    const maxAttempts = this.config.analysis.mem9SourceFetchRetries + 1;
+    let attempt = 0;
+
+    while (attempt < maxAttempts) {
+      const controller = new AbortController();
+      const timeout = setTimeout(
+        () => controller.abort(),
+        this.config.analysis.mem9SourceRequestTimeoutMs,
+      );
+
+      try {
+        const response = await fetch(url, {
+          ...init,
+          signal: controller.signal,
+        });
+
+        if (isSuccess(response)) {
+          return response;
+        }
+
+        if (!this.shouldRetryStatus(response.status) || attempt === maxAttempts - 1) {
+          if (allowNonRetryableFailure) {
+            return response;
+          }
+          return response;
+        }
+      } catch (error) {
+        if (!this.shouldRetryError(error) || attempt === maxAttempts - 1) {
+          if (allowNonRetryableFailure) {
+            return null;
+          }
+
+          throw new AppError('Failed to fetch memories from mem9 source API', {
+            statusCode: 502,
+            code: 'DEEP_ANALYSIS_SOURCE_FETCH_FAILED',
+            details: {
+              reason: error instanceof Error ? error.message : String(error),
+            },
+          });
+        }
+      } finally {
+        clearTimeout(timeout);
+      }
+
+      attempt += 1;
+      await this.sleep(this.getRetryDelayMs(attempt));
     }
 
-    return false;
+    if (allowNonRetryableFailure) {
+      return null;
+    }
+
+    throw new AppError('Failed to fetch memories from mem9 source API', {
+      statusCode: 502,
+      code: 'DEEP_ANALYSIS_SOURCE_FETCH_FAILED',
+      details: {
+        reason: 'exhausted retries without a terminal response',
+      },
+    });
+  }
+
+  private shouldRetryStatus(status: number): boolean {
+    return status === 408 || status === 429 || status >= 500;
+  }
+
+  private shouldRetryError(error: unknown): boolean {
+    if (!(error instanceof Error)) {
+      return false;
+    }
+
+    return error.name === 'AbortError' || error.name === 'TypeError';
+  }
+
+  private getRetryDelayMs(attempt: number): number {
+    return this.config.analysis.mem9SourceFetchRetryBaseMs * attempt;
+  }
+
+  private async sleep(ms: number): Promise<void> {
+    await new Promise<void>((resolve) => setTimeout(resolve, ms));
+  }
+
+  private async mapWithConcurrency<TItem, TResult>(
+    items: TItem[],
+    concurrency: number,
+    worker: (item: TItem) => Promise<TResult>,
+  ): Promise<TResult[]> {
+    const results = new Array<TResult>(items.length);
+    let nextIndex = 0;
+
+    const runWorker = async () => {
+      while (nextIndex < items.length) {
+        const currentIndex = nextIndex;
+        nextIndex += 1;
+        results[currentIndex] = await worker(items[currentIndex]!);
+      }
+    };
+
+    await Promise.all(
+      Array.from(
+        { length: Math.min(concurrency, items.length) },
+        () => runWorker(),
+      ),
+    );
+
+    return results;
+  }
+
+  private buildHeaders(apiKey: string): Record<string, string> {
+    return {
+      'X-API-Key': apiKey,
+      'X-Mnemo-Agent-Id': 'mem9-deep-analysis',
+    };
   }
 
   private baseUrl(): string {
