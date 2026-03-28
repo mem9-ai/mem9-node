@@ -150,6 +150,10 @@ function createService(overrides?: {
         metadata: null,
       },
     ]),
+    deleteMemories: jest.fn(async (_apiKey: string, memoryIds: string[]) => ({
+      deletedMemoryIds: memoryIds,
+      failedMemoryIds: [],
+    })),
     ...overrides?.source,
   };
   const storage = {
@@ -657,5 +661,93 @@ describe('deep analysis service', () => {
     expect(exported.content).toContain('mem_2');
     expect(exported.content).toContain('mem_3');
     expect(exported.content).not.toContain('"mem_1"');
+  });
+
+  it('deletes only duplicate memories from a completed report', async () => {
+    const reportDocument = {
+      overview: {
+        memoryCount: 1003,
+        deduplicatedMemoryCount: 1001,
+        generatedAt: '2026-03-28T00:05:00Z',
+        lang: 'zh-CN',
+        timeSpan: {
+          start: '2026-03-01T00:00:00Z',
+          end: '2026-03-28T00:00:00Z',
+        },
+      },
+      persona: {
+        summary: 'The user prefers structured engineering workflows.',
+      },
+      themeLandscape: {
+        highlights: [],
+      },
+      entities: {
+        people: [],
+        teams: [],
+        projects: [],
+        tools: [],
+        places: [],
+      },
+      relationships: [],
+      quality: {
+        duplicateRatio: 0.1,
+        duplicateMemoryCount: 2,
+        noisyMemoryCount: 0,
+        duplicateClusters: [
+          {
+            canonicalMemoryId: 'mem_1',
+            duplicateMemoryIds: ['mem_2', 'mem_3', 'mem_2'],
+          },
+        ],
+        lowQualityExamples: [],
+        coverageGaps: [],
+      },
+      recommendations: [],
+      productSignals: {
+        candidateNodes: [],
+        candidateEdges: [],
+        searchSeeds: [],
+      },
+    };
+    const { service, source } = createService({
+      repository: {
+        getOwnedDeepAnalysisReport: jest.fn(async () => ({
+          id: 'dar_1',
+          status: 'COMPLETED',
+          stage: 'COMPLETE',
+          progressPercent: 100,
+          lang: 'zh-CN',
+          timezone: 'Asia/Shanghai',
+          memoryCount: 1003,
+          requestedAt: new Date('2026-03-28T00:00:00Z'),
+          startedAt: new Date('2026-03-28T00:01:00Z'),
+          completedAt: new Date('2026-03-28T00:05:00Z'),
+          errorCode: null,
+          errorMessage: null,
+          previewJson: null,
+          reportObjectKey: 'deep-analysis/reports/dar_1/report.json',
+          sourceSnapshotObjectKey: 'deep-analysis/reports/dar_1/source.json.gz',
+        })),
+      },
+      storage: {
+        getObjectBuffer: jest.fn(async () => Buffer.from(JSON.stringify(reportDocument))),
+      },
+      source: {
+        deleteMemories: jest.fn(async (_apiKey: string, memoryIds: string[]) => ({
+          deletedMemoryIds: memoryIds.filter((value) => value !== 'mem_3'),
+          failedMemoryIds: memoryIds.filter((value) => value === 'mem_3'),
+        })),
+      },
+    });
+
+    const result = await service.deleteDuplicateMemories(createContext(), 'dar_1');
+
+    expect(source.deleteMemories).toHaveBeenCalledWith('space-key', ['mem_2', 'mem_3']);
+    expect(result).toEqual({
+      reportId: 'dar_1',
+      deletedCount: 1,
+      deletedMemoryIds: ['mem_2'],
+      failedMemoryIds: ['mem_3'],
+    });
   });
 });

@@ -59,6 +59,24 @@ export class Mem9SourceService {
     return memories;
   }
 
+  public async deleteMemories(apiKey: string, memoryIds: string[]): Promise<{
+    deletedMemoryIds: string[];
+    failedMemoryIds: string[];
+  }> {
+    const uniqueMemoryIds = [...new Set(memoryIds.filter((value) => value.trim().length > 0))];
+    const results = await Promise.all(
+      uniqueMemoryIds.map(async (memoryId) => ({
+        memoryId,
+        deleted: await this.deleteMemory(apiKey, memoryId),
+      })),
+    );
+
+    return {
+      deletedMemoryIds: results.filter((item) => item.deleted).map((item) => item.memoryId),
+      failedMemoryIds: results.filter((item) => !item.deleted).map((item) => item.memoryId),
+    };
+  }
+
   private async fetchPage(
     apiKey: string,
     limit: number,
@@ -94,6 +112,22 @@ export class Mem9SourceService {
       limit: Number(payload.limit ?? limit),
       offset: Number(payload.offset ?? offset),
     };
+  }
+
+  private async deleteMemory(apiKey: string, memoryId: string): Promise<boolean> {
+    const response = await fetch(`${this.baseUrl()}/memories/${encodeURIComponent(memoryId)}`, {
+      method: 'DELETE',
+      headers: {
+        'X-API-Key': apiKey,
+        'X-Mnemo-Agent-Id': 'mem9-deep-analysis',
+      },
+    });
+
+    if (response.status === 204 || response.status === 404) {
+      return true;
+    }
+
+    return false;
   }
 
   private baseUrl(): string {

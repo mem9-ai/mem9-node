@@ -61,4 +61,14 @@ export class DeepAnalysisController {
     reply.header('Content-Disposition', `attachment; filename="${filename}"`);
     return reply.send(content);
   }
+
+  @Post('reports/:reportId/delete-duplicates')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Delete duplicate memories for one deep analysis report' })
+  public deleteDuplicateMemories(
+    @CurrentContext() context: Mem9RequestContext,
+    @Param('reportId') reportId: string,
+  ) {
+    return this.service.deleteDuplicateMemories(context, reportId);
+  }
 }

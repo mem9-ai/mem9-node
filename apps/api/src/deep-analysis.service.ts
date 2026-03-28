@@ -1,5 +1,6 @@
 import type {
   CreateDeepAnalysisReportResponse,
+  DeleteDeepAnalysisDuplicatesResponse,
   DeepAnalysisDuplicateExportRow,
   DeepAnalysisMemorySnapshot,
   DeepAnalysisReportDetail,
@@ -390,6 +391,46 @@ export class DeepAnalysisService {
     return {
       ...toListItem(report),
       report: document,
+    };
+  }
+
+  public async deleteDuplicateMemories(
+    context: Mem9RequestContext,
+    reportId: string,
+  ): Promise<DeleteDeepAnalysisDuplicatesResponse> {
+    const report = await this.repository.getOwnedDeepAnalysisReport(
+      reportId,
+      context.apiKeyFingerprint,
+    );
+
+    if (!report.reportObjectKey) {
+      throw new AppError('Deep analysis report is not ready yet', {
+        statusCode: 409,
+        code: 'DEEP_ANALYSIS_REPORT_NOT_READY',
+      });
+    }
+
+    const reportPayload = await this.storage.getObjectBuffer(report.reportObjectKey);
+    const document = JSON.parse(reportPayload.toString('utf8')) as DeepAnalysisReportDocument;
+    const duplicateMemoryIds = [...new Set(
+      (document.quality.duplicateClusters ?? []).flatMap((cluster) => cluster.duplicateMemoryIds),
+    )];
+
+    if (duplicateMemoryIds.length === 0) {
+      return {
+        reportId,
+        deletedCount: 0,
+        deletedMemoryIds: [],
+        failedMemoryIds: [],
+      };
+    }
+
+    const deletion = await this.source.deleteMemories(context.rawApiKey, duplicateMemoryIds);
+    return {
+      reportId,
+      deletedCount: deletion.deletedMemoryIds.length,
+      deletedMemoryIds: deletion.deletedMemoryIds,
+      failedMemoryIds: deletion.failedMemoryIds,
     };
   }
 
