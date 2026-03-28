@@ -173,12 +173,32 @@ interface InternalCommentCall {
   errorMessage: string | null;
 }
 
+interface InternalCommentEvent {
+  at: string;
+  level: 'info' | 'warn' | 'error';
+  stage: string;
+  event: string;
+  fields: Record<string, string | number | boolean | null>;
+}
+
+interface InternalCommentRuntimeError {
+  at: string;
+  stage: string;
+  errorName: string;
+  errorCode: string | null;
+  errorMessage: string;
+  stack: string | null;
+  isTrimError: boolean;
+}
+
 interface InternalCommentPayload {
   version: 1;
   provider: 'qwen';
   model: string;
   aggregate: InternalCommentAggregate;
   calls: InternalCommentCall[];
+  events: InternalCommentEvent[];
+  runtimeErrors: InternalCommentRuntimeError[];
 }
 
 interface ChunkAnalysisSummary {
@@ -268,6 +288,9 @@ const INTERNAL_COMMENT_STAGE_ORDER: Record<QwenAuditStage, number> = {
   chunk_analysis: 0,
   global_synthesis: 1,
 };
+const INTERNAL_COMMENT_EVENT_LIMIT = 80;
+const INTERNAL_COMMENT_RUNTIME_ERROR_LIMIT = 10;
+const INTERNAL_COMMENT_STACK_LIMIT = 4000;
 
 function chunkArray<T>(items: T[], size: number): T[][] {
   const chunks: T[][] = [];
@@ -281,8 +304,114 @@ function sentencePreview(content: string): string {
   return content.replace(/\s+/g, ' ').trim().slice(0, 220);
 }
 
-function normalizeToken(value: string): string {
-  return value.trim().toLowerCase();
+function trimToString(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeToken(value: unknown): string {
+  return trimToString(value)?.toLowerCase() ?? '';
+}
+
+function coerceStringArray(value: unknown, limit = Number.POSITIVE_INFINITY): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const normalized: string[] = [];
+  for (const item of value) {
+    const trimmed = trimToString(item);
+    if (!trimmed) {
+      continue;
+    }
+    normalized.push(trimmed);
+    if (normalized.length >= limit) {
+      break;
+    }
+  }
+
+  return normalized;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function sanitizeChunkRelationships(value: unknown): DeepAnalysisRelationship[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((item) => {
+    if (!isRecord(item)) {
+      return [];
+    }
+
+    const source = trimToString(item.source);
+    const relation = trimToString(item.relation);
+    const target = trimToString(item.target);
+    if (!source || !relation || !target) {
+      return [];
+    }
+
+    return [{
+      source,
+      relation,
+      target,
+      confidence: typeof item.confidence === 'number' && Number.isFinite(item.confidence)
+        ? item.confidence
+        : 0.5,
+      evidenceMemoryIds: coerceStringArray(item.evidenceMemoryIds, 6),
+      evidenceExcerpts: coerceStringArray(item.evidenceExcerpts, 4),
+    }];
+  });
+}
+
+function sanitizeChunkInsight(value: ChunkInsight): ChunkInsight {
+  const entities: Record<string, unknown> = isRecord(value.entities) ? value.entities : {};
+  const personaSignals: Record<string, unknown> = isRecord(value.personaSignals) ? value.personaSignals : {};
+
+  return {
+    summary: trimToString(value.summary) ?? '',
+    themes: Array.isArray(value.themes)
+      ? value.themes.flatMap((item) => {
+        if (!isRecord(item)) {
+          return [];
+        }
+
+        const name = trimToString(item.name);
+        if (!name) {
+          return [];
+        }
+
+        return [{
+          name,
+          memoryIds: coerceStringArray(item.memoryIds, 12),
+        }];
+      })
+      : [],
+    entities: {
+      people: coerceStringArray(entities.people, 12),
+      teams: coerceStringArray(entities.teams, 12),
+      projects: coerceStringArray(entities.projects, 12),
+      tools: coerceStringArray(entities.tools, 12),
+      places: coerceStringArray(entities.places, 12),
+    },
+    personaSignals: {
+      workingStyle: coerceStringArray(personaSignals.workingStyle, 12),
+      goals: coerceStringArray(personaSignals.goals, 12),
+      preferences: coerceStringArray(personaSignals.preferences, 12),
+      constraints: coerceStringArray(personaSignals.constraints, 12),
+      decisionSignals: coerceStringArray(personaSignals.decisionSignals, 12),
+      notableRoutines: coerceStringArray(personaSignals.notableRoutines, 12),
+      contradictionsOrTensions: coerceStringArray(personaSignals.contradictionsOrTensions, 12),
+    },
+    relationships: sanitizeChunkRelationships(value.relationships),
+  };
 }
 
 function containsHan(value: string): boolean {
@@ -657,10 +786,13 @@ function buildDiscoveryCards(input: {
 
 function buildPreview(report: DeepAnalysisReportDocument): DeepAnalysisReportPreview {
   return {
-    generatedAt: report.overview.generatedAt,
-    summary: report.persona.summary,
-    topThemes: report.themeLandscape.highlights.slice(0, 3).map((item) => item.name),
-    keyRecommendations: report.recommendations.slice(0, 3),
+    generatedAt: trimToString(report.overview?.generatedAt) ?? new Date().toISOString(),
+    summary: trimToString(report.persona?.summary) ?? 'Deep analysis report generated.',
+    topThemes: (report.themeLandscape?.highlights ?? [])
+      .map((item) => trimToString(item?.name))
+      .filter((item): item is string => item !== null)
+      .slice(0, 3),
+    keyRecommendations: coerceStringArray(report.recommendations, 3),
   };
 }
 
@@ -681,22 +813,23 @@ function validateReport(
   totalMemoryCount: number,
   deduplicatedMemoryCount: number,
 ): void {
-  if (report.overview.memoryCount !== totalMemoryCount) {
+  if (report.overview?.memoryCount !== totalMemoryCount) {
     throw new AppError('Report overview count does not match source memory count', {
       statusCode: 500,
       code: 'DEEP_ANALYSIS_REPORT_INVALID',
     });
   }
 
-  if (report.overview.deduplicatedMemoryCount !== deduplicatedMemoryCount) {
+  if (report.overview?.deduplicatedMemoryCount !== deduplicatedMemoryCount) {
     throw new AppError('Report deduplicated count does not match prepared memory count', {
       statusCode: 500,
       code: 'DEEP_ANALYSIS_REPORT_INVALID',
     });
   }
 
-  const themeNames = (report.themeLandscape.highlights ?? []).map((item) => normalizeToken(item.name));
-  if (themeNames.some((name) => DISALLOWED_THEME_TERMS.has(name))) {
+  const themeNames = (report.themeLandscape?.highlights ?? [])
+    .map((item) => normalizeToken(item?.name));
+  if (themeNames.some((name) => !name || DISALLOWED_THEME_TERMS.has(name))) {
     throw new AppError('Report theme landscape contains generic or disallowed terms', {
       statusCode: 500,
       code: 'DEEP_ANALYSIS_REPORT_INVALID',
@@ -704,13 +837,14 @@ function validateReport(
   }
 
   for (const group of [
-    ...(report.entities.people ?? []),
-    ...(report.entities.teams ?? []),
-    ...(report.entities.projects ?? []),
-    ...(report.entities.tools ?? []),
-    ...(report.entities.places ?? []),
+    ...(report.entities?.people ?? []),
+    ...(report.entities?.teams ?? []),
+    ...(report.entities?.projects ?? []),
+    ...(report.entities?.tools ?? []),
+    ...(report.entities?.places ?? []),
   ]) {
-    if (DISALLOWED_ENTITY_TERMS.has(normalizeToken(group.label))) {
+    const label = normalizeToken(group?.label);
+    if (!label || DISALLOWED_ENTITY_TERMS.has(label)) {
       throw new AppError('Report entities contain generic or disallowed labels', {
         statusCode: 500,
         code: 'DEEP_ANALYSIS_REPORT_INVALID',
@@ -718,39 +852,63 @@ function validateReport(
     }
     validateMemoryReferences(
       memoryIds,
-      group.evidenceMemoryIds,
+      coerceStringArray(group?.evidenceMemoryIds, 12),
       'Report entity evidence references an unknown memory',
     );
   }
 
-  for (const relationship of report.relationships) {
+  for (const relationship of report.relationships ?? []) {
+    if (
+      !normalizeToken(relationship?.source) ||
+      !normalizeToken(relationship?.relation) ||
+      !normalizeToken(relationship?.target)
+    ) {
+      throw new AppError('Report relationships contain empty fields', {
+        statusCode: 500,
+        code: 'DEEP_ANALYSIS_REPORT_INVALID',
+      });
+    }
     validateMemoryReferences(
       memoryIds,
-      relationship.evidenceMemoryIds,
+      coerceStringArray(relationship?.evidenceMemoryIds, 12),
       'Report relationship evidence references an unknown memory',
     );
   }
 
-  for (const issue of report.quality.lowQualityExamples ?? []) {
+  for (const issue of report.quality?.lowQualityExamples ?? []) {
+    const memoryId = trimToString(issue?.memoryId);
+    if (!memoryId) {
+      throw new AppError('Report low-quality examples contain empty memory ids', {
+        statusCode: 500,
+        code: 'DEEP_ANALYSIS_REPORT_INVALID',
+      });
+    }
     validateMemoryReferences(
       memoryIds,
-      [issue.memoryId],
+      [memoryId],
       'Report low-quality memory references an unknown memory',
     );
   }
 
-  for (const cluster of report.quality.duplicateClusters ?? []) {
+  for (const cluster of report.quality?.duplicateClusters ?? []) {
+    const canonicalMemoryId = trimToString(cluster?.canonicalMemoryId);
+    if (!canonicalMemoryId) {
+      throw new AppError('Report duplicate clusters contain empty canonical ids', {
+        statusCode: 500,
+        code: 'DEEP_ANALYSIS_REPORT_INVALID',
+      });
+    }
     validateMemoryReferences(
       memoryIds,
-      [cluster.canonicalMemoryId, ...cluster.duplicateMemoryIds],
+      [canonicalMemoryId, ...coerceStringArray(cluster?.duplicateMemoryIds, 12)],
       'Report duplicate cluster references an unknown memory',
     );
   }
 
-  for (const highlight of report.persona.evidenceHighlights ?? []) {
+  for (const highlight of report.persona?.evidenceHighlights ?? []) {
     validateMemoryReferences(
       memoryIds,
-      highlight.memoryIds,
+      coerceStringArray(highlight?.memoryIds, 12),
       'Report persona evidence references an unknown memory',
     );
   }
@@ -758,21 +916,21 @@ function validateReport(
   for (const discovery of report.discoveries ?? []) {
     validateMemoryReferences(
       memoryIds,
-      discovery.evidenceMemoryIds,
+      coerceStringArray(discovery?.evidenceMemoryIds, 12),
       'Report discovery evidence references an unknown memory',
     );
   }
 
   const personaSignalCount =
-    (report.persona.workingStyle?.length ?? 0) +
-    (report.persona.goals?.length ?? 0) +
-    (report.persona.preferences?.length ?? 0) +
-    (report.persona.constraints?.length ?? 0) +
-    (report.persona.decisionSignals?.length ?? 0) +
-    (report.persona.notableRoutines?.length ?? 0) +
-    (report.persona.evidenceHighlights?.length ?? 0);
+    (report.persona?.workingStyle?.length ?? 0) +
+    (report.persona?.goals?.length ?? 0) +
+    (report.persona?.preferences?.length ?? 0) +
+    (report.persona?.constraints?.length ?? 0) +
+    (report.persona?.decisionSignals?.length ?? 0) +
+    (report.persona?.notableRoutines?.length ?? 0) +
+    (report.persona?.evidenceHighlights?.length ?? 0);
 
-  if (report.persona.summary.trim().length < 80 || personaSignalCount < 4) {
+  if ((trimToString(report.persona?.summary)?.length ?? 0) < 80 || personaSignalCount < 4) {
     throw new AppError('Report persona section is too shallow', {
       statusCode: 500,
       code: 'DEEP_ANALYSIS_REPORT_INVALID',
@@ -794,7 +952,62 @@ function createInternalComment(model: string): InternalCommentPayload {
       totalTokens: 0,
     },
     calls: [],
+    events: [],
+    runtimeErrors: [],
   };
+}
+
+function appendInternalEvent(
+  internalComment: InternalCommentPayload,
+  level: InternalCommentEvent['level'],
+  stage: string,
+  event: string,
+  fields: Record<string, string | number | boolean | null>,
+): void {
+  internalComment.events.push({
+    at: new Date().toISOString(),
+    level,
+    stage,
+    event,
+    fields,
+  });
+
+  if (internalComment.events.length > INTERNAL_COMMENT_EVENT_LIMIT) {
+    internalComment.events.splice(0, internalComment.events.length - INTERNAL_COMMENT_EVENT_LIMIT);
+  }
+}
+
+function isTrimRuntimeError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes('trim') && message.includes('undefined');
+}
+
+function appendRuntimeError(
+  internalComment: InternalCommentPayload,
+  stage: string,
+  error: unknown,
+  errorCode: string | null,
+): void {
+  const errorName = error instanceof Error ? error.name : 'UnknownError';
+  const errorMessage = error instanceof Error ? error.message : String(error);
+  const stack = error instanceof Error ? error.stack ?? null : null;
+
+  internalComment.runtimeErrors.push({
+    at: new Date().toISOString(),
+    stage,
+    errorName,
+    errorCode,
+    errorMessage,
+    stack: stack?.slice(0, INTERNAL_COMMENT_STACK_LIMIT) ?? null,
+    isTrimError: isTrimRuntimeError(error),
+  });
+
+  if (internalComment.runtimeErrors.length > INTERNAL_COMMENT_RUNTIME_ERROR_LIMIT) {
+    internalComment.runtimeErrors.splice(
+      0,
+      internalComment.runtimeErrors.length - INTERNAL_COMMENT_RUNTIME_ERROR_LIMIT,
+    );
+  }
 }
 
 function parseInternalComment(
@@ -822,6 +1035,10 @@ function parseInternalComment(
         totalTokens: Number(parsed.aggregate?.totalTokens ?? 0),
       },
       calls: Array.isArray(parsed.calls) ? parsed.calls as InternalCommentCall[] : [],
+      events: Array.isArray(parsed.events) ? parsed.events as InternalCommentEvent[] : [],
+      runtimeErrors: Array.isArray(parsed.runtimeErrors)
+        ? parsed.runtimeErrors as InternalCommentRuntimeError[]
+        : [],
     };
   } catch {
     return createInternalComment(fallbackModel);
@@ -851,11 +1068,17 @@ export class DeepAnalysisReportProcessorService {
       successCount: 0,
       failureCount: 0,
     };
+    let currentStage: DeepAnalysisReportStage = DeepAnalysisReportStage.PREPROCESS;
 
     if (reportRecord.status === DeepAnalysisReportStatus.COMPLETED) {
       return;
     }
 
+    appendInternalEvent(internalComment, 'info', currentStage, 'deep_analysis_process_started', {
+      reportId: reportRecord.id,
+      status: reportRecord.status,
+      lang: reportRecord.lang,
+    });
     await this.repository.updateDeepAnalysisReport(reportRecord.id, {
       status: DeepAnalysisReportStatus.PREPARING,
       stage: DeepAnalysisReportStage.PREPROCESS,
@@ -872,10 +1095,20 @@ export class DeepAnalysisReportProcessorService {
       const prepared = this.prepareMemories(payload.memories);
       const totalChunks = this.buildChunkCount(prepared.uniqueMemories.length);
       const chunkConcurrency = this.buildChunkConcurrency(totalChunks);
+      currentStage = DeepAnalysisReportStage.CHUNK_ANALYSIS;
       await this.repository.updateDeepAnalysisReport(reportRecord.id, {
         status: DeepAnalysisReportStatus.ANALYZING,
         stage: DeepAnalysisReportStage.CHUNK_ANALYSIS,
         progressPercent: CHUNK_ANALYSIS_PROGRESS_START,
+      });
+      appendInternalEvent(internalComment, 'info', currentStage, 'deep_analysis_chunk_analysis_started', {
+        reportId: reportRecord.id,
+        memoryCount: payload.memories.length,
+        deduplicatedMemoryCount: prepared.deduplicatedCount,
+        totalChunks,
+        concurrency: chunkConcurrency,
+        model: this.qwen.getConfiguredModel(),
+        thinkingDisabled: true,
       });
       this.logInfo('deep_analysis_chunk_analysis_started', {
         reportId: reportRecord.id,
@@ -895,10 +1128,15 @@ export class DeepAnalysisReportProcessorService {
       const chunkInsights = chunkOutcome.insights;
       const corpusSignals = this.buildCorpusSignals(prepared, chunkInsights);
 
+      currentStage = DeepAnalysisReportStage.GLOBAL_SYNTHESIS;
       await this.repository.updateDeepAnalysisReport(reportRecord.id, {
         status: DeepAnalysisReportStatus.SYNTHESIZING,
         stage: DeepAnalysisReportStage.GLOBAL_SYNTHESIS,
         progressPercent: 60,
+      });
+      appendInternalEvent(internalComment, 'info', currentStage, 'deep_analysis_global_synthesis_started', {
+        reportId: reportRecord.id,
+        totalChunks: chunkSummary.totalChunks,
       });
       this.logInfo('deep_analysis_global_synthesis_started', {
         reportId: reportRecord.id,
@@ -914,6 +1152,12 @@ export class DeepAnalysisReportProcessorService {
         corpusSignals,
       );
       let report = synthesisOutcome.report;
+      appendInternalEvent(internalComment, 'info', currentStage, 'deep_analysis_global_synthesis_completed', {
+        reportId: reportRecord.id,
+        durationMs: synthesisOutcome.durationMs,
+        fallbackUsed: synthesisOutcome.fallbackUsed,
+        errorCode: synthesisOutcome.errorCode,
+      });
       this.logInfo('deep_analysis_global_synthesis_completed', {
         reportId: reportRecord.id,
         durationMs: synthesisOutcome.durationMs,
@@ -921,6 +1165,7 @@ export class DeepAnalysisReportProcessorService {
         errorCode: synthesisOutcome.errorCode,
       });
 
+      currentStage = DeepAnalysisReportStage.VALIDATE;
       await this.repository.updateDeepAnalysisReport(reportRecord.id, {
         status: DeepAnalysisReportStatus.SYNTHESIZING,
         stage: DeepAnalysisReportStage.VALIDATE,
@@ -937,6 +1182,12 @@ export class DeepAnalysisReportProcessorService {
           prepared.deduplicatedCount,
         );
       } catch (error) {
+        appendRuntimeError(internalComment, currentStage, error, 'DEEP_ANALYSIS_REPORT_INVALID');
+        appendInternalEvent(internalComment, 'warn', currentStage, 'deep_analysis_validation_failed', {
+          reportId: reportRecord.id,
+          errorCode: 'DEEP_ANALYSIS_REPORT_INVALID',
+          isTrimError: isTrimRuntimeError(error),
+        });
         this.logger.warn(`Validation failed for report ${reportRecord.id}; retrying with heuristic synthesis`);
         report = this.buildHeuristicReport(reportRecord.lang, prepared, corpusSignals);
         validateReport(
@@ -949,6 +1200,14 @@ export class DeepAnalysisReportProcessorService {
 
       const reportObjectKey = `deep-analysis/reports/${reportRecord.id}/report.json`;
       await this.storage.putJson(reportObjectKey, report);
+      currentStage = DeepAnalysisReportStage.COMPLETE;
+      appendInternalEvent(internalComment, 'info', currentStage, 'deep_analysis_report_completed', {
+        reportId: reportRecord.id,
+        totalDurationMs: Date.now() - processStartedAt,
+        totalChunks: chunkSummary.totalChunks,
+        chunkSuccessCount: chunkSummary.successCount,
+        chunkFailureCount: chunkSummary.failureCount,
+      });
       await this.repository.updateDeepAnalysisReport(reportRecord.id, {
         status: DeepAnalysisReportStatus.COMPLETED,
         stage: DeepAnalysisReportStage.COMPLETE,
@@ -967,6 +1226,16 @@ export class DeepAnalysisReportProcessorService {
       });
     } catch (error) {
       const errorCode = error instanceof AppError ? error.code : 'DEEP_ANALYSIS_PROCESSING_FAILED';
+      appendRuntimeError(internalComment, currentStage, error, errorCode);
+      appendInternalEvent(internalComment, 'error', currentStage, 'deep_analysis_report_failed', {
+        reportId: reportRecord.id,
+        totalDurationMs: Date.now() - processStartedAt,
+        totalChunks: chunkSummary.totalChunks,
+        chunkSuccessCount: chunkSummary.successCount,
+        chunkFailureCount: chunkSummary.failureCount,
+        errorCode,
+        isTrimError: isTrimRuntimeError(error),
+      });
       await this.repository.updateDeepAnalysisReport(reportRecord.id, {
         status: DeepAnalysisReportStatus.FAILED,
         stage: DeepAnalysisReportStage.VALIDATE,
@@ -1082,6 +1351,16 @@ export class DeepAnalysisReportProcessorService {
         }
         completedChunkCount += 1;
         const progressPercent = this.buildChunkAnalysisProgress(completedChunkCount, chunks.length);
+        appendInternalEvent(internalComment, 'info', DeepAnalysisReportStage.CHUNK_ANALYSIS, 'deep_analysis_chunk_completed', {
+          reportId,
+          chunkIndex: execution.index + 1,
+          totalChunks: chunks.length,
+          chunkSize: execution.chunkSize,
+          durationMs: execution.durationMs,
+          fallbackUsed: execution.fallbackUsed,
+          errorCode: execution.result.requestMeta.errorCode,
+          progressPercent,
+        });
         await this.repository.updateDeepAnalysisReport(reportId, {
           progressPercent,
           internalComment: JSON.stringify(internalComment),
@@ -1102,6 +1381,12 @@ export class DeepAnalysisReportProcessorService {
     };
 
     const runChunk = async (index: number, chunk: PreparedMemory[]): Promise<void> => {
+      appendInternalEvent(internalComment, 'info', DeepAnalysisReportStage.CHUNK_ANALYSIS, 'deep_analysis_chunk_started', {
+        reportId,
+        chunkIndex: index + 1,
+        totalChunks: chunks.length,
+        chunkSize: chunk.length,
+      });
       this.logInfo('deep_analysis_chunk_started', {
         reportId,
         chunkIndex: index + 1,
@@ -1130,27 +1415,7 @@ export class DeepAnalysisReportProcessorService {
       const durationMs = Date.now() - chunkStartedAt;
       const fallbackUsed = qwenInsight.parsed === null;
       const insight = qwenInsight.parsed
-        ? {
-          summary: qwenInsight.parsed.summary ?? '',
-          themes: Array.isArray(qwenInsight.parsed.themes) ? qwenInsight.parsed.themes : [],
-          entities: {
-            people: qwenInsight.parsed.entities?.people ?? [],
-            teams: qwenInsight.parsed.entities?.teams ?? [],
-            projects: qwenInsight.parsed.entities?.projects ?? [],
-            tools: qwenInsight.parsed.entities?.tools ?? [],
-            places: qwenInsight.parsed.entities?.places ?? [],
-          },
-          personaSignals: {
-            workingStyle: qwenInsight.parsed.personaSignals?.workingStyle ?? [],
-            goals: qwenInsight.parsed.personaSignals?.goals ?? [],
-            preferences: qwenInsight.parsed.personaSignals?.preferences ?? [],
-            constraints: qwenInsight.parsed.personaSignals?.constraints ?? [],
-            decisionSignals: qwenInsight.parsed.personaSignals?.decisionSignals ?? [],
-            notableRoutines: qwenInsight.parsed.personaSignals?.notableRoutines ?? [],
-            contradictionsOrTensions: qwenInsight.parsed.personaSignals?.contradictionsOrTensions ?? [],
-          },
-          relationships: Array.isArray(qwenInsight.parsed.relationships) ? qwenInsight.parsed.relationships : [],
-        }
+        ? sanitizeChunkInsight(qwenInsight.parsed)
         : this.buildHeuristicChunkInsight(chunk);
 
       await commitChunkResult({

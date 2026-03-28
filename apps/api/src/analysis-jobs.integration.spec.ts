@@ -27,6 +27,8 @@ import { ApiKeyGuard } from './common/api-key.guard';
 import { AppExceptionFilter } from './common/app-exception.filter';
 import { RateLimitGuard } from './common/rate-limit.guard';
 
+const TEST_QWEN_MODEL = 'test-qwen-model';
+
 const legacyCategories = ['identity', 'emotion', 'preference', 'experience', 'activity'] as const;
 
 interface FakeJob {
@@ -477,7 +479,7 @@ describe('analysis jobs integration', () => {
               deepAnalysisDailyLimitBypassFingerprints: [],
               qwenApiBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
               qwenApiKey: '',
-              qwenModel: 'qwen3.5-pro',
+              qwenModel: TEST_QWEN_MODEL,
               qwenRequestTimeoutMs: 120000,
               deepAnalysisChunkConcurrency: 5,
             },

@@ -29,8 +29,8 @@
 ## LLM Framework
 - 采用固定四阶段，避免把 1k-20k 条 memory 一次塞进模型：
   - `Stage 1: Preprocess`：规范化、去重统计、语言/时间跨度统计、基础质量指标、chunk 规划。
-  - `Stage 2: Chunk Analysis`：按 token/条数切块调用 `qwen3.5-pro`，每块输出严格 JSON。
-  - `Stage 3: Global Synthesis`：聚合 chunk JSON，再调用一次 `qwen3.5-pro` 生成最终报告 JSON。
+  - `Stage 2: Chunk Analysis`：按 token/条数切块调用 `QWEN_MODEL` 指定的模型，每块输出严格 JSON。
+  - `Stage 3: Global Synthesis`：聚合 chunk JSON，再调用一次 `QWEN_MODEL` 指定的模型生成最终报告 JSON。
   - `Stage 4: Validate`：校验 schema、evidence memory IDs、计数一致性，失败重试一次，仍失败则报告失败。
 - Chunk 和 Final 都必须走**结构化 JSON schema**，不依赖自由文本；每条洞察都要求 `evidenceMemoryIds`，可附最多 2 条短摘录，禁止保存整份原始 memory 正文到最终报告。
 - V1 报告 JSON 固定包含这些 section：
@@ -42,7 +42,7 @@
   - `quality`: 重复内容、低质量内容、噪音模式、覆盖缺口
   - `recommendations`: 记忆优化建议和后续产品利用建议
   - `productSignals`: 可供未来增强 `Memory Insight` 的候选 nodes/edges/search seeds
-- 默认模型固定 `qwen3.5-pro`，通过新 provider 配置注入；新增环境变量至少包括 `MEM9_SOURCE_API_BASE_URL`、`QWEN_API_KEY`、`QWEN_MODEL=qwen3.5-pro`、`MEM9_SOURCE_PAGE_SIZE=200`。
+- 模型完全通过环境变量注入；新增环境变量至少包括 `MEM9_SOURCE_API_BASE_URL`、`QWEN_API_KEY`、`QWEN_MODEL`、`MEM9_SOURCE_PAGE_SIZE=200`。
 
 ## Public Interfaces / Types
 - `mem9` 新增前端类型：

@@ -2,6 +2,8 @@ import type { AppConfig } from '@mem9/config';
 
 import { SqsConsumerService } from './sqs-consumer.service';
 
+const TEST_QWEN_MODEL = 'test-qwen-model';
+
 function createConfig(overrides?: Partial<AppConfig['sqs']>): AppConfig {
   return {
     app: {
@@ -44,7 +46,7 @@ function createConfig(overrides?: Partial<AppConfig['sqs']>): AppConfig {
       deepAnalysisDailyLimitBypassFingerprints: [],
       qwenApiBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
       qwenApiKey: undefined,
-      qwenModel: 'qwen3.5-pro',
+      qwenModel: TEST_QWEN_MODEL,
       qwenRequestTimeoutMs: 120000,
       deepAnalysisChunkConcurrency: 5,
     },

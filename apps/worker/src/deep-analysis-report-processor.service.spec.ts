@@ -4,6 +4,8 @@ import { Logger } from '@nestjs/common';
 
 import { DeepAnalysisReportProcessorService } from './deep-analysis-report-processor.service';
 
+const TEST_QWEN_MODEL = 'test-qwen-model';
+
 function createConfig(overrides?: Partial<AppConfig['analysis']>): AppConfig {
   return {
     app: {
@@ -46,7 +48,7 @@ function createConfig(overrides?: Partial<AppConfig['analysis']>): AppConfig {
       deepAnalysisDailyLimitBypassFingerprints: [],
       qwenApiBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
       qwenApiKey: 'test-qwen-key',
-      qwenModel: 'qwen3.5-plus',
+      qwenModel: TEST_QWEN_MODEL,
       qwenRequestTimeoutMs: 120000,
       deepAnalysisChunkConcurrency: 5,
       ...overrides,
@@ -113,7 +115,7 @@ function createChunkResult(overrides?: {
   return {
     parsed,
     usage: {
-      model: 'qwen3.5-plus',
+      model: TEST_QWEN_MODEL,
       promptTokens,
       completionTokens,
       totalTokens,
@@ -137,7 +139,7 @@ function createSynthesisResult() {
   return {
     parsed: null,
     usage: {
-      model: 'qwen3.5-plus',
+      model: TEST_QWEN_MODEL,
       promptTokens: 90,
       completionTokens: 20,
       totalTokens: 110,
@@ -220,7 +222,7 @@ describe('deep analysis report processor service', () => {
       putJson: jest.fn(async () => undefined),
     };
     const qwen = {
-      getConfiguredModel: jest.fn(() => 'qwen3.5-plus'),
+      getConfiguredModel: jest.fn(() => TEST_QWEN_MODEL),
       createJson: jest
         .fn()
         .mockImplementationOnce(async () => ({
@@ -470,7 +472,7 @@ describe('deep analysis report processor service', () => {
       putJson: jest.fn(async () => undefined),
     };
     const qwen = {
-      getConfiguredModel: jest.fn(() => 'qwen3.5-plus'),
+      getConfiguredModel: jest.fn(() => TEST_QWEN_MODEL),
       createJson: jest
         .fn()
         .mockImplementationOnce(async () => createChunkResult({
@@ -513,6 +515,161 @@ describe('deep analysis report processor service', () => {
     expect(progressUpdates).toEqual(expect.arrayContaining([10, 35, 47, 59, 60, 90, 100]));
   });
 
+  it('filters malformed chunk theme and relationship fields instead of crashing before synthesis', async () => {
+    const repository = {
+      getDeepAnalysisReport: jest.fn(async () => ({
+        id: 'dar_malformed_chunk',
+        status: 'QUEUED',
+        lang: 'en',
+        sourceSnapshotObjectKey: 'deep-analysis/reports/dar_malformed_chunk/source.json.gz',
+        internalComment: null,
+      })),
+      updateDeepAnalysisReport: jest.fn(async () => undefined),
+    };
+    const storage = {
+      getObjectBuffer: jest.fn(async () => gzipJson({
+        fetchedAt: '2026-03-28T00:00:00Z',
+        memoryCount: 4,
+        memories: [
+          {
+            id: 'mem_1',
+            content: 'Prefer structured memory capture and work with Alice Johnson on the dashboard roadmap.',
+            createdAt: '2026-03-20T00:00:00Z',
+            updatedAt: '2026-03-20T00:00:00Z',
+            memoryType: 'insight',
+            tags: ['dashboard-roadmap'],
+            metadata: null,
+          },
+          {
+            id: 'mem_2',
+            content: 'Every morning Bosn reviews traffic dashboards and prioritizes concise but detailed summaries for the Platform Team.',
+            createdAt: '2026-03-21T00:00:00Z',
+            updatedAt: '2026-03-21T00:00:00Z',
+            memoryType: 'insight',
+            tags: ['traffic-ops'],
+            metadata: null,
+          },
+          {
+            id: 'mem_3',
+            content: 'Need to automate duplicate cleanup for memory analysis while keeping canonical entries stable.',
+            createdAt: '2026-03-22T00:00:00Z',
+            updatedAt: '2026-03-22T00:00:00Z',
+            memoryType: 'insight',
+            tags: ['memory-analysis'],
+            metadata: null,
+          },
+          {
+            id: 'mem_4',
+            content: 'Bosn plans to keep dashboard reporting workflows durable and document tradeoffs explicitly.',
+            createdAt: '2026-03-23T00:00:00Z',
+            updatedAt: '2026-03-23T00:00:00Z',
+            memoryType: 'insight',
+            tags: ['dashboard-roadmap'],
+            metadata: null,
+          },
+        ],
+      })),
+      putJson: jest.fn(async () => undefined),
+    };
+    const qwen = {
+      getConfiguredModel: jest.fn(() => TEST_QWEN_MODEL),
+      createJson: jest
+        .fn()
+        .mockImplementationOnce(async () => createChunkResult({
+          parsed: {
+            summary: 'dashboard collaboration and reporting routines',
+            themes: [
+              { name: 'dashboard roadmap', memoryIds: ['mem_1', 'mem_4'] },
+              { memoryIds: ['mem_2'] },
+            ],
+            entities: {
+              people: ['Alice Johnson', 'Bosn'],
+              teams: ['Platform Team'],
+              projects: ['dashboard roadmap'],
+              tools: ['React'],
+              places: [],
+            },
+            personaSignals: {
+              workingStyle: ['Prefers structured reviews and staged rollout decisions.'],
+              goals: ['Keep memory workflows durable.'],
+              preferences: ['Concise but information-dense summaries.'],
+              constraints: ['Do not delete canonical memories.'],
+              decisionSignals: ['Balances speed and correctness in dashboard work.'],
+              notableRoutines: ['Reviews dashboards every morning.'],
+              contradictionsOrTensions: ['Wants concise output without losing implementation detail.'],
+            },
+            relationships: [
+              {
+                source: 'user',
+                relation: 'works_with',
+                target: 'Alice Johnson',
+                confidence: 0.82,
+                evidenceMemoryIds: ['mem_1'],
+                evidenceExcerpts: ['Prefer structured memory capture and work with Alice Johnson on the dashboard roadmap.'],
+              },
+              {
+                source: 'user',
+                relation: 'works_with',
+                confidence: 0.5,
+                evidenceMemoryIds: ['mem_2'],
+                evidenceExcerpts: ['invalid relationship without target'],
+              },
+            ],
+          },
+        }))
+        .mockImplementationOnce(async () => createSynthesisResult()),
+    };
+    const processor = new DeepAnalysisReportProcessorService(
+      repository as never,
+      storage as never,
+      qwen as never,
+      createConfig() as never,
+    );
+
+    await processor.process({
+      messageType: 'deep_report',
+      reportId: 'dar_malformed_chunk',
+      traceId: 'trace_malformed_chunk',
+    });
+
+    expect(qwen.createJson).toHaveBeenCalledTimes(2);
+    expect(qwen.createJson).toHaveBeenNthCalledWith(
+      2,
+      'global_synthesis',
+      expect.any(String),
+      expect.any(String),
+    );
+    expect(repository.updateDeepAnalysisReport).toHaveBeenLastCalledWith(
+      'dar_malformed_chunk',
+      expect.objectContaining({
+        status: 'COMPLETED',
+        stage: 'COMPLETE',
+        progressPercent: 100,
+        internalComment: expect.any(String),
+      }),
+    );
+
+    const finalCall = (
+      repository.updateDeepAnalysisReport.mock.calls as unknown as Array<[string, { internalComment?: string }]>
+    ).at(-1);
+    const finalInternalComment = JSON.parse(String(finalCall?.[1]?.internalComment)) as {
+      calls: Array<{
+        stage: string;
+        success: boolean;
+      }>;
+    };
+    expect(finalInternalComment.calls).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 'chunk_analysis',
+        success: true,
+      }),
+      expect.objectContaining({
+        stage: 'global_synthesis',
+        success: false,
+      }),
+    ]));
+  });
+
   it('limits chunk analysis to five concurrent Qwen requests', async () => {
     const memories = Array.from({ length: 1081 }, (_, index) => ({
       id: `mem_${index + 1}`,
@@ -545,7 +702,7 @@ describe('deep analysis report processor service', () => {
     let maxInFlight = 0;
     const pendingChunkResolves: Array<() => void> = [];
     const qwen = {
-      getConfiguredModel: jest.fn(() => 'qwen3.5-plus'),
+      getConfiguredModel: jest.fn(() => TEST_QWEN_MODEL),
       createJson: jest.fn(async (stage: string) => {
         if (stage === 'global_synthesis') {
           return createSynthesisResult();
@@ -595,6 +752,150 @@ describe('deep analysis report processor service', () => {
     expect(maxInFlight).toBe(5);
   });
 
+  it('stores runtime trim errors and recent event logs in internal comment when processing fails', async () => {
+    const repository = {
+      getDeepAnalysisReport: jest.fn(async () => ({
+        id: 'dar_trim_failure',
+        status: 'QUEUED',
+        lang: 'en',
+        sourceSnapshotObjectKey: 'deep-analysis/reports/dar_trim_failure/source.json.gz',
+        internalComment: null,
+      })),
+      updateDeepAnalysisReport: jest.fn(async () => undefined),
+    };
+    const storage = {
+      getObjectBuffer: jest.fn(async () => gzipJson({
+        fetchedAt: '2026-03-28T00:00:00Z',
+        memoryCount: 4,
+        memories: [
+          {
+            id: 'mem_1',
+            content: 'Prefer structured memory capture and work with Alice Johnson on the dashboard roadmap.',
+            createdAt: '2026-03-20T00:00:00Z',
+            updatedAt: '2026-03-20T00:00:00Z',
+            memoryType: 'insight',
+            tags: ['dashboard-roadmap'],
+            metadata: null,
+          },
+          {
+            id: 'mem_2',
+            content: 'Every morning Bosn reviews traffic dashboards and prioritizes concise but detailed summaries for the Platform Team.',
+            createdAt: '2026-03-21T00:00:00Z',
+            updatedAt: '2026-03-21T00:00:00Z',
+            memoryType: 'insight',
+            tags: ['traffic-ops'],
+            metadata: null,
+          },
+          {
+            id: 'mem_3',
+            content: 'Need to automate duplicate cleanup for memory analysis while keeping canonical entries stable.',
+            createdAt: '2026-03-22T00:00:00Z',
+            updatedAt: '2026-03-22T00:00:00Z',
+            memoryType: 'insight',
+            tags: ['memory-analysis'],
+            metadata: null,
+          },
+          {
+            id: 'mem_4',
+            content: 'Bosn plans to keep dashboard reporting workflows durable and document tradeoffs explicitly.',
+            createdAt: '2026-03-23T00:00:00Z',
+            updatedAt: '2026-03-23T00:00:00Z',
+            memoryType: 'insight',
+            tags: ['dashboard-roadmap'],
+            metadata: null,
+          },
+        ],
+      })),
+      putJson: jest.fn(async () => undefined),
+    };
+    const qwen = {
+      getConfiguredModel: jest.fn(() => TEST_QWEN_MODEL),
+      createJson: jest
+        .fn()
+        .mockImplementationOnce(async () => createChunkResult({
+          parsed: {
+            summary: 'dashboard collaboration and reporting routines',
+            themes: [{ name: 'dashboard roadmap', memoryIds: ['mem_1', 'mem_4'] }],
+            entities: {
+              people: ['Alice Johnson', 'Bosn'],
+              teams: ['Platform Team'],
+              projects: ['dashboard roadmap'],
+              tools: ['React'],
+              places: [],
+            },
+            personaSignals: {
+              workingStyle: ['Prefers structured reviews and staged rollout decisions.'],
+              goals: ['Keep memory workflows durable.'],
+              preferences: ['Concise but information-dense summaries.'],
+              constraints: ['Do not delete canonical memories.'],
+              decisionSignals: ['Balances speed and correctness in dashboard work.'],
+              notableRoutines: ['Reviews dashboards every morning.'],
+              contradictionsOrTensions: ['Wants concise output without losing implementation detail.'],
+            },
+            relationships: [],
+          },
+        }))
+        .mockImplementationOnce(async () => {
+          throw new TypeError("Cannot read properties of undefined (reading 'trim')");
+        }),
+    };
+    const processor = new DeepAnalysisReportProcessorService(
+      repository as never,
+      storage as never,
+      qwen as never,
+      createConfig() as never,
+    );
+
+    await processor.process({
+      messageType: 'deep_report',
+      reportId: 'dar_trim_failure',
+      traceId: 'trace_trim_failure',
+    });
+
+    expect(repository.updateDeepAnalysisReport).toHaveBeenLastCalledWith(
+      'dar_trim_failure',
+      expect.objectContaining({
+        status: 'FAILED',
+        stage: 'VALIDATE',
+        errorCode: 'DEEP_ANALYSIS_PROCESSING_FAILED',
+        errorMessage: "Cannot read properties of undefined (reading 'trim')",
+        internalComment: expect.any(String),
+      }),
+    );
+
+    const finalCall = (
+      repository.updateDeepAnalysisReport.mock.calls as unknown as Array<[string, { internalComment?: string }]>
+    ).at(-1);
+    const finalInternalComment = JSON.parse(String(finalCall?.[1]?.internalComment)) as {
+      events: Array<{
+        event: string;
+        stage: string;
+      }>;
+      runtimeErrors: Array<{
+        stage: string;
+        errorMessage: string;
+        isTrimError: boolean;
+        stack: string | null;
+      }>;
+    };
+    expect(finalInternalComment.events.map((item) => item.event)).toEqual(expect.arrayContaining([
+      'deep_analysis_process_started',
+      'deep_analysis_chunk_analysis_started',
+      'deep_analysis_chunk_started',
+      'deep_analysis_chunk_completed',
+      'deep_analysis_global_synthesis_started',
+      'deep_analysis_report_failed',
+    ]));
+    expect(finalInternalComment.runtimeErrors).toEqual([
+      expect.objectContaining({
+        stage: 'GLOBAL_SYNTHESIS',
+        errorMessage: "Cannot read properties of undefined (reading 'trim')",
+        isTrimError: true,
+        stack: expect.any(String),
+      }),
+    ]);
+  });
+
   it('keeps internal comment audit consistent when chunks finish out of order and one times out', async () => {
     const memories = Array.from({ length: 181 }, (_, index) => ({
       id: `mem_${index + 1}`,
@@ -627,7 +928,7 @@ describe('deep analysis report processor service', () => {
     let secondResolve: (() => void) | undefined;
     let chunkCallCount = 0;
     const qwen = {
-      getConfiguredModel: jest.fn(() => 'qwen3.5-plus'),
+      getConfiguredModel: jest.fn(() => TEST_QWEN_MODEL),
       createJson: jest.fn(async (stage: string) => {
         if (stage === 'global_synthesis') {
           return createSynthesisResult();
@@ -770,7 +1071,7 @@ describe('deep analysis report processor service', () => {
     let firstResolve: (() => void) | undefined;
     let secondResolve: (() => void) | undefined;
     const qwen = {
-      getConfiguredModel: jest.fn(() => 'qwen3.5-plus'),
+      getConfiguredModel: jest.fn(() => TEST_QWEN_MODEL),
       createJson: jest.fn(async (stage: string, _systemPrompt: string, userPrompt: string) => {
         if (stage === 'global_synthesis') {
           const payload = JSON.parse(userPrompt) as {

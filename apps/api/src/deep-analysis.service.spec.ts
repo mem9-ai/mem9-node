@@ -2,6 +2,8 @@ import type { AppConfig } from '@mem9/config';
 
 import { DeepAnalysisService } from './deep-analysis.service';
 
+const TEST_QWEN_MODEL = 'test-qwen-model';
+
 function createContext() {
   const apiKeyFingerprint = Buffer.alloc(32, 7);
   return {
@@ -66,7 +68,7 @@ function createConfig(overrides?: {
       deepAnalysisDailyLimitBypassFingerprints: [],
       qwenApiBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
       qwenApiKey: undefined,
-      qwenModel: 'qwen3.5-pro',
+      qwenModel: TEST_QWEN_MODEL,
       qwenRequestTimeoutMs: 120000,
       deepAnalysisChunkConcurrency: 5,
       ...overrides?.analysis,

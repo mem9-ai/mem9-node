@@ -41,7 +41,7 @@ export class QwenDeepAnalysisService {
   public constructor(@Inject(APP_CONFIG) private readonly config: AppConfig) {}
 
   public getConfiguredModel(): string {
-    return this.config.analysis.qwenModel;
+    return this.config.analysis.qwenModel ?? 'unconfigured';
   }
 
   public async createJson<T>(
@@ -62,6 +62,24 @@ export class QwenDeepAnalysisService {
           parseSucceeded: false,
           errorCode: 'QWEN_NOT_CONFIGURED',
           errorMessage: 'Qwen API key is not configured',
+          requestedAt,
+          finishedAt: new Date().toISOString(),
+        },
+      };
+    }
+
+    if (!this.config.analysis.qwenModel) {
+      return {
+        parsed: null,
+        usage: null,
+        requestMeta: {
+          stage,
+          success: false,
+          requested: false,
+          httpStatus: null,
+          parseSucceeded: false,
+          errorCode: 'QWEN_NOT_CONFIGURED',
+          errorMessage: 'Qwen model is not configured',
           requestedAt,
           finishedAt: new Date().toISOString(),
         },
@@ -247,7 +265,7 @@ export class QwenDeepAnalysisService {
     };
   } | null): QwenUsageRecord {
     return {
-      model: payload?.model ?? this.config.analysis.qwenModel,
+      model: payload?.model ?? this.config.analysis.qwenModel ?? 'unknown',
       promptTokens: payload?.usage?.prompt_tokens ?? payload?.usage?.promptTokens ?? null,
       completionTokens: payload?.usage?.completion_tokens ?? payload?.usage?.completionTokens ?? null,
       totalTokens: payload?.usage?.total_tokens ?? payload?.usage?.totalTokens ?? null,

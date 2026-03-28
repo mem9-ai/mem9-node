@@ -2,6 +2,8 @@ import type { AppConfig } from '@mem9/config';
 
 import { QwenDeepAnalysisService } from './qwen-deep-analysis.service';
 
+const TEST_QWEN_MODEL = 'test-qwen-model';
+
 function createConfig(overrides?: {
   app?: Partial<AppConfig['app']>;
   database?: Partial<AppConfig['database']>;
@@ -56,7 +58,7 @@ function createConfig(overrides?: {
       deepAnalysisDailyLimitBypassFingerprints: [],
       qwenApiBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
       qwenApiKey: 'test-qwen-key',
-      qwenModel: 'qwen3.5-pro',
+      qwenModel: TEST_QWEN_MODEL,
       qwenRequestTimeoutMs: 120000,
       deepAnalysisChunkConcurrency: 5,
       ...overrides?.analysis,
@@ -85,7 +87,7 @@ describe('qwen deep analysis service', () => {
   it('parses usage on a successful JSON response', async () => {
     const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({
-        model: 'qwen3.5-pro',
+        model: TEST_QWEN_MODEL,
         usage: {
           prompt_tokens: 123,
           completion_tokens: 45,
@@ -120,7 +122,7 @@ describe('qwen deep analysis service', () => {
       parseSucceeded: true,
     });
     expect(result.usage).toEqual({
-      model: 'qwen3.5-pro',
+      model: TEST_QWEN_MODEL,
       promptTokens: 123,
       completionTokens: 45,
       totalTokens: 168,
@@ -135,7 +137,7 @@ describe('qwen deep analysis service', () => {
     );
     const requestInit = fetchSpy.mock.calls[0]?.[1] as RequestInit;
     expect(JSON.parse(String(requestInit.body))).toMatchObject({
-      model: 'qwen3.5-pro',
+      model: TEST_QWEN_MODEL,
       enable_thinking: false,
     });
   });
@@ -143,7 +145,7 @@ describe('qwen deep analysis service', () => {
   it('returns usage and failure metadata when JSON parsing fails', async () => {
     jest.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({
-        model: 'qwen3.5-pro',
+        model: TEST_QWEN_MODEL,
         usage: {
           prompt_tokens: 20,
           completion_tokens: 10,
@@ -179,7 +181,7 @@ describe('qwen deep analysis service', () => {
       errorCode: 'QWEN_JSON_PARSE_FAILED',
     });
     expect(result.usage).toEqual({
-      model: 'qwen3.5-pro',
+      model: TEST_QWEN_MODEL,
       promptTokens: 20,
       completionTokens: 10,
       totalTokens: 30,
@@ -220,7 +222,7 @@ describe('qwen deep analysis service', () => {
       errorMessage: 'quota exceeded',
     });
     expect(result.usage).toEqual({
-      model: 'qwen3.5-pro',
+      model: TEST_QWEN_MODEL,
       promptTokens: null,
       completionTokens: null,
       totalTokens: null,
@@ -264,7 +266,7 @@ describe('qwen deep analysis service', () => {
       errorMessage: 'Qwen request timed out after 50ms',
     });
     expect(result.usage).toEqual({
-      model: 'qwen3.5-pro',
+      model: TEST_QWEN_MODEL,
       promptTokens: null,
       completionTokens: null,
       totalTokens: null,
@@ -275,7 +277,7 @@ describe('qwen deep analysis service', () => {
   it('disables thinking mode for both chunk and global synthesis requests', async () => {
     const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({
-        model: 'qwen3.5-pro',
+        model: TEST_QWEN_MODEL,
         usage: {
           prompt_tokens: 1,
           completion_tokens: 1,
@@ -313,5 +315,31 @@ describe('qwen deep analysis service', () => {
         ]),
       }),
     ]);
+  });
+
+  it('returns not configured when the qwen model env is missing', async () => {
+    const service = new QwenDeepAnalysisService(createConfig({
+      analysis: {
+        qwenModel: undefined,
+      },
+    }));
+
+    const result = await service.createJson<{ summary: string }>(
+      'chunk_analysis',
+      'system prompt',
+      'user prompt',
+    );
+
+    expect(result.parsed).toBeNull();
+    expect(result.usage).toBeNull();
+    expect(result.requestMeta).toMatchObject({
+      stage: 'chunk_analysis',
+      success: false,
+      requested: false,
+      httpStatus: null,
+      parseSucceeded: false,
+      errorCode: 'QWEN_NOT_CONFIGURED',
+      errorMessage: 'Qwen model is not configured',
+    });
   });
 });

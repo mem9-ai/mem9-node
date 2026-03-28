@@ -35,7 +35,7 @@ const envSchema = z.object({
   DEEP_ANALYSIS_DAILY_LIMIT_BYPASS_FINGERPRINTS: z.string().optional(),
   QWEN_API_BASE_URL: z.string().url().default('https://dashscope.aliyuncs.com/compatible-mode/v1'),
   QWEN_API_KEY: z.string().min(1).optional(),
-  QWEN_MODEL: z.string().min(1).default('qwen3.5-pro'),
+  QWEN_MODEL: z.string().min(1).optional(),
   QWEN_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(120000),
   DEEP_ANALYSIS_CHUNK_CONCURRENCY: z.coerce.number().int().positive().default(5),
   JOB_RESULT_TTL_SECONDS: z.coerce.number().int().positive().default(86400),
@@ -121,7 +121,7 @@ export interface AppConfig {
     deepAnalysisDailyLimitBypassFingerprints: string[];
     qwenApiBaseUrl: string;
     qwenApiKey?: string;
-    qwenModel: string;
+    qwenModel?: string;
     qwenRequestTimeoutMs: number;
     deepAnalysisChunkConcurrency: number;
   };

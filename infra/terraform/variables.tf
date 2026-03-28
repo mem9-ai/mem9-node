@@ -89,8 +89,7 @@ variable "qwen_api_base_url" {
 }
 
 variable "qwen_model" {
-  type    = string
-  default = "qwen3.5-plus"
+  type = string
 }
 
 variable "qwen_request_timeout_ms" {
