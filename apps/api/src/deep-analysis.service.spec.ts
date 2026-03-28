@@ -3,6 +3,11 @@ import { gunzipJson, gzipJson } from '@mem9/shared';
 
 import { DeepAnalysisService } from './deep-analysis.service';
 
+async function flushBackgroundTasks(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await Promise.resolve();
+}
+
 function createContext() {
   const apiKeyFingerprint = Buffer.alloc(32, 7);
   return {
@@ -108,6 +113,7 @@ function createService(overrides?: {
       memoryCount: 1001,
       sourceSnapshotObjectKey: 'deep-analysis/reports/snapshot_1/source.json.gz',
     })),
+    updateDeepAnalysisReport: jest.fn(async () => undefined),
     listOwnedDeepAnalysisReports: jest.fn(async () => ({
       reports: [],
       total: 0,
@@ -222,7 +228,7 @@ describe('deep analysis service', () => {
     expect(queue.enqueueLlmMessage).not.toHaveBeenCalled();
   });
 
-  it('creates a report, uploads the source snapshot, and enqueues the LLM job in production', async () => {
+  it('returns quickly, then uploads the source snapshot and enqueues the LLM job in production', async () => {
     const memories = Array.from({ length: 1001 }, (_, index) => ({
       id: `mem_${index + 1}`,
       content: `Memory ${index + 1} about React and Alice`,
@@ -267,6 +273,11 @@ describe('deep analysis service', () => {
       progressPercent: 0,
       memoryCount: memories.length,
     });
+    expect(storage.putCompressedJson).not.toHaveBeenCalled();
+    expect(queue.enqueueLlmMessage).not.toHaveBeenCalled();
+
+    await flushBackgroundTasks();
+
     expect(storage.putCompressedJson).toHaveBeenCalledTimes(1);
     const [objectKey, payload] = storage.putCompressedJson.mock.calls[0] as unknown as [string, Buffer];
     expect(String(objectKey)).toMatch(/^deep-analysis\/reports\/snapshot_/);
@@ -281,6 +292,85 @@ describe('deep analysis service', () => {
     expect(repository.createDeepAnalysisReport).toHaveBeenCalledWith(
       expect.objectContaining({
         requestDayKey: '2026-03-28@Asia/Shanghai',
+      }),
+    );
+    expect(repository.updateDeepAnalysisReport).toHaveBeenNthCalledWith(
+      1,
+      'dar_created',
+      expect.objectContaining({
+        status: 'PREPARING',
+        stage: 'FETCH_SOURCE',
+        progressPercent: 5,
+      }),
+    );
+  });
+
+  it('returns before source fetching finishes', async () => {
+    let releaseFetch: (() => void) | undefined;
+    const fetchStarted = new Promise<void>((resolve) => {
+      releaseFetch = resolve;
+    });
+    const fetchAllMemories = jest.fn(async () => {
+      await fetchStarted;
+      return [{
+        id: 'mem_1',
+        content: 'Memory 1',
+        createdAt: '2026-03-20T00:00:00Z',
+        updatedAt: '2026-03-20T00:00:00Z',
+        memoryType: 'insight',
+        tags: [],
+        metadata: null,
+      }];
+    });
+    const { service, queue } = createService({
+      source: {
+        countMemories: jest.fn(async () => 1001),
+        fetchAllMemories,
+      },
+    });
+
+    const response = await service.createReport(createContext(), {
+      lang: 'zh-CN',
+      timezone: 'Asia/Shanghai',
+    });
+
+    expect(response.reportId).toBe('dar_1');
+    expect(fetchAllMemories).not.toHaveBeenCalled();
+
+    await flushBackgroundTasks();
+    expect(fetchAllMemories).toHaveBeenCalledTimes(1);
+    expect(queue.enqueueLlmMessage).not.toHaveBeenCalled();
+
+    if (releaseFetch) {
+      releaseFetch();
+    }
+    await flushBackgroundTasks();
+    expect(queue.enqueueLlmMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks the report failed if source snapshot preparation fails', async () => {
+    const { service, repository, queue } = createService({
+      source: {
+        countMemories: jest.fn(async () => 1001),
+        fetchAllMemories: jest.fn(async () => {
+          throw new Error('upstream timeout');
+        }),
+      },
+    });
+
+    await service.createReport(createContext(), {
+      lang: 'zh-CN',
+      timezone: 'Asia/Shanghai',
+    });
+    await flushBackgroundTasks();
+
+    expect(queue.enqueueLlmMessage).not.toHaveBeenCalled();
+    expect(repository.updateDeepAnalysisReport).toHaveBeenLastCalledWith(
+      'dar_1',
+      expect.objectContaining({
+        status: 'FAILED',
+        stage: 'FETCH_SOURCE',
+        errorCode: 'DEEP_ANALYSIS_SOURCE_PREP_FAILED',
       }),
     );
   });
@@ -333,12 +423,12 @@ describe('deep analysis service', () => {
     });
 
     expect(response.reportId).toBe('dar_local');
-    expect(source.countMemories).not.toHaveBeenCalled();
+    expect(source.countMemories).toHaveBeenCalled();
     expect(repository.findDeepAnalysisReportsByDayPrefix).not.toHaveBeenCalled();
     expect(repository.createDeepAnalysisReport).toHaveBeenCalledWith(
       expect.objectContaining({
         requestDayKey: expect.stringMatching(/^2026-03-28@Asia\/Shanghai#dev-/),
-        memoryCount: 1,
+        memoryCount: 12,
       }),
     );
   });
