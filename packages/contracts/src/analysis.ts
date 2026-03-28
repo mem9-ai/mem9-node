@@ -278,6 +278,17 @@ export interface DeepAnalysisDuplicateExportRow {
   reason: string;
 }
 
+export interface DeleteDeepAnalysisDuplicatesResponse {
+  reportId: string;
+  deletedCount: number;
+  deletedMemoryIds: string[];
+  failedMemoryIds: string[];
+}
+
+export interface DeleteDeepAnalysisReportResponse {
+  reportId: string;
+}
+
 export interface DeepAnalysisDiscoveryCard {
   id: string;
   kind: 'focus_area' | 'collaborator' | 'routine' | 'decision' | 'hygiene' | 'opportunity';

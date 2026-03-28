@@ -1,5 +1,7 @@
 import type {
   CreateDeepAnalysisReportResponse,
+  DeleteDeepAnalysisDuplicatesResponse,
+  DeleteDeepAnalysisReportResponse,
   DeepAnalysisDuplicateExportRow,
   DeepAnalysisMemorySnapshot,
   DeepAnalysisReportDetail,
@@ -19,8 +21,8 @@ import {
   gunzipJson,
   gzipJson,
 } from '@mem9/shared';
-import { Inject, Injectable } from '@nestjs/common';
-import { DeepAnalysisReportStatus, Prisma } from '@prisma/client';
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import { DeepAnalysisReportStage, DeepAnalysisReportStatus, Prisma } from '@prisma/client';
 
 import type { Mem9RequestContext } from './common/request-context';
 import type { CreateDeepAnalysisReportDto } from './dto/create-deep-analysis-report.dto';
@@ -90,6 +92,10 @@ function buildExistingReportError(existing: {
       },
     },
   );
+}
+
+function isTerminalStatus(status: DeepAnalysisReportStatus): boolean {
+  return status === 'COMPLETED' || status === 'FAILED';
 }
 
 function toPreview(value: unknown): DeepAnalysisReportPreview | null {
@@ -170,6 +176,8 @@ function buildDuplicateCsvFilename(reportId: string): string {
 
 @Injectable()
 export class DeepAnalysisService {
+  private readonly logger = new Logger(DeepAnalysisService.name);
+
   public constructor(
     private readonly repository: AnalysisRepository,
     private readonly source: Mem9SourceService,
@@ -206,11 +214,9 @@ export class DeepAnalysisService {
       }
     }
 
-    let memoryCount = 0;
+    const memoryCount = await this.source.countMemories(context.rawApiKey);
 
     if (isProduction) {
-      memoryCount = await this.source.countMemories(context.rawApiKey);
-
       if (memoryCount < 1000) {
         throw new AppError('Deep analysis requires at least 1000 memories', {
           statusCode: 422,
@@ -234,11 +240,6 @@ export class DeepAnalysisService {
       }
     }
 
-    const memories = await this.source.fetchAllMemories(context.rawApiKey);
-    if (!isProduction) {
-      memoryCount = memories.length;
-    }
-
     const requestDayKey = isProduction
       ? (bypassDailyLimit
         ? buildScopedRequestDayKey(baseRequestDayKey, 'rerun')
@@ -246,14 +247,6 @@ export class DeepAnalysisService {
       : buildScopedRequestDayKey(baseRequestDayKey, 'dev');
 
     const sourceSnapshotObjectKey = `deep-analysis/reports/${createPrefixedId('snapshot')}/source.json.gz`;
-    await this.storage.putCompressedJson(
-      sourceSnapshotObjectKey,
-      gzipJson({
-        fetchedAt: new Date().toISOString(),
-        memoryCount: memories.length,
-        memories,
-      }),
-    );
 
     let report;
     try {
@@ -262,7 +255,7 @@ export class DeepAnalysisService {
         requestDayKey,
         lang: dto.lang.trim() || 'zh-CN',
         timezone,
-        memoryCount: memories.length,
+        memoryCount,
         sourceSnapshotObjectKey,
       });
     } catch (error) {
@@ -282,9 +275,10 @@ export class DeepAnalysisService {
       throw error;
     }
 
-    await this.queue.enqueueLlmMessage({
-      messageType: 'deep_report',
+    this.scheduleSourcePreparation({
       reportId: report.id,
+      sourceSnapshotObjectKey,
+      rawApiKey: context.rawApiKey,
       traceId: context.requestId,
     });
 
@@ -296,6 +290,74 @@ export class DeepAnalysisService {
       requestedAt: report.requestedAt.toISOString(),
       memoryCount: report.memoryCount,
     };
+  }
+
+  private scheduleSourcePreparation(input: {
+    reportId: string;
+    sourceSnapshotObjectKey: string;
+    rawApiKey: string;
+    traceId: string;
+  }): void {
+    const schedule = typeof setImmediate === 'function'
+      ? setImmediate
+      : (callback: () => void) => setTimeout(callback, 0);
+
+    schedule(() => {
+      void this.prepareSourceSnapshotAndEnqueue(input);
+    });
+  }
+
+  private async prepareSourceSnapshotAndEnqueue(input: {
+    reportId: string;
+    sourceSnapshotObjectKey: string;
+    rawApiKey: string;
+    traceId: string;
+  }): Promise<void> {
+    try {
+      await this.repository.updateDeepAnalysisReport(input.reportId, {
+        status: DeepAnalysisReportStatus.PREPARING,
+        stage: DeepAnalysisReportStage.FETCH_SOURCE,
+        progressPercent: 5,
+        startedAt: new Date(),
+        errorCode: null,
+        errorMessage: null,
+      });
+
+      const memories = await this.source.fetchAllMemories(input.rawApiKey);
+      await this.storage.putCompressedJson(
+        input.sourceSnapshotObjectKey,
+        gzipJson({
+          fetchedAt: new Date().toISOString(),
+          memoryCount: memories.length,
+          memories,
+        }),
+      );
+
+      await this.repository.updateDeepAnalysisReport(input.reportId, {
+        memoryCount: memories.length,
+        progressPercent: 10,
+      });
+
+      await this.queue.enqueueLlmMessage({
+        messageType: 'deep_report',
+        reportId: input.reportId,
+        traceId: input.traceId,
+      });
+    } catch (error) {
+      const appError = error instanceof AppError ? error : null;
+      const errorCode = appError?.code ?? 'DEEP_ANALYSIS_SOURCE_PREP_FAILED';
+      const errorMessage = appError?.message ?? 'Failed to prepare deep analysis source snapshot';
+
+      this.logger.error(`Failed to prepare deep analysis source snapshot for ${input.reportId}`, error instanceof Error ? error.stack : undefined);
+      await this.repository.updateDeepAnalysisReport(input.reportId, {
+        status: DeepAnalysisReportStatus.FAILED,
+        stage: DeepAnalysisReportStage.FETCH_SOURCE,
+        progressPercent: 0,
+        completedAt: new Date(),
+        errorCode,
+        errorMessage: errorMessage.slice(0, 512),
+      });
+    }
   }
 
   public async listReports(
@@ -334,6 +396,74 @@ export class DeepAnalysisService {
     return {
       ...toListItem(report),
       report: document,
+    };
+  }
+
+  public async deleteDuplicateMemories(
+    context: Mem9RequestContext,
+    reportId: string,
+  ): Promise<DeleteDeepAnalysisDuplicatesResponse> {
+    const report = await this.repository.getOwnedDeepAnalysisReport(
+      reportId,
+      context.apiKeyFingerprint,
+    );
+
+    if (!report.reportObjectKey) {
+      throw new AppError('Deep analysis report is not ready yet', {
+        statusCode: 409,
+        code: 'DEEP_ANALYSIS_REPORT_NOT_READY',
+      });
+    }
+
+    const reportPayload = await this.storage.getObjectBuffer(report.reportObjectKey);
+    const document = JSON.parse(reportPayload.toString('utf8')) as DeepAnalysisReportDocument;
+    const duplicateMemoryIds = [...new Set(
+      (document.quality.duplicateClusters ?? []).flatMap((cluster) => cluster.duplicateMemoryIds),
+    )];
+
+    if (duplicateMemoryIds.length === 0) {
+      return {
+        reportId,
+        deletedCount: 0,
+        deletedMemoryIds: [],
+        failedMemoryIds: [],
+      };
+    }
+
+    const deletion = await this.source.deleteMemories(context.rawApiKey, duplicateMemoryIds);
+    return {
+      reportId,
+      deletedCount: deletion.deletedMemoryIds.length,
+      deletedMemoryIds: deletion.deletedMemoryIds,
+      failedMemoryIds: deletion.failedMemoryIds,
+    };
+  }
+
+  public async deleteReport(
+    context: Mem9RequestContext,
+    reportId: string,
+  ): Promise<DeleteDeepAnalysisReportResponse> {
+    const report = await this.repository.getOwnedDeepAnalysisReport(
+      reportId,
+      context.apiKeyFingerprint,
+    );
+
+    if (!isTerminalStatus(report.status)) {
+      throw new AppError('Cannot delete a deep analysis report while it is still running', {
+        statusCode: 409,
+        code: 'DEEP_ANALYSIS_REPORT_RUNNING',
+      });
+    }
+
+    await Promise.all([
+      report.reportObjectKey ? this.storage.deleteObject(report.reportObjectKey) : Promise.resolve(),
+      this.storage.deleteObject(report.sourceSnapshotObjectKey),
+    ]);
+
+    await this.repository.deleteDeepAnalysisReport(report.id);
+
+    return {
+      reportId,
     };
   }
 

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, Param, Post, Query, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, Post, Query, Res, UseGuards } from '@nestjs/common';
 import { ApiHeader, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyReply } from 'fastify';
 
@@ -60,5 +60,25 @@ export class DeepAnalysisController {
     reply.header('Content-Type', 'text/csv; charset=utf-8');
     reply.header('Content-Disposition', `attachment; filename="${filename}"`);
     return reply.send(content);
+  }
+
+  @Post('reports/:reportId/delete-duplicates')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Delete duplicate memories for one deep analysis report' })
+  public deleteDuplicateMemories(
+    @CurrentContext() context: Mem9RequestContext,
+    @Param('reportId') reportId: string,
+  ) {
+    return this.service.deleteDuplicateMemories(context, reportId);
+  }
+
+  @Delete('reports/:reportId')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Delete one deep analysis report' })
+  public deleteReport(
+    @CurrentContext() context: Mem9RequestContext,
+    @Param('reportId') reportId: string,
+  ) {
+    return this.service.deleteReport(context, reportId);
   }
 }

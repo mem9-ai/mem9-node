@@ -188,6 +188,7 @@ model DeepAnalysisReport {
   previewJson           Json?
   reportObjectKey       String?                  @db.VarChar(255)
   sourceSnapshotObjectKey String                 @db.VarChar(255)
+  internalComment       String?                  @map("internal_comment") @db.LongText
 
   @@unique([apiKeyFingerprint, requestDayKey])
   @@index([apiKeyFingerprint, requestedAt])

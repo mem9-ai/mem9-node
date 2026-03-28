@@ -22,7 +22,11 @@ import {
 import { Injectable, Logger } from '@nestjs/common';
 import { DeepAnalysisReportStage, DeepAnalysisReportStatus, Prisma } from '@prisma/client';
 
-import { QwenDeepAnalysisService } from './qwen-deep-analysis.service';
+import {
+  QwenDeepAnalysisService,
+  type QwenAuditStage,
+  type QwenJsonResult,
+} from './qwen-deep-analysis.service';
 
 interface SourceSnapshotPayload {
   fetchedAt: string;
@@ -140,6 +144,39 @@ interface CorpusSignals {
     candidateEdges: DeepAnalysisCandidateEdge[];
     searchSeeds: string[];
   };
+}
+
+interface InternalCommentAggregate {
+  requestCount: number;
+  successCount: number;
+  failureCount: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
+interface InternalCommentCall {
+  stage: QwenAuditStage;
+  index: number;
+  success: boolean;
+  httpStatus: number | null;
+  parseSucceeded: boolean;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  totalTokens: number | null;
+  usageMissing: boolean;
+  requestedAt: string;
+  finishedAt: string;
+  errorCode: string | null;
+  errorMessage: string | null;
+}
+
+interface InternalCommentPayload {
+  version: 1;
+  provider: 'qwen';
+  model: string;
+  aggregate: InternalCommentAggregate;
+  calls: InternalCommentCall[];
 }
 
 const TOOL_HINTS = [
@@ -707,6 +744,54 @@ function validateReport(
   }
 }
 
+function createInternalComment(model: string): InternalCommentPayload {
+  return {
+    version: 1,
+    provider: 'qwen',
+    model,
+    aggregate: {
+      requestCount: 0,
+      successCount: 0,
+      failureCount: 0,
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+    },
+    calls: [],
+  };
+}
+
+function parseInternalComment(
+  value: string | null | undefined,
+  fallbackModel: string,
+): InternalCommentPayload {
+  if (!value) {
+    return createInternalComment(fallbackModel);
+  }
+
+  try {
+    const parsed = JSON.parse(value) as Partial<InternalCommentPayload>;
+    return {
+      version: 1,
+      provider: 'qwen',
+      model: typeof parsed.model === 'string' && parsed.model.length > 0
+        ? parsed.model
+        : fallbackModel,
+      aggregate: {
+        requestCount: Number(parsed.aggregate?.requestCount ?? 0),
+        successCount: Number(parsed.aggregate?.successCount ?? 0),
+        failureCount: Number(parsed.aggregate?.failureCount ?? 0),
+        promptTokens: Number(parsed.aggregate?.promptTokens ?? 0),
+        completionTokens: Number(parsed.aggregate?.completionTokens ?? 0),
+        totalTokens: Number(parsed.aggregate?.totalTokens ?? 0),
+      },
+      calls: Array.isArray(parsed.calls) ? parsed.calls as InternalCommentCall[] : [],
+    };
+  } catch {
+    return createInternalComment(fallbackModel);
+  }
+}
+
 @Injectable()
 export class DeepAnalysisReportProcessorService {
   private readonly logger = new Logger(DeepAnalysisReportProcessorService.name);
@@ -719,6 +804,10 @@ export class DeepAnalysisReportProcessorService {
 
   public async process(message: DeepAnalysisReportMessage): Promise<void> {
     const reportRecord = await this.repository.getDeepAnalysisReport(message.reportId);
+    const internalComment = parseInternalComment(
+      reportRecord.internalComment,
+      this.qwen.getConfiguredModel(),
+    );
 
     if (reportRecord.status === DeepAnalysisReportStatus.COMPLETED) {
       return;
@@ -731,6 +820,7 @@ export class DeepAnalysisReportProcessorService {
       startedAt: new Date(),
       errorCode: null,
       errorMessage: null,
+      internalComment: JSON.stringify(internalComment),
     });
 
     try {
@@ -742,7 +832,11 @@ export class DeepAnalysisReportProcessorService {
         stage: DeepAnalysisReportStage.CHUNK_ANALYSIS,
         progressPercent: 35,
       });
-      const chunkInsights = await this.analyzeChunks(prepared.uniqueMemories);
+      const chunkInsights = await this.analyzeChunks(
+        reportRecord.id,
+        internalComment,
+        prepared.uniqueMemories,
+      );
       const corpusSignals = this.buildCorpusSignals(prepared, chunkInsights);
 
       await this.repository.updateDeepAnalysisReport(reportRecord.id, {
@@ -752,6 +846,8 @@ export class DeepAnalysisReportProcessorService {
       });
 
       let report = await this.synthesizeReport(
+        reportRecord.id,
+        internalComment,
         reportRecord.lang,
         prepared,
         chunkInsights,
@@ -793,6 +889,7 @@ export class DeepAnalysisReportProcessorService {
         completedAt: new Date(),
         reportObjectKey,
         previewJson: buildPreview(report) as unknown as Prisma.InputJsonValue,
+        internalComment: JSON.stringify(internalComment),
       });
     } catch (error) {
       await this.repository.updateDeepAnalysisReport(reportRecord.id, {
@@ -802,6 +899,7 @@ export class DeepAnalysisReportProcessorService {
         completedAt: new Date(),
         errorCode: error instanceof AppError ? error.code : 'DEEP_ANALYSIS_PROCESSING_FAILED',
         errorMessage: error instanceof Error ? error.message.slice(0, 512) : 'Deep analysis failed',
+        internalComment: JSON.stringify(internalComment),
       });
     }
   }
@@ -856,12 +954,17 @@ export class DeepAnalysisReportProcessorService {
     };
   }
 
-  private async analyzeChunks(memories: PreparedMemory[]): Promise<ChunkInsight[]> {
+  private async analyzeChunks(
+    reportId: string,
+    internalComment: InternalCommentPayload,
+    memories: PreparedMemory[],
+  ): Promise<ChunkInsight[]> {
     const chunks = chunkArray(memories, 180);
     const insights: ChunkInsight[] = [];
 
-    for (const chunk of chunks) {
+    for (const [index, chunk] of chunks.entries()) {
       const qwenInsight = await this.qwen.createJson<ChunkInsight>(
+        'chunk_analysis',
         [
           'You analyze one chunk of user memories and return JSON only.',
           'Never emit stopwords or generic role terms like the, and, for, user, agent, assistant, self, team, project, task, system, memory, workflow.',
@@ -878,28 +981,34 @@ export class DeepAnalysisReportProcessorService {
           })),
         }),
       );
+      await this.recordModelCall(
+        reportId,
+        internalComment,
+        index + 1,
+        qwenInsight,
+      );
 
-      if (qwenInsight) {
+      if (qwenInsight.parsed) {
         insights.push({
-          summary: qwenInsight.summary ?? '',
-          themes: Array.isArray(qwenInsight.themes) ? qwenInsight.themes : [],
+          summary: qwenInsight.parsed.summary ?? '',
+          themes: Array.isArray(qwenInsight.parsed.themes) ? qwenInsight.parsed.themes : [],
           entities: {
-            people: qwenInsight.entities?.people ?? [],
-            teams: qwenInsight.entities?.teams ?? [],
-            projects: qwenInsight.entities?.projects ?? [],
-            tools: qwenInsight.entities?.tools ?? [],
-            places: qwenInsight.entities?.places ?? [],
+            people: qwenInsight.parsed.entities?.people ?? [],
+            teams: qwenInsight.parsed.entities?.teams ?? [],
+            projects: qwenInsight.parsed.entities?.projects ?? [],
+            tools: qwenInsight.parsed.entities?.tools ?? [],
+            places: qwenInsight.parsed.entities?.places ?? [],
           },
           personaSignals: {
-            workingStyle: qwenInsight.personaSignals?.workingStyle ?? [],
-            goals: qwenInsight.personaSignals?.goals ?? [],
-            preferences: qwenInsight.personaSignals?.preferences ?? [],
-            constraints: qwenInsight.personaSignals?.constraints ?? [],
-            decisionSignals: qwenInsight.personaSignals?.decisionSignals ?? [],
-            notableRoutines: qwenInsight.personaSignals?.notableRoutines ?? [],
-            contradictionsOrTensions: qwenInsight.personaSignals?.contradictionsOrTensions ?? [],
+            workingStyle: qwenInsight.parsed.personaSignals?.workingStyle ?? [],
+            goals: qwenInsight.parsed.personaSignals?.goals ?? [],
+            preferences: qwenInsight.parsed.personaSignals?.preferences ?? [],
+            constraints: qwenInsight.parsed.personaSignals?.constraints ?? [],
+            decisionSignals: qwenInsight.parsed.personaSignals?.decisionSignals ?? [],
+            notableRoutines: qwenInsight.parsed.personaSignals?.notableRoutines ?? [],
+            contradictionsOrTensions: qwenInsight.parsed.personaSignals?.contradictionsOrTensions ?? [],
           },
-          relationships: Array.isArray(qwenInsight.relationships) ? qwenInsight.relationships : [],
+          relationships: Array.isArray(qwenInsight.parsed.relationships) ? qwenInsight.parsed.relationships : [],
         });
         continue;
       }
@@ -1267,12 +1376,15 @@ export class DeepAnalysisReportProcessorService {
   }
 
   private async synthesizeReport(
+    reportId: string,
+    internalComment: InternalCommentPayload,
     lang: string,
     corpus: PreparedCorpus,
     chunkInsights: ChunkInsight[],
     corpusSignals: CorpusSignals,
   ): Promise<DeepAnalysisReportDocument> {
     const qwenReport = await this.qwen.createJson<DeepAnalysisReportDocument>(
+      'global_synthesis',
       [
         'You synthesize a deep memory analysis report and must return JSON only.',
         'Preserve the exact top-level keys: overview, persona, themeLandscape, entities, relationships, discoveries, quality, recommendations, productSignals.',
@@ -1293,12 +1405,63 @@ export class DeepAnalysisReportProcessorService {
         corpusSignals,
       }),
     );
+    await this.recordModelCall(
+      reportId,
+      internalComment,
+      1,
+      qwenReport,
+    );
 
-    if (qwenReport) {
-      return qwenReport;
+    if (qwenReport.parsed) {
+      return qwenReport.parsed;
     }
 
     return this.buildHeuristicReport(lang, corpus, corpusSignals);
+  }
+
+  private async recordModelCall(
+    reportId: string,
+    internalComment: InternalCommentPayload,
+    index: number,
+    result: QwenJsonResult<unknown>,
+  ): Promise<void> {
+    if (!result.requestMeta.requested) {
+      return;
+    }
+
+    const promptTokens = result.usage?.promptTokens ?? null;
+    const completionTokens = result.usage?.completionTokens ?? null;
+    const totalTokens = result.usage?.totalTokens ?? null;
+
+    internalComment.model = result.usage?.model ?? internalComment.model;
+    internalComment.aggregate.requestCount += 1;
+    if (result.requestMeta.success) {
+      internalComment.aggregate.successCount += 1;
+    } else {
+      internalComment.aggregate.failureCount += 1;
+    }
+    internalComment.aggregate.promptTokens += promptTokens ?? 0;
+    internalComment.aggregate.completionTokens += completionTokens ?? 0;
+    internalComment.aggregate.totalTokens += totalTokens ?? 0;
+    internalComment.calls.push({
+      stage: result.requestMeta.stage,
+      index,
+      success: result.requestMeta.success,
+      httpStatus: result.requestMeta.httpStatus,
+      parseSucceeded: result.requestMeta.parseSucceeded,
+      promptTokens,
+      completionTokens,
+      totalTokens,
+      usageMissing: result.usage?.usageMissing ?? true,
+      requestedAt: result.requestMeta.requestedAt,
+      finishedAt: result.requestMeta.finishedAt,
+      errorCode: result.requestMeta.errorCode,
+      errorMessage: result.requestMeta.errorMessage,
+    });
+
+    await this.repository.updateDeepAnalysisReport(reportId, {
+      internalComment: JSON.stringify(internalComment),
+    });
   }
 
   private buildHeuristicReport(
