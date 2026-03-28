@@ -93,6 +93,7 @@ describe('deep analysis report processor service', () => {
         people: Array<{ label: string }>;
         teams: Array<{ label: string }>;
       };
+      discoveries: Array<{ title: string; kind: string }>;
       quality: {
         duplicateRatio: number;
         duplicateMemoryCount: number;
@@ -123,6 +124,10 @@ describe('deep analysis report processor service', () => {
     expect(report.persona.workingStyle.length).toBeGreaterThan(0);
     expect(report.persona.notableRoutines.length).toBeGreaterThan(0);
     expect(report.persona.evidenceHighlights[0]?.memoryIds?.[0]).toBeTruthy();
+    expect(report.discoveries.length).toBeGreaterThan(0);
+    expect(report.discoveries.map((item) => item.kind)).toEqual(
+      expect.arrayContaining(["focus_area", "hygiene"]),
+    );
     expect(report.themeLandscape.highlights.map((item) => item.name)).not.toEqual(
       expect.arrayContaining(['the', 'for', 'user', 'team']),
     );

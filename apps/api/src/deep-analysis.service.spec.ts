@@ -430,6 +430,16 @@ describe('deep analysis service', () => {
         places: [],
       },
       relationships: [],
+      discoveries: [
+        {
+          id: 'focus:engineering',
+          kind: 'focus_area',
+          title: 'Focus area: engineering',
+          summary: 'Engineering memories dominate the corpus.',
+          confidence: 0.8,
+          evidenceMemoryIds: ['mem_2'],
+        },
+      ],
       quality: {
         duplicateRatio: 0.1,
         duplicateMemoryCount: 2,

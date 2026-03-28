@@ -278,6 +278,15 @@ export interface DeepAnalysisDuplicateExportRow {
   reason: string;
 }
 
+export interface DeepAnalysisDiscoveryCard {
+  id: string;
+  kind: 'focus_area' | 'collaborator' | 'routine' | 'decision' | 'hygiene' | 'opportunity';
+  title: string;
+  summary: string;
+  confidence: number;
+  evidenceMemoryIds: string[];
+}
+
 export interface DeepAnalysisCandidateNode {
   label: string;
   kind: string;
@@ -305,6 +314,7 @@ export interface DeepAnalysisReportDocument {
     places: DeepAnalysisEntityGroup[];
   };
   relationships: DeepAnalysisRelationship[];
+  discoveries?: DeepAnalysisDiscoveryCard[];
   quality: {
     duplicateRatio: number;
     duplicateMemoryCount?: number;

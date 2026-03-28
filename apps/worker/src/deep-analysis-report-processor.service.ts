@@ -1,6 +1,7 @@
 import type {
   DeepAnalysisCandidateEdge,
   DeepAnalysisCandidateNode,
+  DeepAnalysisDiscoveryCard,
   DeepAnalysisEntityGroup,
   DeepAnalysisEvidenceHighlight,
   DeepAnalysisMemorySnapshot,
@@ -132,6 +133,7 @@ interface CorpusSignals {
   lowQualityExamples: DeepAnalysisQualityIssue[];
   duplicateMemoryCount: number;
   coverageGaps: string[];
+  discoveries: DeepAnalysisDiscoveryCard[];
   recommendations: string[];
   productSignals: {
     candidateNodes: DeepAnalysisCandidateNode[];
@@ -438,6 +440,148 @@ function buildRecommendations(
   return recommendations;
 }
 
+function makeDiscoveryId(prefix: string, value: string): string {
+  return `${prefix}:${normalizeToken(value).replace(/[^a-z0-9\u4e00-\u9fa5]+/giu, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'signal'}`;
+}
+
+function uniqueDiscoveryCards(cards: DeepAnalysisDiscoveryCard[], limit = cards.length): DeepAnalysisDiscoveryCard[] {
+  const seen = new Set<string>();
+  const unique: DeepAnalysisDiscoveryCard[] = [];
+
+  for (const card of cards) {
+    if (seen.has(card.id)) {
+      continue;
+    }
+    seen.add(card.id);
+    unique.push(card);
+    if (unique.length >= limit) {
+      break;
+    }
+  }
+
+  return unique;
+}
+
+function buildDiscoveryCards(input: {
+  themeHighlights: DeepAnalysisThemeItem[];
+  entities: CorpusSignals['entities'];
+  persona: PersonaSummarySection;
+  duplicateMemoryCount: number;
+  lowQualityExamples: DeepAnalysisQualityIssue[];
+  coverageGaps: string[];
+  relationships: DeepAnalysisRelationship[];
+  recommendations: string[];
+}): DeepAnalysisDiscoveryCard[] {
+  const cards: DeepAnalysisDiscoveryCard[] = [];
+  const topTheme = input.themeHighlights[0];
+  const topProject = input.entities.projects[0];
+  const topPerson = input.entities.people[0];
+  const topRoutine = input.persona.notableRoutines[0];
+  const topDecision = input.persona.decisionSignals[0] ?? input.persona.contradictionsOrTensions[0];
+
+  if (topTheme || topProject) {
+    const title = topProject
+      ? `Focus area: ${topProject.label}`
+      : `Focus area: ${topTheme?.name ?? 'core themes'}`;
+    const summary = topProject && topTheme
+      ? `Project memories around ${topProject.label} repeatedly overlap with ${topTheme.name}, suggesting a sustained workstream rather than isolated notes.`
+      : `The corpus keeps returning to ${topTheme?.name ?? topProject?.label}, making it one of the strongest recurring focus areas.`;
+    cards.push({
+      id: makeDiscoveryId('focus', topProject?.label ?? topTheme?.name ?? 'focus'),
+      kind: 'focus_area',
+      title,
+      summary,
+      confidence: 0.78,
+      evidenceMemoryIds: [
+        ...(topProject?.evidenceMemoryIds ?? []),
+        ...(input.entities.people[0]?.evidenceMemoryIds ?? []),
+      ].slice(0, 6),
+    });
+  }
+
+  if (topPerson) {
+    const related = input.relationships.find((item) => normalizeToken(item.target) === normalizeToken(topPerson.label));
+    cards.push({
+      id: makeDiscoveryId('collaborator', topPerson.label),
+      kind: 'collaborator',
+      title: `Key collaborator: ${topPerson.label}`,
+      summary: related
+        ? `${topPerson.label} appears as a repeated collaborator with an explicit ${related.relation} signal, which makes this relationship strong enough to operationalize later.`
+        : `${topPerson.label} appears across ${topPerson.count} memories, which makes them one of the clearest human anchors in the corpus.`,
+      confidence: related ? 0.82 : 0.72,
+      evidenceMemoryIds: related
+        ? related.evidenceMemoryIds.slice(0, 6)
+        : topPerson.evidenceMemoryIds.slice(0, 6),
+    });
+  }
+
+  if (topRoutine) {
+    const evidence = input.persona.evidenceHighlights.find((item) => item.detail === topRoutine);
+    cards.push({
+      id: makeDiscoveryId('routine', topRoutine),
+      kind: 'routine',
+      title: 'Stable routine detected',
+      summary: topRoutine,
+      confidence: 0.74,
+      evidenceMemoryIds: evidence?.memoryIds.slice(0, 6) ?? [],
+    });
+  }
+
+  if (topDecision) {
+    const evidence = input.persona.evidenceHighlights.find((item) => item.detail === topDecision)
+      ?? input.persona.evidenceHighlights[0];
+    cards.push({
+      id: makeDiscoveryId('decision', topDecision),
+      kind: 'decision',
+      title: 'Decision pattern',
+      summary: topDecision,
+      confidence: 0.7,
+      evidenceMemoryIds: evidence?.memoryIds.slice(0, 6) ?? [],
+    });
+  }
+
+  if (input.duplicateMemoryCount > 0 || input.lowQualityExamples.length > 0) {
+    cards.push({
+      id: makeDiscoveryId('hygiene', `dup-${input.duplicateMemoryCount}-low-${input.lowQualityExamples.length}`),
+      kind: 'hygiene',
+      title: 'Memory hygiene opportunity',
+      summary: input.duplicateMemoryCount > 0
+        ? `${input.duplicateMemoryCount} duplicate memories were detected, so cleanup would immediately improve future analysis density and reduce drift.`
+        : `${input.lowQualityExamples.length} low-information memories were detected, so a cleanup pass would improve future synthesis quality.`,
+      confidence: 0.9,
+      evidenceMemoryIds: input.lowQualityExamples.slice(0, 4).map((item) => item.memoryId),
+    });
+  }
+
+  if (input.coverageGaps.length > 0) {
+    cards.push({
+      id: makeDiscoveryId('opportunity', input.coverageGaps[0]!),
+      kind: 'opportunity',
+      title: 'Coverage opportunity',
+      summary: input.coverageGaps[0]!,
+      confidence: 0.68,
+      evidenceMemoryIds: input.entities.projects[0]?.evidenceMemoryIds.slice(0, 4)
+        ?? input.entities.tools[0]?.evidenceMemoryIds.slice(0, 4)
+        ?? input.entities.people[0]?.evidenceMemoryIds.slice(0, 4)
+        ?? [],
+    });
+  } else if (input.recommendations[0]) {
+    cards.push({
+      id: makeDiscoveryId('opportunity', input.recommendations[0]),
+      kind: 'opportunity',
+      title: 'Next enrichment opportunity',
+      summary: input.recommendations[0],
+      confidence: 0.66,
+      evidenceMemoryIds: input.entities.projects[0]?.evidenceMemoryIds.slice(0, 4)
+        ?? input.entities.people[0]?.evidenceMemoryIds.slice(0, 4)
+        ?? input.entities.tools[0]?.evidenceMemoryIds.slice(0, 4)
+        ?? [],
+    });
+  }
+
+  return uniqueDiscoveryCards(cards, 6);
+}
+
 function buildPreview(report: DeepAnalysisReportDocument): DeepAnalysisReportPreview {
   return {
     generatedAt: report.overview.generatedAt,
@@ -535,6 +679,14 @@ function validateReport(
       memoryIds,
       highlight.memoryIds,
       'Report persona evidence references an unknown memory',
+    );
+  }
+
+  for (const discovery of report.discoveries ?? []) {
+    validateMemoryReferences(
+      memoryIds,
+      discovery.evidenceMemoryIds,
+      'Report discovery evidence references an unknown memory',
     );
   }
 
@@ -1051,6 +1203,23 @@ export class DeepAnalysisReportProcessorService {
       relationships.length,
       persona.contradictionsOrTensions,
     );
+    const entities = {
+      people: buildEntityGroups(stats.personCounters),
+      teams: buildEntityGroups(stats.teamCounters),
+      projects: buildEntityGroups(stats.projectCounters),
+      tools: buildEntityGroups(stats.toolCounters),
+      places: buildEntityGroups(stats.placeCounters),
+    };
+    const discoveries = buildDiscoveryCards({
+      themeHighlights: boostedHighlights,
+      entities,
+      persona,
+      duplicateMemoryCount,
+      lowQualityExamples: stats.lowQualityExamples.slice(0, 10),
+      coverageGaps,
+      relationships,
+      recommendations,
+    });
     const candidateNodes: DeepAnalysisCandidateNode[] = [
       ...boostedHighlights.slice(0, 4).map((item) => ({
         label: item.name,
@@ -1078,17 +1247,12 @@ export class DeepAnalysisReportProcessorService {
     return {
       persona,
       themeHighlights: boostedHighlights,
-      entities: {
-        people: buildEntityGroups(stats.personCounters),
-        teams: buildEntityGroups(stats.teamCounters),
-        projects: buildEntityGroups(stats.projectCounters),
-        tools: buildEntityGroups(stats.toolCounters),
-        places: buildEntityGroups(stats.placeCounters),
-      },
+      entities,
       relationships,
       lowQualityExamples: stats.lowQualityExamples.slice(0, 10),
       duplicateMemoryCount,
       coverageGaps,
+      discoveries,
       recommendations,
       productSignals: {
         candidateNodes,
@@ -1111,12 +1275,13 @@ export class DeepAnalysisReportProcessorService {
     const qwenReport = await this.qwen.createJson<DeepAnalysisReportDocument>(
       [
         'You synthesize a deep memory analysis report and must return JSON only.',
-        'Preserve the exact top-level keys: overview, persona, themeLandscape, entities, relationships, quality, recommendations, productSignals.',
+        'Preserve the exact top-level keys: overview, persona, themeLandscape, entities, relationships, discoveries, quality, recommendations, productSignals.',
         'Do not output stopwords or generic terms such as the, and, for, user, agent, assistant, self, team, project, task, system, memory, workflow.',
         'Persona.summary must be 2-4 strong sentences describing sustained behavior, priorities, and routines across the corpus.',
         'Persona fields must summarize stable patterns using evidence-based statements, not one-off facts.',
-        'Every relationship and persona evidence item must include valid memoryIds that appear in the provided inputs.',
+        'Every relationship, discovery, and persona evidence item must include valid memoryIds that appear in the provided inputs.',
         'Theme landscape should prefer specific phrases over generic single words.',
+        'Discovery cards should call out the most operationally useful findings: focus areas, collaborators, routines, decision patterns, hygiene issues, and enrichment opportunities.',
       ].join(' '),
       JSON.stringify({
         lang,
@@ -1161,6 +1326,7 @@ export class DeepAnalysisReportProcessorService {
       },
       entities: corpusSignals.entities,
       relationships: corpusSignals.relationships,
+      discoveries: corpusSignals.discoveries,
       quality: {
         duplicateRatio: corpus.originalCount === 0
           ? 0
