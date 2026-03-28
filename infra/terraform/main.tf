@@ -350,6 +350,7 @@ data "aws_iam_policy_document" "ecs_task_assume_role" {
 data "aws_iam_policy_document" "task_runtime" {
   statement {
     actions = [
+      "s3:DeleteObject",
       "s3:GetObject",
       "s3:PutObject",
       "sqs:DeleteMessage",
