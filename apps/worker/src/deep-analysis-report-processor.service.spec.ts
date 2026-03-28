@@ -1,9 +1,169 @@
+import type { AppConfig } from '@mem9/config';
 import { gzipJson } from '@mem9/shared';
+import { Logger } from '@nestjs/common';
 
 import { DeepAnalysisReportProcessorService } from './deep-analysis-report-processor.service';
 
+function createConfig(overrides?: Partial<AppConfig['analysis']>): AppConfig {
+  return {
+    app: {
+      env: 'test',
+      port: 3000,
+      workerHealthPort: 3001,
+      logLevel: 'info',
+      pepper: 'test-pepper-1234567890',
+    },
+    database: {
+      url: 'mysql://localhost/mem9',
+    },
+    redis: {
+      url: 'redis://localhost:6379',
+    },
+    aws: {
+      region: 'us-east-1',
+      forcePathStyle: false,
+      s3BucketAnalysisPayloads: 'bucket',
+      sqsAnalysisBatchQueueUrl: 'analysis-batch',
+      sqsAnalysisBatchDlqUrl: 'analysis-batch-dlq',
+      sqsAnalysisLlmQueueUrl: 'analysis-llm',
+      sqsAnalysisLlmDlqUrl: 'analysis-llm-dlq',
+    },
+    analysis: {
+      jobResultTtlSeconds: 86400,
+      payloadRetentionDays: 7,
+      defaultBatchSize: 100,
+      maxBatchMemories: 100,
+      maxBatchBytes: 1024 * 1024,
+      maxMemoriesPerRequest: 100,
+      pipelineVersion: 'v1',
+      taxonomyVersion: 'v3',
+      mem9SourceApiBaseUrl: 'http://127.0.0.1:8080/v1alpha2/mem9s',
+      mem9SourcePageSize: 200,
+      mem9SourceRequestTimeoutMs: 10000,
+      mem9SourceFetchRetries: 2,
+      mem9SourceFetchRetryBaseMs: 250,
+      mem9SourceDeleteConcurrency: 4,
+      deepAnalysisDailyLimitBypassFingerprints: [],
+      qwenApiBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      qwenApiKey: 'test-qwen-key',
+      qwenModel: 'qwen3.5-plus',
+      qwenRequestTimeoutMs: 120000,
+      deepAnalysisChunkConcurrency: 5,
+      ...overrides,
+    },
+    goVerify: {
+      mode: 'noop',
+      baseUrl: 'http://127.0.0.1:8080',
+      sharedSecret: 'local-secret',
+    },
+    sqs: {
+      waitTimeSeconds: 10,
+      visibilityTimeoutSeconds: 30,
+      visibilityHeartbeatSeconds: 10,
+    },
+  };
+}
+
+function createChunkResult(overrides?: {
+  index?: number;
+  success?: boolean;
+  httpStatus?: number | null;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+  requestedAt?: string;
+  finishedAt?: string;
+  promptTokens?: number | null;
+  completionTokens?: number | null;
+  totalTokens?: number | null;
+  parsed?: Record<string, unknown> | null;
+}) {
+  const promptTokens = Object.prototype.hasOwnProperty.call(overrides ?? {}, 'promptTokens')
+    ? (overrides?.promptTokens ?? null)
+    : 10;
+  const completionTokens = Object.prototype.hasOwnProperty.call(overrides ?? {}, 'completionTokens')
+    ? (overrides?.completionTokens ?? null)
+    : 2;
+  const totalTokens = Object.prototype.hasOwnProperty.call(overrides ?? {}, 'totalTokens')
+    ? (overrides?.totalTokens ?? null)
+    : 12;
+  const parsed = Object.prototype.hasOwnProperty.call(overrides ?? {}, 'parsed')
+    ? (overrides?.parsed ?? null)
+    : {
+      summary: `chunk ${overrides?.index ?? 1}`,
+      themes: [{ name: `theme-${overrides?.index ?? 1}`, memoryIds: [`mem_${overrides?.index ?? 1}`] }],
+      entities: {
+        people: [`Person ${overrides?.index ?? 1}`],
+        teams: [],
+        projects: [],
+        tools: [],
+        places: [],
+      },
+      personaSignals: {
+        workingStyle: [`Working style ${overrides?.index ?? 1}`],
+        goals: [],
+        preferences: [],
+        constraints: [],
+        decisionSignals: [],
+        notableRoutines: [],
+        contradictionsOrTensions: [],
+      },
+      relationships: [],
+    };
+
+  return {
+    parsed,
+    usage: {
+      model: 'qwen3.5-plus',
+      promptTokens,
+      completionTokens,
+      totalTokens,
+      usageMissing: promptTokens === null || completionTokens === null || totalTokens === null,
+    },
+    requestMeta: {
+      stage: 'chunk_analysis' as const,
+      success: overrides?.success ?? true,
+      requested: true,
+      httpStatus: overrides?.httpStatus ?? 200,
+      parseSucceeded: (overrides?.success ?? true) && parsed !== null,
+      errorCode: overrides?.errorCode ?? null,
+      errorMessage: overrides?.errorMessage ?? null,
+      requestedAt: overrides?.requestedAt ?? '2026-03-28T00:00:00.000Z',
+      finishedAt: overrides?.finishedAt ?? '2026-03-28T00:00:01.000Z',
+    },
+  };
+}
+
+function createSynthesisResult() {
+  return {
+    parsed: null,
+    usage: {
+      model: 'qwen3.5-plus',
+      promptTokens: 90,
+      completionTokens: 20,
+      totalTokens: 110,
+      usageMissing: false,
+    },
+    requestMeta: {
+      stage: 'global_synthesis' as const,
+      success: false,
+      requested: true,
+      httpStatus: 200,
+      parseSucceeded: false,
+      errorCode: 'QWEN_JSON_PARSE_FAILED',
+      errorMessage: 'Unexpected token',
+      requestedAt: '2026-03-28T00:00:02.000Z',
+      finishedAt: '2026-03-28T00:00:03.000Z',
+    },
+  };
+}
+
 describe('deep analysis report processor service', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
   it('builds a completed report with cleaned themes, entities, duplicate counts, and usage audit', async () => {
+    const logSpy = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
     const repository = {
       getDeepAnalysisReport: jest.fn(async () => ({
         id: 'dar_1',
@@ -60,76 +220,44 @@ describe('deep analysis report processor service', () => {
       putJson: jest.fn(async () => undefined),
     };
     const qwen = {
-      getConfiguredModel: jest.fn(() => 'qwen3.5-pro'),
+      getConfiguredModel: jest.fn(() => 'qwen3.5-plus'),
       createJson: jest
         .fn()
         .mockImplementationOnce(async () => ({
-          parsed: {
-            summary: 'Alice and Bosn repeatedly align on dashboard roadmap execution.',
-            themes: [{ name: 'dashboard roadmap', memoryIds: ['mem_1', 'mem_3'] }],
-            entities: {
-              people: ['Alice Johnson', 'Bosn'],
-              teams: ['Platform Team'],
-              projects: ['dashboard roadmap'],
-              tools: ['React'],
-              places: [],
-            },
-            personaSignals: {
-              workingStyle: ['Prefers structured reviews and staged rollout decisions.'],
-              goals: ['Keep memory insight workflows durable.'],
-              preferences: ['Concise but information-dense summaries.'],
-              constraints: ['Do not delete canonical memories.'],
-              decisionSignals: ['Balances speed and correctness in dashboard work.'],
-              notableRoutines: ['Reviews traffic dashboards every morning.'],
-              contradictionsOrTensions: ['Wants concise output without losing implementation detail.'],
-            },
-            relationships: [],
-          },
-          usage: {
-            model: 'qwen3.5-pro',
+          ...createChunkResult({
             promptTokens: 120,
             completionTokens: 30,
             totalTokens: 150,
-            usageMissing: false,
-          },
-          requestMeta: {
-            stage: 'chunk_analysis',
-            success: true,
-            requested: true,
-            httpStatus: 200,
-            parseSucceeded: true,
-            errorCode: null,
-            errorMessage: null,
-            requestedAt: '2026-03-28T00:00:00.000Z',
-            finishedAt: '2026-03-28T00:00:01.000Z',
-          },
+            parsed: {
+              summary: 'Alice and Bosn repeatedly align on dashboard roadmap execution.',
+              themes: [{ name: 'dashboard roadmap', memoryIds: ['mem_1', 'mem_3'] }],
+              entities: {
+                people: ['Alice Johnson', 'Bosn'],
+                teams: ['Platform Team'],
+                projects: ['dashboard roadmap'],
+                tools: ['React'],
+                places: [],
+              },
+              personaSignals: {
+                workingStyle: ['Prefers structured reviews and staged rollout decisions.'],
+                goals: ['Keep memory insight workflows durable.'],
+                preferences: ['Concise but information-dense summaries.'],
+                constraints: ['Do not delete canonical memories.'],
+                decisionSignals: ['Balances speed and correctness in dashboard work.'],
+                notableRoutines: ['Reviews traffic dashboards every morning.'],
+                contradictionsOrTensions: ['Wants concise output without losing implementation detail.'],
+              },
+              relationships: [],
+            },
+          }),
         }))
-        .mockImplementationOnce(async () => ({
-          parsed: null,
-          usage: {
-            model: 'qwen3.5-pro',
-            promptTokens: 90,
-            completionTokens: 20,
-            totalTokens: 110,
-            usageMissing: false,
-          },
-          requestMeta: {
-            stage: 'global_synthesis',
-            success: false,
-            requested: true,
-            httpStatus: 200,
-            parseSucceeded: false,
-            errorCode: 'QWEN_JSON_PARSE_FAILED',
-            errorMessage: 'Unexpected token',
-            requestedAt: '2026-03-28T00:00:02.000Z',
-            finishedAt: '2026-03-28T00:00:03.000Z',
-          },
-        })),
+        .mockImplementationOnce(async () => createSynthesisResult()),
     };
     const processor = new DeepAnalysisReportProcessorService(
       repository as never,
       storage as never,
       qwen as never,
+      createConfig() as never,
     );
 
     await processor.process({
@@ -202,6 +330,14 @@ describe('deep analysis report processor service', () => {
     expect(report.entities.teams.map((item) => item.label)).not.toEqual(
       expect.arrayContaining(['team', 'Platform']),
     );
+    expect(logSpy.mock.calls.map((call) => String(call[0]))).toEqual(expect.arrayContaining([
+      expect.stringContaining('"event":"deep_analysis_chunk_analysis_started"'),
+      expect.stringContaining('"event":"deep_analysis_chunk_started"'),
+      expect.stringContaining('"event":"deep_analysis_chunk_completed"'),
+      expect.stringContaining('"event":"deep_analysis_global_synthesis_started"'),
+      expect.stringContaining('"event":"deep_analysis_global_synthesis_completed"'),
+      expect.stringContaining('"event":"deep_analysis_report_completed"'),
+    ]));
 
     const internalCommentUpdates = (
       repository.updateDeepAnalysisReport.mock.calls as unknown as Array<[string, { internalComment?: string }]>
@@ -334,77 +470,32 @@ describe('deep analysis report processor service', () => {
       putJson: jest.fn(async () => undefined),
     };
     const qwen = {
-      getConfiguredModel: jest.fn(() => 'qwen3.5-pro'),
+      getConfiguredModel: jest.fn(() => 'qwen3.5-plus'),
       createJson: jest
         .fn()
-        .mockImplementationOnce(async () => ({
+        .mockImplementationOnce(async () => createChunkResult({
+          success: false,
+          httpStatus: 200,
+          errorCode: 'QWEN_JSON_PARSE_FAILED',
+          errorMessage: 'Unexpected token',
           parsed: null,
-          usage: {
-            model: 'qwen3.5-pro',
-            promptTokens: 10,
-            completionTokens: 2,
-            totalTokens: 12,
-            usageMissing: false,
-          },
-          requestMeta: {
-            stage: 'chunk_analysis',
-            success: false,
-            requested: true,
-            httpStatus: 200,
-            parseSucceeded: false,
-            errorCode: 'QWEN_JSON_PARSE_FAILED',
-            errorMessage: 'Unexpected token',
-            requestedAt: '2026-03-28T00:00:00.000Z',
-            finishedAt: '2026-03-28T00:00:01.000Z',
-          },
         }))
-        .mockImplementationOnce(async () => ({
+        .mockImplementationOnce(async () => createChunkResult({
+          success: false,
+          httpStatus: 200,
+          errorCode: 'QWEN_JSON_PARSE_FAILED',
+          errorMessage: 'Unexpected token',
+          requestedAt: '2026-03-28T00:00:02.000Z',
+          finishedAt: '2026-03-28T00:00:03.000Z',
           parsed: null,
-          usage: {
-            model: 'qwen3.5-pro',
-            promptTokens: 10,
-            completionTokens: 2,
-            totalTokens: 12,
-            usageMissing: false,
-          },
-          requestMeta: {
-            stage: 'chunk_analysis',
-            success: false,
-            requested: true,
-            httpStatus: 200,
-            parseSucceeded: false,
-            errorCode: 'QWEN_JSON_PARSE_FAILED',
-            errorMessage: 'Unexpected token',
-            requestedAt: '2026-03-28T00:00:02.000Z',
-            finishedAt: '2026-03-28T00:00:03.000Z',
-          },
         }))
-        .mockImplementationOnce(async () => ({
-          parsed: null,
-          usage: {
-            model: 'qwen3.5-pro',
-            promptTokens: 20,
-            completionTokens: 4,
-            totalTokens: 24,
-            usageMissing: false,
-          },
-          requestMeta: {
-            stage: 'global_synthesis',
-            success: false,
-            requested: true,
-            httpStatus: 200,
-            parseSucceeded: false,
-            errorCode: 'QWEN_JSON_PARSE_FAILED',
-            errorMessage: 'Unexpected token',
-            requestedAt: '2026-03-28T00:00:04.000Z',
-            finishedAt: '2026-03-28T00:00:05.000Z',
-          },
-        })),
+        .mockImplementationOnce(async () => createSynthesisResult()),
     };
     const processor = new DeepAnalysisReportProcessorService(
       repository as never,
       storage as never,
       qwen as never,
+      createConfig() as never,
     );
 
     await processor.process({
@@ -420,5 +511,355 @@ describe('deep analysis report processor service', () => {
       .filter((value): value is number => typeof value === 'number');
 
     expect(progressUpdates).toEqual(expect.arrayContaining([10, 35, 47, 59, 60, 90, 100]));
+  });
+
+  it('limits chunk analysis to five concurrent Qwen requests', async () => {
+    const memories = Array.from({ length: 1081 }, (_, index) => ({
+      id: `mem_${index + 1}`,
+      content: `Memory ${index + 1} about Bosn, React, automation, and dashboard work with Alice Johnson.`,
+      createdAt: `2026-03-${String((index % 28) + 1).padStart(2, '0')}T00:00:00Z`,
+      updatedAt: `2026-03-${String((index % 28) + 1).padStart(2, '0')}T00:00:00Z`,
+      memoryType: 'insight',
+      tags: [`tag-${index + 1}`],
+      metadata: null,
+    }));
+    const repository = {
+      getDeepAnalysisReport: jest.fn(async () => ({
+        id: 'dar_concurrency',
+        status: 'QUEUED',
+        lang: 'en',
+        sourceSnapshotObjectKey: 'deep-analysis/reports/dar_concurrency/source.json.gz',
+        internalComment: null,
+      })),
+      updateDeepAnalysisReport: jest.fn(async () => undefined),
+    };
+    const storage = {
+      getObjectBuffer: jest.fn(async () => gzipJson({
+        fetchedAt: '2026-03-28T00:00:00Z',
+        memoryCount: memories.length,
+        memories,
+      })),
+      putJson: jest.fn(async () => undefined),
+    };
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const pendingChunkResolves: Array<() => void> = [];
+    const qwen = {
+      getConfiguredModel: jest.fn(() => 'qwen3.5-plus'),
+      createJson: jest.fn(async (stage: string) => {
+        if (stage === 'global_synthesis') {
+          return createSynthesisResult();
+        }
+
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise<void>((resolve) => {
+          pendingChunkResolves.push(() => {
+            inFlight -= 1;
+            resolve();
+          });
+        });
+
+        return createChunkResult();
+      }),
+    };
+    const processor = new DeepAnalysisReportProcessorService(
+      repository as never,
+      storage as never,
+      qwen as never,
+      createConfig({
+        deepAnalysisChunkConcurrency: 5,
+      }) as never,
+    );
+
+    const processPromise = processor.process({
+      messageType: 'deep_report',
+      reportId: 'dar_concurrency',
+      traceId: 'trace_concurrency',
+    });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(maxInFlight).toBe(5);
+    expect(pendingChunkResolves).toHaveLength(5);
+
+    pendingChunkResolves.splice(0).forEach((resolve) => resolve());
+    for (let attempt = 0; attempt < 20 && pendingChunkResolves.length < 2; attempt += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect(maxInFlight).toBe(5);
+
+    pendingChunkResolves.splice(0).forEach((resolve) => resolve());
+    await processPromise;
+
+    expect(qwen.createJson).toHaveBeenCalledTimes(8);
+    expect(maxInFlight).toBe(5);
+  });
+
+  it('keeps internal comment audit consistent when chunks finish out of order and one times out', async () => {
+    const memories = Array.from({ length: 181 }, (_, index) => ({
+      id: `mem_${index + 1}`,
+      content: `Audited memory ${index + 1} about dashboards, automation, and collaboration.`,
+      createdAt: `2026-03-${String((index % 28) + 1).padStart(2, '0')}T00:00:00Z`,
+      updatedAt: `2026-03-${String((index % 28) + 1).padStart(2, '0')}T00:00:00Z`,
+      memoryType: 'insight',
+      tags: [`audit-${index + 1}`],
+      metadata: null,
+    }));
+    const repository = {
+      getDeepAnalysisReport: jest.fn(async () => ({
+        id: 'dar_audit',
+        status: 'QUEUED',
+        lang: 'en',
+        sourceSnapshotObjectKey: 'deep-analysis/reports/dar_audit/source.json.gz',
+        internalComment: null,
+      })),
+      updateDeepAnalysisReport: jest.fn(async () => undefined),
+    };
+    const storage = {
+      getObjectBuffer: jest.fn(async () => gzipJson({
+        fetchedAt: '2026-03-28T00:00:00Z',
+        memoryCount: memories.length,
+        memories,
+      })),
+      putJson: jest.fn(async () => undefined),
+    };
+    let firstResolve: (() => void) | undefined;
+    let secondResolve: (() => void) | undefined;
+    let chunkCallCount = 0;
+    const qwen = {
+      getConfiguredModel: jest.fn(() => 'qwen3.5-plus'),
+      createJson: jest.fn(async (stage: string) => {
+        if (stage === 'global_synthesis') {
+          return createSynthesisResult();
+        }
+
+        chunkCallCount += 1;
+        if (chunkCallCount === 1) {
+          await new Promise<void>((resolve) => {
+            firstResolve = resolve;
+          });
+          return createChunkResult({
+            index: 1,
+            promptTokens: 11,
+            completionTokens: 3,
+            totalTokens: 14,
+          });
+        }
+
+        await new Promise<void>((resolve) => {
+          secondResolve = resolve;
+        });
+        return createChunkResult({
+          index: 2,
+          success: false,
+          httpStatus: null,
+          errorCode: 'QWEN_REQUEST_TIMEOUT',
+          errorMessage: 'Qwen request timed out after 120000ms',
+          requestedAt: '2026-03-28T00:00:02.000Z',
+          finishedAt: '2026-03-28T00:02:02.000Z',
+          promptTokens: null,
+          completionTokens: null,
+          totalTokens: null,
+          parsed: null,
+        });
+      }),
+    };
+    const processor = new DeepAnalysisReportProcessorService(
+      repository as never,
+      storage as never,
+      qwen as never,
+      createConfig() as never,
+    );
+
+    const processPromise = processor.process({
+      messageType: 'deep_report',
+      reportId: 'dar_audit',
+      traceId: 'trace_audit',
+    });
+
+    for (let attempt = 0; attempt < 20 && (!firstResolve || !secondResolve); attempt += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    secondResolve?.();
+    await new Promise((resolve) => setImmediate(resolve));
+    firstResolve?.();
+    await processPromise;
+
+    const finalCall = (
+      repository.updateDeepAnalysisReport.mock.calls as unknown as Array<[string, { internalComment?: string; status?: string }]>
+    ).at(-1);
+    expect(finalCall?.[1]?.status).toBe('COMPLETED');
+    expect(finalCall?.[1]?.internalComment).toBeTruthy();
+
+    const finalInternalComment = JSON.parse(String(finalCall?.[1]?.internalComment)) as {
+      aggregate: {
+        requestCount: number;
+        successCount: number;
+        failureCount: number;
+        promptTokens: number;
+        completionTokens: number;
+        totalTokens: number;
+      };
+      calls: Array<{
+        stage: string;
+        index: number;
+        success: boolean;
+        errorCode: string | null;
+      }>;
+    };
+    expect(finalInternalComment.aggregate).toEqual({
+      requestCount: 3,
+      successCount: 1,
+      failureCount: 2,
+      promptTokens: 101,
+      completionTokens: 23,
+      totalTokens: 124,
+    });
+    expect(finalInternalComment.calls).toEqual([
+      expect.objectContaining({
+        stage: 'chunk_analysis',
+        index: 1,
+        success: true,
+        errorCode: null,
+      }),
+      expect.objectContaining({
+        stage: 'chunk_analysis',
+        index: 2,
+        success: false,
+        errorCode: 'QWEN_REQUEST_TIMEOUT',
+      }),
+      expect.objectContaining({
+        stage: 'global_synthesis',
+        index: 1,
+        success: false,
+        errorCode: 'QWEN_JSON_PARSE_FAILED',
+      }),
+    ]);
+  });
+
+  it('preserves chunk insight order for synthesis even when chunk completions finish out of order', async () => {
+    const memories = Array.from({ length: 181 }, (_, index) => ({
+      id: `mem_${index + 1}`,
+      content: `Ordered memory ${index + 1} about dashboards and automation.`,
+      createdAt: `2026-03-${String((index % 28) + 1).padStart(2, '0')}T00:00:00Z`,
+      updatedAt: `2026-03-${String((index % 28) + 1).padStart(2, '0')}T00:00:00Z`,
+      memoryType: 'insight',
+      tags: [`ordered-${index + 1}`],
+      metadata: null,
+    }));
+    const repository = {
+      getDeepAnalysisReport: jest.fn(async () => ({
+        id: 'dar_order',
+        status: 'QUEUED',
+        lang: 'en',
+        sourceSnapshotObjectKey: 'deep-analysis/reports/dar_order/source.json.gz',
+        internalComment: null,
+      })),
+      updateDeepAnalysisReport: jest.fn(async () => undefined),
+    };
+    const storage = {
+      getObjectBuffer: jest.fn(async () => gzipJson({
+        fetchedAt: '2026-03-28T00:00:00Z',
+        memoryCount: memories.length,
+        memories,
+      })),
+      putJson: jest.fn(async () => undefined),
+    };
+    let chunkCallCount = 0;
+    let firstResolve: (() => void) | undefined;
+    let secondResolve: (() => void) | undefined;
+    const qwen = {
+      getConfiguredModel: jest.fn(() => 'qwen3.5-plus'),
+      createJson: jest.fn(async (stage: string, _systemPrompt: string, userPrompt: string) => {
+        if (stage === 'global_synthesis') {
+          const payload = JSON.parse(userPrompt) as {
+            chunkInsights: Array<{ summary: string }>;
+          };
+          expect(payload.chunkInsights.map((item) => item.summary)).toEqual(['chunk-1', 'chunk-2']);
+          return createSynthesisResult();
+        }
+
+        chunkCallCount += 1;
+        if (chunkCallCount === 1) {
+          await new Promise<void>((resolve) => {
+            firstResolve = resolve;
+          });
+          return createChunkResult({
+            index: 1,
+            parsed: {
+              summary: 'chunk-1',
+              themes: [],
+              entities: {
+                people: [],
+                teams: [],
+                projects: [],
+                tools: [],
+                places: [],
+              },
+              personaSignals: {
+                workingStyle: ['chunk-1 style'],
+                goals: [],
+                preferences: [],
+                constraints: [],
+                decisionSignals: [],
+                notableRoutines: [],
+                contradictionsOrTensions: [],
+              },
+              relationships: [],
+            },
+          });
+        }
+
+        await new Promise<void>((resolve) => {
+          secondResolve = resolve;
+        });
+        return createChunkResult({
+          index: 2,
+          parsed: {
+            summary: 'chunk-2',
+            themes: [],
+            entities: {
+              people: [],
+              teams: [],
+              projects: [],
+              tools: [],
+              places: [],
+            },
+            personaSignals: {
+              workingStyle: ['chunk-2 style'],
+              goals: [],
+              preferences: [],
+              constraints: [],
+              decisionSignals: [],
+              notableRoutines: [],
+              contradictionsOrTensions: [],
+            },
+            relationships: [],
+          },
+        });
+      }),
+    };
+    const processor = new DeepAnalysisReportProcessorService(
+      repository as never,
+      storage as never,
+      qwen as never,
+      createConfig() as never,
+    );
+
+    const processPromise = processor.process({
+      messageType: 'deep_report',
+      reportId: 'dar_order',
+      traceId: 'trace_order',
+    });
+
+    for (let attempt = 0; attempt < 20 && (!firstResolve || !secondResolve); attempt += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    secondResolve?.();
+    await new Promise((resolve) => setImmediate(resolve));
+    firstResolve?.();
+    await processPromise;
   });
 });

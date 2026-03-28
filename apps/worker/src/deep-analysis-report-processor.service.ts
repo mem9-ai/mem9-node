@@ -1,3 +1,5 @@
+import type { AppConfig } from '@mem9/config';
+import { APP_CONFIG } from '@mem9/config';
 import type {
   DeepAnalysisCandidateEdge,
   DeepAnalysisCandidateNode,
@@ -19,7 +21,7 @@ import {
   gunzipJson,
   normalizeMemory,
 } from '@mem9/shared';
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { DeepAnalysisReportStage, DeepAnalysisReportStatus, Prisma } from '@prisma/client';
 
 import {
@@ -179,6 +181,33 @@ interface InternalCommentPayload {
   calls: InternalCommentCall[];
 }
 
+interface ChunkAnalysisSummary {
+  totalChunks: number;
+  successCount: number;
+  failureCount: number;
+}
+
+interface ChunkAnalysisOutcome {
+  insights: ChunkInsight[];
+  summary: ChunkAnalysisSummary;
+}
+
+interface ChunkExecutionResult {
+  index: number;
+  chunkSize: number;
+  durationMs: number;
+  fallbackUsed: boolean;
+  result: QwenJsonResult<ChunkInsight>;
+  insight: ChunkInsight;
+}
+
+interface SynthesisOutcome {
+  report: DeepAnalysisReportDocument;
+  durationMs: number;
+  fallbackUsed: boolean;
+  errorCode: string | null;
+}
+
 const TOOL_HINTS = [
   'react', 'typescript', 'javascript', 'node', 'go', 'python', 'docker', 'kubernetes',
   'tidb', 'mysql', 'redis', 'neovim', 'vscode', 'github', 'gitlab', 'openai', 'qwen',
@@ -232,8 +261,13 @@ const DISALLOWED_ENTITY_TERMS = new Set<string>([
 const DISALLOWED_PROJECT_TAGS = new Set<string>([
   'work', 'plan', 'task', 'tasks', 'project', 'projects', 'memory', 'workflow', 'agent', 'user',
 ]);
+const CHUNK_SIZE = 180;
 const CHUNK_ANALYSIS_PROGRESS_START = 35;
 const CHUNK_ANALYSIS_PROGRESS_END = 59;
+const INTERNAL_COMMENT_STAGE_ORDER: Record<QwenAuditStage, number> = {
+  chunk_analysis: 0,
+  global_synthesis: 1,
+};
 
 function chunkArray<T>(items: T[], size: number): T[][] {
   const chunks: T[][] = [];
@@ -802,14 +836,21 @@ export class DeepAnalysisReportProcessorService {
     private readonly repository: AnalysisRepository,
     private readonly storage: S3PayloadStorageService,
     private readonly qwen: QwenDeepAnalysisService,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
 
   public async process(message: DeepAnalysisReportMessage): Promise<void> {
+    const processStartedAt = Date.now();
     const reportRecord = await this.repository.getDeepAnalysisReport(message.reportId);
     const internalComment = parseInternalComment(
       reportRecord.internalComment,
       this.qwen.getConfiguredModel(),
     );
+    let chunkSummary: ChunkAnalysisSummary = {
+      totalChunks: 0,
+      successCount: 0,
+      failureCount: 0,
+    };
 
     if (reportRecord.status === DeepAnalysisReportStatus.COMPLETED) {
       return;
@@ -829,16 +870,29 @@ export class DeepAnalysisReportProcessorService {
       const payloadBuffer = await this.storage.getObjectBuffer(reportRecord.sourceSnapshotObjectKey);
       const payload = gunzipJson<SourceSnapshotPayload>(payloadBuffer);
       const prepared = this.prepareMemories(payload.memories);
+      const totalChunks = this.buildChunkCount(prepared.uniqueMemories.length);
+      const chunkConcurrency = this.buildChunkConcurrency(totalChunks);
       await this.repository.updateDeepAnalysisReport(reportRecord.id, {
         status: DeepAnalysisReportStatus.ANALYZING,
         stage: DeepAnalysisReportStage.CHUNK_ANALYSIS,
         progressPercent: CHUNK_ANALYSIS_PROGRESS_START,
       });
-      const chunkInsights = await this.analyzeChunks(
+      this.logInfo('deep_analysis_chunk_analysis_started', {
+        reportId: reportRecord.id,
+        memoryCount: payload.memories.length,
+        deduplicatedMemoryCount: prepared.deduplicatedCount,
+        totalChunks,
+        concurrency: chunkConcurrency,
+        model: this.qwen.getConfiguredModel(),
+        thinkingDisabled: true,
+      });
+      const chunkOutcome = await this.analyzeChunks(
         reportRecord.id,
         internalComment,
         prepared.uniqueMemories,
       );
+      chunkSummary = chunkOutcome.summary;
+      const chunkInsights = chunkOutcome.insights;
       const corpusSignals = this.buildCorpusSignals(prepared, chunkInsights);
 
       await this.repository.updateDeepAnalysisReport(reportRecord.id, {
@@ -846,8 +900,12 @@ export class DeepAnalysisReportProcessorService {
         stage: DeepAnalysisReportStage.GLOBAL_SYNTHESIS,
         progressPercent: 60,
       });
+      this.logInfo('deep_analysis_global_synthesis_started', {
+        reportId: reportRecord.id,
+        totalChunks: chunkSummary.totalChunks,
+      });
 
-      let report = await this.synthesizeReport(
+      const synthesisOutcome = await this.synthesizeReport(
         reportRecord.id,
         internalComment,
         reportRecord.lang,
@@ -855,6 +913,13 @@ export class DeepAnalysisReportProcessorService {
         chunkInsights,
         corpusSignals,
       );
+      let report = synthesisOutcome.report;
+      this.logInfo('deep_analysis_global_synthesis_completed', {
+        reportId: reportRecord.id,
+        durationMs: synthesisOutcome.durationMs,
+        fallbackUsed: synthesisOutcome.fallbackUsed,
+        errorCode: synthesisOutcome.errorCode,
+      });
 
       await this.repository.updateDeepAnalysisReport(reportRecord.id, {
         status: DeepAnalysisReportStatus.SYNTHESIZING,
@@ -893,16 +958,36 @@ export class DeepAnalysisReportProcessorService {
         previewJson: buildPreview(report) as unknown as Prisma.InputJsonValue,
         internalComment: JSON.stringify(internalComment),
       });
+      this.logInfo('deep_analysis_report_completed', {
+        reportId: reportRecord.id,
+        totalDurationMs: Date.now() - processStartedAt,
+        totalChunks: chunkSummary.totalChunks,
+        chunkSuccessCount: chunkSummary.successCount,
+        chunkFailureCount: chunkSummary.failureCount,
+      });
     } catch (error) {
+      const errorCode = error instanceof AppError ? error.code : 'DEEP_ANALYSIS_PROCESSING_FAILED';
       await this.repository.updateDeepAnalysisReport(reportRecord.id, {
         status: DeepAnalysisReportStatus.FAILED,
         stage: DeepAnalysisReportStage.VALIDATE,
         progressPercent: 100,
         completedAt: new Date(),
-        errorCode: error instanceof AppError ? error.code : 'DEEP_ANALYSIS_PROCESSING_FAILED',
+        errorCode,
         errorMessage: error instanceof Error ? error.message.slice(0, 512) : 'Deep analysis failed',
         internalComment: JSON.stringify(internalComment),
       });
+      this.logger.error(
+        JSON.stringify({
+          event: 'deep_analysis_report_failed',
+          reportId: reportRecord.id,
+          totalDurationMs: Date.now() - processStartedAt,
+          totalChunks: chunkSummary.totalChunks,
+          chunkSuccessCount: chunkSummary.successCount,
+          chunkFailureCount: chunkSummary.failureCount,
+          errorCode,
+        }),
+        error instanceof Error ? error.stack : undefined,
+      );
     }
   }
 
@@ -960,11 +1045,70 @@ export class DeepAnalysisReportProcessorService {
     reportId: string,
     internalComment: InternalCommentPayload,
     memories: PreparedMemory[],
-  ): Promise<ChunkInsight[]> {
-    const chunks = chunkArray(memories, 180);
-    const insights: ChunkInsight[] = [];
+  ): Promise<ChunkAnalysisOutcome> {
+    const chunks = chunkArray(memories, CHUNK_SIZE);
 
-    for (const [index, chunk] of chunks.entries()) {
+    if (chunks.length === 0) {
+      return {
+        insights: [],
+        summary: {
+          totalChunks: 0,
+          successCount: 0,
+          failureCount: 0,
+        },
+      };
+    }
+
+    const insights = new Array<ChunkInsight>(chunks.length);
+    const concurrency = this.buildChunkConcurrency(chunks.length);
+    let nextChunkIndex = 0;
+    let completedChunkCount = 0;
+    let successCount = 0;
+    let failureCount = 0;
+    let commitChain = Promise.resolve();
+
+    const commitChunkResult = (execution: ChunkExecutionResult): Promise<void> => {
+      commitChain = commitChain.then(async () => {
+        insights[execution.index] = execution.insight;
+        this.appendModelCall(
+          internalComment,
+          execution.index + 1,
+          execution.result,
+        );
+        if (execution.result.requestMeta.success) {
+          successCount += 1;
+        } else {
+          failureCount += 1;
+        }
+        completedChunkCount += 1;
+        const progressPercent = this.buildChunkAnalysisProgress(completedChunkCount, chunks.length);
+        await this.repository.updateDeepAnalysisReport(reportId, {
+          progressPercent,
+          internalComment: JSON.stringify(internalComment),
+        });
+        this.logInfo('deep_analysis_chunk_completed', {
+          reportId,
+          chunkIndex: execution.index + 1,
+          totalChunks: chunks.length,
+          chunkSize: execution.chunkSize,
+          durationMs: execution.durationMs,
+          fallbackUsed: execution.fallbackUsed,
+          errorCode: execution.result.requestMeta.errorCode,
+          progressPercent,
+        });
+      });
+
+      return commitChain;
+    };
+
+    const runChunk = async (index: number, chunk: PreparedMemory[]): Promise<void> => {
+      this.logInfo('deep_analysis_chunk_started', {
+        reportId,
+        chunkIndex: index + 1,
+        totalChunks: chunks.length,
+        chunkSize: chunk.length,
+      });
+      const chunkStartedAt = Date.now();
       const qwenInsight = await this.qwen.createJson<ChunkInsight>(
         'chunk_analysis',
         [
@@ -983,15 +1127,10 @@ export class DeepAnalysisReportProcessorService {
           })),
         }),
       );
-      await this.recordModelCall(
-        reportId,
-        internalComment,
-        index + 1,
-        qwenInsight,
-      );
-
-      if (qwenInsight.parsed) {
-        insights.push({
+      const durationMs = Date.now() - chunkStartedAt;
+      const fallbackUsed = qwenInsight.parsed === null;
+      const insight = qwenInsight.parsed
+        ? {
           summary: qwenInsight.parsed.summary ?? '',
           themes: Array.isArray(qwenInsight.parsed.themes) ? qwenInsight.parsed.themes : [],
           entities: {
@@ -1011,17 +1150,38 @@ export class DeepAnalysisReportProcessorService {
             contradictionsOrTensions: qwenInsight.parsed.personaSignals?.contradictionsOrTensions ?? [],
           },
           relationships: Array.isArray(qwenInsight.parsed.relationships) ? qwenInsight.parsed.relationships : [],
-        });
-      } else {
-        insights.push(this.buildHeuristicChunkInsight(chunk));
-      }
+        }
+        : this.buildHeuristicChunkInsight(chunk);
 
-      await this.repository.updateDeepAnalysisReport(reportId, {
-        progressPercent: this.buildChunkAnalysisProgress(index + 1, chunks.length),
+      await commitChunkResult({
+        index,
+        chunkSize: chunk.length,
+        durationMs,
+        fallbackUsed,
+        result: qwenInsight,
+        insight,
       });
-    }
+    };
 
-    return insights;
+    const workers = Array.from({ length: concurrency }, async () => {
+      while (nextChunkIndex < chunks.length) {
+        const currentIndex = nextChunkIndex;
+        nextChunkIndex += 1;
+        await runChunk(currentIndex, chunks[currentIndex]!);
+      }
+    });
+
+    await Promise.all(workers);
+    await commitChain;
+
+    return {
+      insights,
+      summary: {
+        totalChunks: chunks.length,
+        successCount,
+        failureCount,
+      },
+    };
   }
 
   private buildChunkAnalysisProgress(processedChunks: number, totalChunks: number): number {
@@ -1034,6 +1194,22 @@ export class DeepAnalysisReportProcessorService {
       CHUNK_ANALYSIS_PROGRESS_END,
       CHUNK_ANALYSIS_PROGRESS_START + Math.floor((processedChunks / totalChunks) * spread),
     );
+  }
+
+  private buildChunkCount(memoryCount: number): number {
+    if (memoryCount <= 0) {
+      return 0;
+    }
+
+    return Math.ceil(memoryCount / CHUNK_SIZE);
+  }
+
+  private buildChunkConcurrency(totalChunks: number): number {
+    if (totalChunks <= 0) {
+      return 0;
+    }
+
+    return Math.min(this.config.analysis.deepAnalysisChunkConcurrency, totalChunks);
   }
 
   private buildHeuristicChunkInsight(memories: PreparedMemory[]): ChunkInsight {
@@ -1399,7 +1575,8 @@ export class DeepAnalysisReportProcessorService {
     corpus: PreparedCorpus,
     chunkInsights: ChunkInsight[],
     corpusSignals: CorpusSignals,
-  ): Promise<DeepAnalysisReportDocument> {
+  ): Promise<SynthesisOutcome> {
+    const synthesisStartedAt = Date.now();
     const qwenReport = await this.qwen.createJson<DeepAnalysisReportDocument>(
       'global_synthesis',
       [
@@ -1422,26 +1599,34 @@ export class DeepAnalysisReportProcessorService {
         corpusSignals,
       }),
     );
-    await this.recordModelCall(
-      reportId,
-      internalComment,
-      1,
-      qwenReport,
-    );
+    this.appendModelCall(internalComment, 1, qwenReport);
+    await this.repository.updateDeepAnalysisReport(reportId, {
+      internalComment: JSON.stringify(internalComment),
+    });
+    const durationMs = Date.now() - synthesisStartedAt;
 
     if (qwenReport.parsed) {
-      return qwenReport.parsed;
+      return {
+        report: qwenReport.parsed,
+        durationMs,
+        fallbackUsed: false,
+        errorCode: null,
+      };
     }
 
-    return this.buildHeuristicReport(lang, corpus, corpusSignals);
+    return {
+      report: this.buildHeuristicReport(lang, corpus, corpusSignals),
+      durationMs,
+      fallbackUsed: true,
+      errorCode: qwenReport.requestMeta.errorCode,
+    };
   }
 
-  private async recordModelCall(
-    reportId: string,
+  private appendModelCall(
     internalComment: InternalCommentPayload,
     index: number,
     result: QwenJsonResult<unknown>,
-  ): Promise<void> {
+  ): void {
     if (!result.requestMeta.requested) {
       return;
     }
@@ -1475,10 +1660,20 @@ export class DeepAnalysisReportProcessorService {
       errorCode: result.requestMeta.errorCode,
       errorMessage: result.requestMeta.errorMessage,
     });
+    internalComment.calls.sort((left, right) =>
+      INTERNAL_COMMENT_STAGE_ORDER[left.stage] - INTERNAL_COMMENT_STAGE_ORDER[right.stage] ||
+      left.index - right.index ||
+      left.requestedAt.localeCompare(right.requestedAt));
+  }
 
-    await this.repository.updateDeepAnalysisReport(reportId, {
-      internalComment: JSON.stringify(internalComment),
-    });
+  private logInfo(
+    event: string,
+    fields: Record<string, string | number | boolean | null>,
+  ): void {
+    this.logger.log(JSON.stringify({
+      event,
+      ...fields,
+    }));
   }
 
   private buildHeuristicReport(

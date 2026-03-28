@@ -83,7 +83,7 @@ describe('qwen deep analysis service', () => {
   });
 
   it('parses usage on a successful JSON response', async () => {
-    jest.spyOn(globalThis, 'fetch').mockResolvedValue(
+    const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({
         model: 'qwen3.5-pro',
         usage: {
@@ -125,6 +125,18 @@ describe('qwen deep analysis service', () => {
       completionTokens: 45,
       totalTokens: 168,
       usageMissing: false,
+    });
+    expect(fetchSpy).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        method: 'POST',
+        body: expect.any(String),
+      }),
+    );
+    const requestInit = fetchSpy.mock.calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(String(requestInit.body))).toMatchObject({
+      model: 'qwen3.5-pro',
+      enable_thinking: false,
     });
   });
 
@@ -258,5 +270,48 @@ describe('qwen deep analysis service', () => {
       totalTokens: null,
       usageMissing: true,
     });
+  });
+
+  it('disables thinking mode for both chunk and global synthesis requests', async () => {
+    const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({
+        model: 'qwen3.5-pro',
+        usage: {
+          prompt_tokens: 1,
+          completion_tokens: 1,
+          total_tokens: 2,
+        },
+        choices: [{
+          message: {
+            content: '{"summary":"ok"}',
+          },
+        }],
+      }), {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      }),
+    );
+    const service = new QwenDeepAnalysisService(createConfig());
+
+    await service.createJson<{ summary: string }>('chunk_analysis', 'system chunk', 'user chunk');
+    await service.createJson<{ summary: string }>('global_synthesis', 'system synthesis', 'user synthesis');
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(fetchSpy.mock.calls.map((call) => JSON.parse(String((call[1] as RequestInit).body)))).toEqual([
+      expect.objectContaining({
+        enable_thinking: false,
+        messages: expect.arrayContaining([
+          expect.objectContaining({ role: 'system', content: 'system chunk' }),
+        ]),
+      }),
+      expect.objectContaining({
+        enable_thinking: false,
+        messages: expect.arrayContaining([
+          expect.objectContaining({ role: 'system', content: 'system synthesis' }),
+        ]),
+      }),
+    ]);
   });
 });
