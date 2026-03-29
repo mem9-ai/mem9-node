@@ -6,10 +6,14 @@ describe('loadConfig', () => {
     REDIS_URL: 'redis://127.0.0.1:6379',
     APP_PEPPER: 'local-dev-pepper-1234567890',
     S3_BUCKET_ANALYSIS_PAYLOADS: 'mem9-analysis-payloads',
-    SQS_ANALYSIS_BATCH_QUEUE_URL: 'http://127.0.0.1:4566/000000000000/analysis-batch',
-    SQS_ANALYSIS_BATCH_DLQ_URL: 'http://127.0.0.1:4566/000000000000/analysis-batch-dlq',
-    SQS_ANALYSIS_LLM_QUEUE_URL: 'http://127.0.0.1:4566/000000000000/analysis-llm',
-    SQS_ANALYSIS_LLM_DLQ_URL: 'http://127.0.0.1:4566/000000000000/analysis-llm-dlq',
+    SQS_ANALYSIS_BATCH_QUEUE_URL:
+      'http://127.0.0.1:4566/000000000000/analysis-batch',
+    SQS_ANALYSIS_BATCH_DLQ_URL:
+      'http://127.0.0.1:4566/000000000000/analysis-batch-dlq',
+    SQS_ANALYSIS_LLM_QUEUE_URL:
+      'http://127.0.0.1:4566/000000000000/analysis-llm',
+    SQS_ANALYSIS_LLM_DLQ_URL:
+      'http://127.0.0.1:4566/000000000000/analysis-llm-dlq',
     GO_INTERNAL_SHARED_SECRET: 'local-secret',
   } satisfies NodeJS.ProcessEnv;
 
@@ -37,13 +41,35 @@ describe('loadConfig', () => {
     expect(config.aws.forcePathStyle).toBe(true);
   });
 
+  it('exposes the optional sentry dsn', () => {
+    const config = loadConfig({
+      ...baseEnv,
+      SENTRY_DSN: 'https://examplePublicKey@o0.ingest.sentry.io/0',
+    });
+
+    expect(config.sentry.dsn).toBe(
+      'https://examplePublicKey@o0.ingest.sentry.io/0',
+    );
+  });
+
+  it('treats an empty sentry dsn as disabled', () => {
+    const config = loadConfig({
+      ...baseEnv,
+      SENTRY_DSN: '',
+    });
+
+    expect(config.sentry.dsn).toBeUndefined();
+  });
+
   it('rejects partial static AWS credentials', () => {
     expect(() =>
       loadConfig({
         ...baseEnv,
         AWS_ACCESS_KEY_ID: 'test',
       }),
-    ).toThrow('AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be provided together');
+    ).toThrow(
+      'AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be provided together',
+    );
   });
 
   it('exposes mem9 source hardening defaults', () => {

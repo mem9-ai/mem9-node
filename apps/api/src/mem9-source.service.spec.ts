@@ -13,6 +13,9 @@ function createConfig(overrides?: Partial<AppConfig['analysis']>): AppConfig {
       logLevel: 'info',
       pepper: 'test-pepper-1234567890',
     },
+    sentry: {
+      dsn: undefined,
+    },
     database: {
       url: 'mysql://localhost/mem9',
     },
@@ -80,13 +83,17 @@ describe('mem9 source service', () => {
   it('retries timeout-like failures and eventually returns the memory count', async () => {
     const fetchMock = jest
       .fn()
-      .mockRejectedValueOnce(Object.assign(new Error('timeout'), { name: 'AbortError' }))
-      .mockResolvedValueOnce(createResponse(200, {
-        memories: [],
-        total: 123,
-        limit: 1,
-        offset: 0,
-      }));
+      .mockRejectedValueOnce(
+        Object.assign(new Error('timeout'), { name: 'AbortError' }),
+      )
+      .mockResolvedValueOnce(
+        createResponse(200, {
+          memories: [],
+          total: 123,
+          limit: 1,
+          offset: 0,
+        }),
+      );
     global.fetch = fetchMock as typeof fetch;
     const service = new Mem9SourceService(createConfig());
 
@@ -97,11 +104,11 @@ describe('mem9 source service', () => {
   });
 
   it('does not retry non-retryable 4xx responses', async () => {
-    const fetchMock = jest
-      .fn()
-      .mockResolvedValue(createResponse(404, {
+    const fetchMock = jest.fn().mockResolvedValue(
+      createResponse(404, {
         error: 'not found',
-      }));
+      }),
+    );
     global.fetch = fetchMock as typeof fetch;
     const service = new Mem9SourceService(createConfig());
 
@@ -125,11 +132,19 @@ describe('mem9 source service', () => {
       return createResponse(204);
     });
     global.fetch = fetchMock as typeof fetch;
-    const service = new Mem9SourceService(createConfig({
-      mem9SourceDeleteConcurrency: 2,
-    }));
+    const service = new Mem9SourceService(
+      createConfig({
+        mem9SourceDeleteConcurrency: 2,
+      }),
+    );
 
-    const result = await service.deleteMemories('space-key', ['m1', 'm2', 'm3', 'm4', 'm5']);
+    const result = await service.deleteMemories('space-key', [
+      'm1',
+      'm2',
+      'm3',
+      'm4',
+      'm5',
+    ]);
 
     expect(result.deletedMemoryIds).toHaveLength(5);
     expect(maxInFlight).toBeLessThanOrEqual(2);

@@ -6,7 +6,7 @@
     "node": ">=22 <23"
   },
   "scripts": {
-    "build": "pnpm -r --workspace-concurrency=1 build",
+    "build": "pnpm -r --workspace-concurrency=1 build && pnpm sentry:sourcemaps",
     "dev": "concurrently \"pnpm --filter @mem9/contracts build:watch\" \"pnpm --filter @mem9/config build:watch\" \"pnpm --filter @mem9/shared build:watch\" \"pnpm --filter @mem9/api dev\" \"pnpm --filter @mem9/worker dev\"",
     "lint": "pnpm -r --workspace-concurrency=1 lint",
     "typecheck": "pnpm -r --workspace-concurrency=1 typecheck",
@@ -21,7 +21,9 @@
     "migrate:dev": "prisma migrate dev",
     "seed": "tsx prisma/seed.ts",
     "prisma:generate": "prisma generate",
-    "prepare": "prisma generate"
+    "prepare": "prisma generate",
+    "updateSentry": "npx @sentry/wizard@latest -i sourcemaps --saas --org pingcap2 --project mem9-node",
+    "sentry:sourcemaps": "node scripts/sentry-sourcemaps.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1008.0",
@@ -36,6 +38,8 @@
     "@nestjs/swagger": "^11.2.6",
     "@nestjs/testing": "^11.1.16",
     "@prisma/client": "^6.10.1",
+    "@sentry/cli": "^2.58.5",
+    "@sentry/nestjs": "^10.46.0",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.4",
     "fastify": "^5.8.2",

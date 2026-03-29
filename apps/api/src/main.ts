@@ -1,3 +1,4 @@
+import './instrument';
 import 'reflect-metadata';
 
 import { randomUUID } from 'node:crypto';
@@ -7,10 +8,12 @@ import type { Http2ServerRequest } from 'node:http2';
 import { loadConfig } from '@mem9/config';
 import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
-import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
+import {
+  FastifyAdapter,
+  type NestFastifyApplication,
+} from '@nestjs/platform-fastify';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { Logger } from 'nestjs-pino';
-
 
 import { AppModule } from './app.module';
 import { AppExceptionFilter } from './common/app-exception.filter';
@@ -45,7 +48,9 @@ async function bootstrap(): Promise<void> {
     app,
     new DocumentBuilder()
       .setTitle('Memories Dashboard Analysis Service')
-      .setDescription('Async dashboard analysis backend for MEM9 browser-uploaded memories.')
+      .setDescription(
+        'Async dashboard analysis backend for MEM9 browser-uploaded memories.',
+      )
       .setVersion('1.0.0')
       .addApiKey(
         {

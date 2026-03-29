@@ -16,7 +16,10 @@ import {
   TaxonomyCacheService,
 } from '@mem9/shared';
 import { ValidationPipe } from '@nestjs/common';
-import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
+import {
+  FastifyAdapter,
+  type NestFastifyApplication,
+} from '@nestjs/platform-fastify';
 import { Test } from '@nestjs/testing';
 import type { AnalysisJobStatus, AnalysisJobBatchStatus } from '@prisma/client';
 import request from 'supertest';
@@ -29,7 +32,13 @@ import { RateLimitGuard } from './common/rate-limit.guard';
 
 const TEST_QWEN_MODEL = 'test-qwen-model';
 
-const legacyCategories = ['identity', 'emotion', 'preference', 'experience', 'activity'] as const;
+const legacyCategories = [
+  'identity',
+  'emotion',
+  'preference',
+  'experience',
+  'activity',
+] as const;
 
 interface FakeJob {
   id: string;
@@ -157,7 +166,8 @@ class FakeRedis {
     aggregate.summarySnapshot = input.summarySnapshot;
 
     for (const [key, value] of Object.entries(input.categoryCounts)) {
-      aggregate.categoryCounts[key] = (aggregate.categoryCounts[key] ?? 0) + value;
+      aggregate.categoryCounts[key] =
+        (aggregate.categoryCounts[key] ?? 0) + value;
     }
 
     for (const [key, value] of Object.entries(input.tagCounts)) {
@@ -188,7 +198,11 @@ class FakeRedis {
     await this.set(batchKey, JSON.stringify(input.batchResult));
     await this.rpush(eventsKey, JSON.stringify(event));
 
-    return [JSON.stringify(progress), JSON.stringify(aggregate), JSON.stringify(event)];
+    return [
+      JSON.stringify(progress),
+      JSON.stringify(aggregate),
+      JSON.stringify(event),
+    ];
   }
 
   public multi(): {
@@ -266,7 +280,12 @@ class FakeRepository {
 
     return {
       id: 'aks_1',
-      apiKeyFingerprint: new Uint8Array(fingerprint.buffer.slice(fingerprint.byteOffset, fingerprint.byteOffset + fingerprint.byteLength) as ArrayBuffer),
+      apiKeyFingerprint: new Uint8Array(
+        fingerprint.buffer.slice(
+          fingerprint.byteOffset,
+          fingerprint.byteOffset + fingerprint.byteLength,
+        ) as ArrayBuffer,
+      ),
       status: 'ACTIVE',
       planCode: 'default',
       lastSeenAt: new Date(),
@@ -325,7 +344,12 @@ class FakeRepository {
   }) {
     const job: FakeJob = {
       id: 'aj_test_1',
-      apiKeyFingerprint: new Uint8Array(data.fingerprint.buffer.slice(data.fingerprint.byteOffset, data.fingerprint.byteOffset + data.fingerprint.byteLength) as ArrayBuffer),
+      apiKeyFingerprint: new Uint8Array(
+        data.fingerprint.buffer.slice(
+          data.fingerprint.byteOffset,
+          data.fingerprint.byteOffset + data.fingerprint.byteLength,
+        ) as ArrayBuffer,
+      ),
       status: 'UPLOADING',
       dateRangeStart: data.dateRangeStart,
       dateRangeEnd: data.dateRangeEnd,
@@ -443,6 +467,9 @@ describe('analysis jobs integration', () => {
               logLevel: 'info',
               pepper: process.env.APP_PEPPER,
             },
+            sentry: {
+              dsn: undefined,
+            },
             database: {
               url: 'mysql://test',
             },
@@ -477,7 +504,8 @@ describe('analysis jobs integration', () => {
               mem9SourceFetchRetryBaseMs: 250,
               mem9SourceDeleteConcurrency: 4,
               deepAnalysisDailyLimitBypassFingerprints: [],
-              qwenApiBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+              qwenApiBaseUrl:
+                'https://dashscope.aliyuncs.com/compatible-mode/v1',
               qwenApiKey: '',
               qwenModel: TEST_QWEN_MODEL,
               qwenRequestTimeoutMs: 120000,
@@ -545,7 +573,9 @@ describe('analysis jobs integration', () => {
       ],
     }).compile();
 
-    app = moduleRef.createNestApplication<NestFastifyApplication>(new FastifyAdapter());
+    app = moduleRef.createNestApplication<NestFastifyApplication>(
+      new FastifyAdapter(),
+    );
     app.useGlobalPipes(
       new ValidationPipe({
         whitelist: true,
@@ -610,10 +640,17 @@ describe('analysis jobs integration', () => {
 
     const progressStore = new RedisProgressStore(redis as never, 86400);
     const tagCounts: Record<string, number> = Object.fromEntries(
-      Array.from({ length: 51 }, (_, index) => [`tag-${index.toString().padStart(2, '0')}`, 1] as const),
+      Array.from(
+        { length: 51 },
+        (_, index) => [`tag-${index.toString().padStart(2, '0')}`, 1] as const,
+      ),
     );
     const topicCounts: Record<string, number> = Object.fromEntries(
-      Array.from({ length: 51 }, (_, index) => [`topic-${index.toString().padStart(2, '0')}`, 1] as const),
+      Array.from(
+        { length: 51 },
+        (_, index) =>
+          [`topic-${index.toString().padStart(2, '0')}`, 1] as const,
+      ),
     );
 
     tagCounts.priority = 53;
@@ -658,16 +695,29 @@ describe('analysis jobs integration', () => {
     expect(snapshotBody.progress.uploadedBatches).toBe(1);
     expect(snapshotBody.aggregate.categoryCounts.identity).toBe(1);
     expect(snapshotBody.topTagStats).toHaveLength(50);
-    expect(snapshotBody.topTagStats[0]).toEqual({ value: 'priority', count: 53 });
+    expect(snapshotBody.topTagStats[0]).toEqual({
+      value: 'priority',
+      count: 53,
+    });
     expect(snapshotBody.topTagStats[1]).toEqual({ value: 'alpha', count: 5 });
     expect(snapshotBody.topTagStats[2]).toEqual({ value: 'beta', count: 5 });
     expect(snapshotBody.topTagStats[49]).toEqual({ value: 'tag-46', count: 1 });
-    expect(snapshotBody.topTags).toEqual(snapshotBody.topTagStats.map((stat) => stat.value));
+    expect(snapshotBody.topTags).toEqual(
+      snapshotBody.topTagStats.map((stat) => stat.value),
+    );
     expect(snapshotBody.topTags).not.toContain('tag-47');
     expect(snapshotBody.topTopicStats).toHaveLength(50);
-    expect(snapshotBody.topTopicStats[0]).toEqual({ value: 'project', count: 9 });
-    expect(snapshotBody.topTopicStats[1]).toEqual({ value: 'roadmap', count: 9 });
-    expect(snapshotBody.topTopics).toEqual(snapshotBody.topTopicStats.map((stat) => stat.value));
+    expect(snapshotBody.topTopicStats[0]).toEqual({
+      value: 'project',
+      count: 9,
+    });
+    expect(snapshotBody.topTopicStats[1]).toEqual({
+      value: 'roadmap',
+      count: 9,
+    });
+    expect(snapshotBody.topTopics).toEqual(
+      snapshotBody.topTopicStats.map((stat) => stat.value),
+    );
     expect(snapshotBody.topTopics).not.toContain('topic-49');
     expect(snapshotBody.aggregate.tagCounts['tag-47']).toBe(1);
     expect(snapshotBody.aggregate.tagCounts.priority).toBe(53);
@@ -702,6 +752,11 @@ describe('analysis jobs integration', () => {
       .set('x-mem9-api-key', 'mem9-secret')
       .expect(200);
 
-    expect(response.body.categories).toEqual(['policy', 'debugging', 'project', 'artifact']);
+    expect(response.body.categories).toEqual([
+      'policy',
+      'debugging',
+      'project',
+      'artifact',
+    ]);
   });
 });

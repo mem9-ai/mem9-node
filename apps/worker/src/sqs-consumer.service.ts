@@ -1,9 +1,13 @@
 import type { Message } from '@aws-sdk/client-sqs';
 import type { AppConfig } from '@mem9/config';
 import { APP_CONFIG } from '@mem9/config';
-import type { AnalysisBatchMessage, AnalysisLlmQueueMessage } from '@mem9/contracts';
+import type {
+  AnalysisBatchMessage,
+  AnalysisLlmQueueMessage,
+} from '@mem9/contracts';
 import { SqsQueueService } from '@mem9/shared';
 import { Inject, Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import * as Sentry from '@sentry/nestjs';
 
 import { BatchProcessorService } from './batch-processor.service';
 import { DeepAnalysisReportProcessorService } from './deep-analysis-report-processor.service';
@@ -32,11 +36,14 @@ export class SqsConsumerService implements OnModuleDestroy {
   private async consumeBatchLoop(): Promise<void> {
     await this.consumeLoop<AnalysisBatchMessage>({
       receive: () => this.queue.receiveBatchMessages(5),
-      extendVisibility: (receiptHandle) => this.queue.extendVisibility(receiptHandle),
+      extendVisibility: (receiptHandle) =>
+        this.queue.extendVisibility(receiptHandle),
       deleteMessage: (receiptHandle) => this.queue.deleteMessage(receiptHandle),
       parseBody: (body) => JSON.parse(body) as AnalysisBatchMessage,
       processMessage: (payload, message) => {
-        const receiveCount = Number(message.Attributes?.ApproximateReceiveCount ?? '1');
+        const receiveCount = Number(
+          message.Attributes?.ApproximateReceiveCount ?? '1',
+        );
         return this.batchProcessor.process(payload, receiveCount);
       },
       loopName: 'batch',
@@ -46,8 +53,10 @@ export class SqsConsumerService implements OnModuleDestroy {
   private async consumeLlmLoop(): Promise<void> {
     await this.consumeLoop<AnalysisLlmQueueMessage>({
       receive: () => this.queue.receiveLlmMessages(5),
-      extendVisibility: (receiptHandle) => this.queue.extendLlmVisibility(receiptHandle),
-      deleteMessage: (receiptHandle) => this.queue.deleteLlmMessage(receiptHandle),
+      extendVisibility: (receiptHandle) =>
+        this.queue.extendLlmVisibility(receiptHandle),
+      deleteMessage: (receiptHandle) =>
+        this.queue.deleteLlmMessage(receiptHandle),
       parseBody: (body) => JSON.parse(body) as AnalysisLlmQueueMessage,
       processMessage: async (payload) => {
         if (payload.messageType === 'deep_report') {
@@ -116,6 +125,7 @@ export class SqsConsumerService implements OnModuleDestroy {
     try {
       payload = parseBody(message.Body);
     } catch (error) {
+      Sentry.captureException(error);
       this.logger.error(
         `Failed to parse ${loopName} queue message`,
         error instanceof Error ? error.stack : undefined,
@@ -131,6 +141,7 @@ export class SqsConsumerService implements OnModuleDestroy {
       await processMessage(payload, message);
       await deleteMessage(message.ReceiptHandle);
     } catch (error) {
+      Sentry.captureException(error);
       this.logger.error(error);
     } finally {
       clearInterval(heartbeat);
