@@ -2,6 +2,8 @@ aws_region = "ap-southeast-1"
 
 name_prefix = "mem9-node-prod"
 
+api_alb_idle_timeout_seconds = 120
+
 vpc_id = "vpc-xxxxxxxxxxxxxxxxx"
 
 public_subnet_ids = [

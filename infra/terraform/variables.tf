@@ -8,6 +8,11 @@ variable "name_prefix" {
   default = "mem9-analysis"
 }
 
+variable "api_alb_idle_timeout_seconds" {
+  type    = number
+  default = 120
+}
+
 variable "analysis_payload_bucket_name" {
   type    = string
   default = "mem9-analysis-payloads"

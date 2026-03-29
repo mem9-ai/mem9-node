@@ -129,6 +129,7 @@ resource "aws_iam_role_policy_attachment" "task_execution_ecs" {
 resource "aws_lb" "api" {
   name               = "${var.name_prefix}-alb"
   load_balancer_type = "application"
+  idle_timeout       = var.api_alb_idle_timeout_seconds
   subnets            = var.public_subnet_ids
   security_groups    = [aws_security_group.alb.id]
 }
