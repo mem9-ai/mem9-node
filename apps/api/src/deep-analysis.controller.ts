@@ -63,7 +63,7 @@ export class DeepAnalysisController {
   }
 
   @Post('reports/:reportId/delete-duplicates')
-  @HttpCode(200)
+  @HttpCode(202)
   @ApiOperation({ summary: 'Delete duplicate memories for one deep analysis report' })
   public deleteDuplicateMemories(
     @CurrentContext() context: Mem9RequestContext,

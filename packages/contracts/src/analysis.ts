@@ -278,11 +278,22 @@ export interface DeepAnalysisDuplicateExportRow {
   reason: string;
 }
 
-export interface DeleteDeepAnalysisDuplicatesResponse {
-  reportId: string;
+export interface DeepAnalysisDuplicateCleanupStatus {
+  status: 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED';
+  requestedAt: string;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  totalCount: number;
   deletedCount: number;
+  failedCount: number;
   deletedMemoryIds: string[];
   failedMemoryIds: string[];
+  errorMessage?: string | null;
+}
+
+export interface DeleteDeepAnalysisDuplicatesResponse {
+  reportId: string;
+  duplicateCleanup: DeepAnalysisDuplicateCleanupStatus;
 }
 
 export interface DeleteDeepAnalysisReportResponse {
@@ -347,6 +358,7 @@ export interface DeepAnalysisReportPreview {
   summary: string;
   topThemes: string[];
   keyRecommendations: string[];
+  duplicateCleanup?: DeepAnalysisDuplicateCleanupStatus | null;
 }
 
 export interface CreateDeepAnalysisReportRequest {

@@ -73,7 +73,30 @@ describe('deep analysis duplicate ops service', () => {
           status: 'COMPLETED',
           reportObjectKey: 'deep-analysis/reports/dar_1/report.json',
           sourceSnapshotObjectKey: 'deep-analysis/reports/dar_1/source.json.gz',
+          requestedAt: new Date('2026-03-28T00:00:00Z'),
+          completedAt: new Date('2026-03-28T00:05:00Z'),
+          previewJson: {
+            generatedAt: '2026-03-28T00:05:00Z',
+            summary: 'Engineering-heavy corpus.',
+            topThemes: ['engineering'],
+            keyRecommendations: ['Deduplicate repeated notes'],
+          },
         })),
+        getDeepAnalysisReport: jest.fn(async () => ({
+          id: 'dar_1',
+          status: 'COMPLETED',
+          reportObjectKey: 'deep-analysis/reports/dar_1/report.json',
+          sourceSnapshotObjectKey: 'deep-analysis/reports/dar_1/source.json.gz',
+          requestedAt: new Date('2026-03-28T00:00:00Z'),
+          completedAt: new Date('2026-03-28T00:05:00Z'),
+          previewJson: {
+            generatedAt: '2026-03-28T00:05:00Z',
+            summary: 'Engineering-heavy corpus.',
+            topThemes: ['engineering'],
+            keyRecommendations: ['Deduplicate repeated notes'],
+          },
+        })),
+        updateDeepAnalysisReport: jest.fn(async () => undefined),
       } as never,
       source as never,
       {
@@ -91,10 +114,11 @@ describe('deep analysis duplicate ops service', () => {
     );
 
     const result = await service.deleteDuplicateMemories(createContext(), 'dar_1');
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
 
+    expect(result.duplicateCleanup.status).toBe('QUEUED');
+    expect(result.duplicateCleanup.totalCount).toBe(2);
     expect(source.deleteMemories).toHaveBeenCalledWith('space-key', ['mem_2', 'mem_3']);
-    expect(result.deletedCount).toBe(1);
-    expect(result.failedMemoryIds).toEqual(['mem_3']);
   });
 
   it('rejects deleting a running report', async () => {
@@ -119,6 +143,50 @@ describe('deep analysis duplicate ops service', () => {
       service.deleteReport(createContext(), 'dar_1'),
     ).rejects.toMatchObject({
       code: 'DEEP_ANALYSIS_REPORT_RUNNING',
+    });
+  });
+
+  it('rejects deleting a report while duplicate cleanup is running', async () => {
+    const now = new Date();
+    const service = new DeepAnalysisDuplicateOpsService(
+      {
+        getOwnedDeepAnalysisReport: jest.fn(async () => ({
+          id: 'dar_1',
+          status: 'COMPLETED',
+          reportObjectKey: 'deep-analysis/reports/dar_1/report.json',
+          sourceSnapshotObjectKey: 'deep-analysis/reports/dar_1/source.json.gz',
+          previewJson: {
+            generatedAt: '2026-03-28T00:05:00Z',
+            summary: 'Engineering-heavy corpus.',
+            topThemes: ['engineering'],
+            keyRecommendations: ['Deduplicate repeated notes'],
+            duplicateCleanup: {
+              status: 'RUNNING',
+              requestedAt: new Date(now.getTime() - 1000).toISOString(),
+              startedAt: now.toISOString(),
+              completedAt: null,
+              totalCount: 2,
+              deletedCount: 0,
+              failedCount: 0,
+              deletedMemoryIds: [],
+              failedMemoryIds: [],
+              errorMessage: null,
+            },
+          },
+        })),
+      } as never,
+      {
+        deleteMemories: jest.fn(),
+      } as never,
+      {
+        deleteObject: jest.fn(),
+      } as never,
+    );
+
+    await expect(
+      service.deleteReport(createContext(), 'dar_1'),
+    ).rejects.toMatchObject({
+      code: 'DEEP_ANALYSIS_DUPLICATE_CLEANUP_RUNNING',
     });
   });
 });

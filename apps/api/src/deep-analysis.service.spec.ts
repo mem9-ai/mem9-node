@@ -158,9 +158,18 @@ function createService(overrides?: {
   const duplicateOps = {
     deleteDuplicateMemories: jest.fn(async () => ({
       reportId: 'dar_1',
-      deletedCount: 1,
-      deletedMemoryIds: ['mem_2'],
-      failedMemoryIds: [],
+      duplicateCleanup: {
+        status: 'QUEUED',
+        requestedAt: '2026-03-29T00:00:00Z',
+        startedAt: null,
+        completedAt: null,
+        totalCount: 2,
+        deletedCount: 0,
+        failedCount: 0,
+        deletedMemoryIds: [],
+        failedMemoryIds: [],
+        errorMessage: null,
+      },
     })),
     deleteReport: jest.fn(async () => ({
       reportId: 'dar_1',
