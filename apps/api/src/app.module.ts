@@ -13,7 +13,7 @@ import {
 import { Module } from '@nestjs/common';
 import { APP_INTERCEPTOR } from '@nestjs/core';
 import { LoggerModule } from 'nestjs-pino';
-
+import { SentryModule } from '@sentry/nestjs/setup';
 
 import { AnalysisJobsController } from './analysis-jobs.controller';
 import { AnalysisJobsService } from './analysis-jobs.service';
@@ -32,6 +32,7 @@ const appConfig = loadConfig();
 
 @Module({
   imports: [
+    SentryModule.forRoot(),
     LoggerModule.forRoot({
       pinoHttp: {
         level: appConfig.app.logLevel,
@@ -52,7 +53,11 @@ const appConfig = loadConfig();
       },
     }),
   ],
-  controllers: [AnalysisJobsController, DeepAnalysisController, HealthController],
+  controllers: [
+    AnalysisJobsController,
+    DeepAnalysisController,
+    HealthController,
+  ],
   providers: [
     {
       provide: APP_CONFIG,

@@ -1,8 +1,13 @@
 import type { AppConfig } from '@mem9/config';
+import * as Sentry from '@sentry/nestjs';
 
 import { SqsConsumerService } from './sqs-consumer.service';
 
 const TEST_QWEN_MODEL = 'test-qwen-model';
+
+jest.mock('@sentry/nestjs', () => ({
+  captureException: jest.fn(),
+}));
 
 function createConfig(overrides?: Partial<AppConfig['sqs']>): AppConfig {
   return {
@@ -12,6 +17,9 @@ function createConfig(overrides?: Partial<AppConfig['sqs']>): AppConfig {
       workerHealthPort: 3001,
       logLevel: 'info',
       pepper: 'test-pepper-1234567890',
+    },
+    sentry: {
+      dsn: undefined,
     },
     database: {
       url: 'mysql://localhost/mem9',
@@ -66,6 +74,7 @@ function createConfig(overrides?: Partial<AppConfig['sqs']>): AppConfig {
 
 describe('sqs consumer service', () => {
   afterEach(() => {
+    jest.clearAllMocks();
     jest.restoreAllMocks();
   });
 
@@ -124,6 +133,10 @@ describe('sqs consumer service', () => {
     expect(batchProcessor.process).toHaveBeenCalledTimes(1);
     expect(queue.deleteMessage).toHaveBeenCalledWith('rh_good');
     expect(setIntervalSpy).toHaveBeenCalledWith(expect.any(Function), 7000);
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.any(SyntaxError),
+    );
   });
 
   it('keeps consuming after one processor failure', async () => {
@@ -193,5 +206,7 @@ describe('sqs consumer service', () => {
     expect(batchProcessor.process).toHaveBeenCalledTimes(2);
     expect(queue.deleteMessage).toHaveBeenCalledTimes(1);
     expect(queue.deleteMessage).toHaveBeenCalledWith('rh_2');
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureException).toHaveBeenCalledWith(expect.any(Error));
   });
 });

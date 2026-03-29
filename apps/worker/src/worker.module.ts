@@ -12,7 +12,7 @@ import {
 } from '@mem9/shared';
 import { Module } from '@nestjs/common';
 import { LoggerModule } from 'nestjs-pino';
-
+import { SentryModule } from '@sentry/nestjs/setup';
 
 import { BatchProcessorService } from './batch-processor.service';
 import { DeepAnalysisReportProcessorService } from './deep-analysis-report-processor.service';
@@ -25,6 +25,7 @@ const appConfig = loadConfig();
 
 @Module({
   imports: [
+    SentryModule.forRoot(),
     LoggerModule.forRoot({
       pinoHttp: {
         level: appConfig.app.logLevel,

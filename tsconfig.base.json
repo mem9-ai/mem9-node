@@ -17,6 +17,8 @@
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "sourceMap": true,
+    "inlineSources": true,
+    "sourceRoot": "/",
     "outDir": "dist",
     "baseUrl": ".",
     "paths": {

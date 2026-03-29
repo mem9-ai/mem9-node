@@ -151,3 +151,5 @@ override.tf.json
 tfplan
 *.tfplan
 .DS_Store
+# Sentry Config File
+.sentryclirc

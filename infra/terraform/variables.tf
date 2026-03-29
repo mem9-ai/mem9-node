@@ -59,6 +59,16 @@ variable "go_internal_shared_secret" {
   sensitive = true
 }
 
+variable "sentry_dsn" {
+  type      = string
+  sensitive = true
+}
+
+variable "sentry_auth_token" {
+  type      = string
+  sensitive = true
+}
+
 variable "mem9_source_api_base_url" {
   type = string
 }

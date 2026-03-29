@@ -44,7 +44,8 @@ Worker health: `http://127.0.0.1:3001/health/live`
 - Lint: `pnpm lint`
 - Typecheck: `pnpm typecheck`
 - Test: `pnpm test`
-- Build: `pnpm build`
+- Build artifacts only: `pnpm build`
+- Build and upload Sentry sourcemaps: `pnpm build:with-sourcemaps`
 - Verify: `pnpm verify`
 
 ## API Flow

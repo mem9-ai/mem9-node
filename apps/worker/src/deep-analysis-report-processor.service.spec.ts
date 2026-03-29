@@ -15,6 +15,9 @@ function createConfig(overrides?: Partial<AppConfig['analysis']>): AppConfig {
       logLevel: 'info',
       pepper: 'test-pepper-1234567890',
     },
+    sentry: {
+      dsn: undefined,
+    },
     database: {
       url: 'mysql://localhost/mem9',
     },
@@ -79,38 +82,52 @@ function createChunkResult(overrides?: {
   totalTokens?: number | null;
   parsed?: Record<string, unknown> | null;
 }) {
-  const promptTokens = Object.prototype.hasOwnProperty.call(overrides ?? {}, 'promptTokens')
+  const promptTokens = Object.prototype.hasOwnProperty.call(
+    overrides ?? {},
+    'promptTokens',
+  )
     ? (overrides?.promptTokens ?? null)
     : 10;
-  const completionTokens = Object.prototype.hasOwnProperty.call(overrides ?? {}, 'completionTokens')
+  const completionTokens = Object.prototype.hasOwnProperty.call(
+    overrides ?? {},
+    'completionTokens',
+  )
     ? (overrides?.completionTokens ?? null)
     : 2;
-  const totalTokens = Object.prototype.hasOwnProperty.call(overrides ?? {}, 'totalTokens')
+  const totalTokens = Object.prototype.hasOwnProperty.call(
+    overrides ?? {},
+    'totalTokens',
+  )
     ? (overrides?.totalTokens ?? null)
     : 12;
   const parsed = Object.prototype.hasOwnProperty.call(overrides ?? {}, 'parsed')
     ? (overrides?.parsed ?? null)
     : {
-      summary: `chunk ${overrides?.index ?? 1}`,
-      themes: [{ name: `theme-${overrides?.index ?? 1}`, memoryIds: [`mem_${overrides?.index ?? 1}`] }],
-      entities: {
-        people: [`Person ${overrides?.index ?? 1}`],
-        teams: [],
-        projects: [],
-        tools: [],
-        places: [],
-      },
-      personaSignals: {
-        workingStyle: [`Working style ${overrides?.index ?? 1}`],
-        goals: [],
-        preferences: [],
-        constraints: [],
-        decisionSignals: [],
-        notableRoutines: [],
-        contradictionsOrTensions: [],
-      },
-      relationships: [],
-    };
+        summary: `chunk ${overrides?.index ?? 1}`,
+        themes: [
+          {
+            name: `theme-${overrides?.index ?? 1}`,
+            memoryIds: [`mem_${overrides?.index ?? 1}`],
+          },
+        ],
+        entities: {
+          people: [`Person ${overrides?.index ?? 1}`],
+          teams: [],
+          projects: [],
+          tools: [],
+          places: [],
+        },
+        personaSignals: {
+          workingStyle: [`Working style ${overrides?.index ?? 1}`],
+          goals: [],
+          preferences: [],
+          constraints: [],
+          decisionSignals: [],
+          notableRoutines: [],
+          contradictionsOrTensions: [],
+        },
+        relationships: [],
+      };
 
   return {
     parsed,
@@ -119,7 +136,10 @@ function createChunkResult(overrides?: {
       promptTokens,
       completionTokens,
       totalTokens,
-      usageMissing: promptTokens === null || completionTokens === null || totalTokens === null,
+      usageMissing:
+        promptTokens === null ||
+        completionTokens === null ||
+        totalTokens === null,
     },
     requestMeta: {
       stage: 'chunk_analysis' as const,
@@ -170,7 +190,9 @@ describe('deep analysis report processor service', () => {
   });
 
   it('builds a completed report with cleaned themes, entities, duplicate counts, and usage audit', async () => {
-    const logSpy = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    const logSpy = jest
+      .spyOn(Logger.prototype, 'log')
+      .mockImplementation(() => undefined);
     const repository = {
       getDeepAnalysisReport: jest.fn(async () => ({
         id: 'dar_1',
@@ -182,48 +204,54 @@ describe('deep analysis report processor service', () => {
       updateDeepAnalysisReport: jest.fn(async () => undefined),
     };
     const storage = {
-      getObjectBuffer: jest.fn(async () => gzipJson({
-        fetchedAt: '2026-03-28T00:00:00Z',
-        memoryCount: 4,
-        memories: [
-          {
-            id: 'mem_1',
-            content: 'Prefer structured memory capture and work with Alice Johnson on the dashboard roadmap.',
-            createdAt: '2026-03-20T00:00:00Z',
-            updatedAt: '2026-03-20T00:00:00Z',
-            memoryType: 'insight',
-            tags: ['dashboard-roadmap'],
-            metadata: null,
-          },
-          {
-            id: 'mem_2',
-            content: 'Prefer structured memory capture and work with Alice Johnson on the dashboard roadmap.',
-            createdAt: '2026-03-21T00:00:00Z',
-            updatedAt: '2026-03-21T00:00:00Z',
-            memoryType: 'insight',
-            tags: ['dashboard-roadmap'],
-            metadata: null,
-          },
-          {
-            id: 'mem_3',
-            content: 'Every morning Bosn reviews traffic dashboards and prioritizes concise but detailed summaries for the Platform Team.',
-            createdAt: '2026-03-22T00:00:00Z',
-            updatedAt: '2026-03-22T00:00:00Z',
-            memoryType: 'insight',
-            tags: ['traffic-ops'],
-            metadata: null,
-          },
-          {
-            id: 'mem_4',
-            content: 'Need to automate duplicate cleanup for memory analysis while keeping canonical entries stable.',
-            createdAt: '2026-03-23T00:00:00Z',
-            updatedAt: '2026-03-23T00:00:00Z',
-            memoryType: 'insight',
-            tags: ['memory-analysis'],
-            metadata: null,
-          },
-        ],
-      })),
+      getObjectBuffer: jest.fn(async () =>
+        gzipJson({
+          fetchedAt: '2026-03-28T00:00:00Z',
+          memoryCount: 4,
+          memories: [
+            {
+              id: 'mem_1',
+              content:
+                'Prefer structured memory capture and work with Alice Johnson on the dashboard roadmap.',
+              createdAt: '2026-03-20T00:00:00Z',
+              updatedAt: '2026-03-20T00:00:00Z',
+              memoryType: 'insight',
+              tags: ['dashboard-roadmap'],
+              metadata: null,
+            },
+            {
+              id: 'mem_2',
+              content:
+                'Prefer structured memory capture and work with Alice Johnson on the dashboard roadmap.',
+              createdAt: '2026-03-21T00:00:00Z',
+              updatedAt: '2026-03-21T00:00:00Z',
+              memoryType: 'insight',
+              tags: ['dashboard-roadmap'],
+              metadata: null,
+            },
+            {
+              id: 'mem_3',
+              content:
+                'Every morning Bosn reviews traffic dashboards and prioritizes concise but detailed summaries for the Platform Team.',
+              createdAt: '2026-03-22T00:00:00Z',
+              updatedAt: '2026-03-22T00:00:00Z',
+              memoryType: 'insight',
+              tags: ['traffic-ops'],
+              metadata: null,
+            },
+            {
+              id: 'mem_4',
+              content:
+                'Need to automate duplicate cleanup for memory analysis while keeping canonical entries stable.',
+              createdAt: '2026-03-23T00:00:00Z',
+              updatedAt: '2026-03-23T00:00:00Z',
+              memoryType: 'insight',
+              tags: ['memory-analysis'],
+              metadata: null,
+            },
+          ],
+        }),
+      ),
       putJson: jest.fn(async () => undefined),
     };
     const qwen = {
@@ -236,8 +264,11 @@ describe('deep analysis report processor service', () => {
             completionTokens: 30,
             totalTokens: 150,
             parsed: {
-              summary: 'Alice and Bosn repeatedly align on dashboard roadmap execution.',
-              themes: [{ name: 'dashboard roadmap', memoryIds: ['mem_1', 'mem_3'] }],
+              summary:
+                'Alice and Bosn repeatedly align on dashboard roadmap execution.',
+              themes: [
+                { name: 'dashboard roadmap', memoryIds: ['mem_1', 'mem_3'] },
+              ],
               entities: {
                 people: ['Alice Johnson', 'Bosn'],
                 teams: ['Platform Team'],
@@ -246,13 +277,19 @@ describe('deep analysis report processor service', () => {
                 places: [],
               },
               personaSignals: {
-                workingStyle: ['Prefers structured reviews and staged rollout decisions.'],
+                workingStyle: [
+                  'Prefers structured reviews and staged rollout decisions.',
+                ],
                 goals: ['Keep memory insight workflows durable.'],
                 preferences: ['Concise but information-dense summaries.'],
                 constraints: ['Do not delete canonical memories.'],
-                decisionSignals: ['Balances speed and correctness in dashboard work.'],
+                decisionSignals: [
+                  'Balances speed and correctness in dashboard work.',
+                ],
                 notableRoutines: ['Reviews traffic dashboards every morning.'],
-                contradictionsOrTensions: ['Wants concise output without losing implementation detail.'],
+                contradictionsOrTensions: [
+                  'Wants concise output without losing implementation detail.',
+                ],
               },
               relationships: [],
             },
@@ -274,35 +311,38 @@ describe('deep analysis report processor service', () => {
     });
 
     expect(storage.putJson).toHaveBeenCalledTimes(1);
-    const [, report] = storage.putJson.mock.calls[0] as unknown as [string, {
-      overview: {
-        memoryCount: number;
-        deduplicatedMemoryCount: number;
-      };
-      persona: {
-        summary: string;
-        workingStyle: string[];
-        notableRoutines: string[];
-        contradictionsOrTensions: string[];
-        evidenceHighlights: Array<{ memoryIds: string[] }>;
-      };
-      themeLandscape: {
-        highlights: Array<{ name: string }>;
-      };
-      entities: {
-        people: Array<{ label: string }>;
-        teams: Array<{ label: string }>;
-      };
-      discoveries: Array<{ title: string; kind: string }>;
-      quality: {
-        duplicateRatio: number;
-        duplicateMemoryCount: number;
-        duplicateClusters: Array<{
-          canonicalMemoryId: string;
-          duplicateMemoryIds: string[];
-        }>;
-      };
-    }];
+    const [, report] = storage.putJson.mock.calls[0] as unknown as [
+      string,
+      {
+        overview: {
+          memoryCount: number;
+          deduplicatedMemoryCount: number;
+        };
+        persona: {
+          summary: string;
+          workingStyle: string[];
+          notableRoutines: string[];
+          contradictionsOrTensions: string[];
+          evidenceHighlights: Array<{ memoryIds: string[] }>;
+        };
+        themeLandscape: {
+          highlights: Array<{ name: string }>;
+        };
+        entities: {
+          people: Array<{ label: string }>;
+          teams: Array<{ label: string }>;
+        };
+        discoveries: Array<{ title: string; kind: string }>;
+        quality: {
+          duplicateRatio: number;
+          duplicateMemoryCount: number;
+          duplicateClusters: Array<{
+            canonicalMemoryId: string;
+            duplicateMemoryIds: string[];
+          }>;
+        };
+      },
+    ];
 
     expect(report).toMatchObject({
       overview: {
@@ -326,46 +366,59 @@ describe('deep analysis report processor service', () => {
     expect(report.persona.evidenceHighlights[0]?.memoryIds?.[0]).toBeTruthy();
     expect(report.discoveries.length).toBeGreaterThan(0);
     expect(report.discoveries.map((item) => item.kind)).toEqual(
-      expect.arrayContaining(["focus_area", "hygiene"]),
+      expect.arrayContaining(['focus_area', 'hygiene']),
     );
-    expect(report.themeLandscape.highlights.map((item) => item.name)).not.toEqual(
-      expect.arrayContaining(['the', 'for', 'user', 'team']),
-    );
+    expect(
+      report.themeLandscape.highlights.map((item) => item.name),
+    ).not.toEqual(expect.arrayContaining(['the', 'for', 'user', 'team']));
     expect(report.entities.people.map((item) => item.label)).toEqual(
       expect.arrayContaining(['Alice Johnson', 'Bosn']),
     );
     expect(report.entities.teams.map((item) => item.label)).not.toEqual(
       expect.arrayContaining(['team', 'Platform']),
     );
-    expect(logSpy.mock.calls.map((call) => String(call[0]))).toEqual(expect.arrayContaining([
-      expect.stringContaining('"event":"deep_analysis_chunk_analysis_started"'),
-      expect.stringContaining('"event":"deep_analysis_chunk_started"'),
-      expect.stringContaining('"event":"deep_analysis_chunk_completed"'),
-      expect.stringContaining('"event":"deep_analysis_global_synthesis_started"'),
-      expect.stringContaining('"event":"deep_analysis_global_synthesis_completed"'),
-      expect.stringContaining('"event":"deep_analysis_report_completed"'),
-    ]));
+    expect(logSpy.mock.calls.map((call) => String(call[0]))).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining(
+          '"event":"deep_analysis_chunk_analysis_started"',
+        ),
+        expect.stringContaining('"event":"deep_analysis_chunk_started"'),
+        expect.stringContaining('"event":"deep_analysis_chunk_completed"'),
+        expect.stringContaining(
+          '"event":"deep_analysis_global_synthesis_started"',
+        ),
+        expect.stringContaining(
+          '"event":"deep_analysis_global_synthesis_completed"',
+        ),
+        expect.stringContaining('"event":"deep_analysis_report_completed"'),
+      ]),
+    );
 
     const internalCommentUpdates = (
-      repository.updateDeepAnalysisReport.mock.calls as unknown as Array<[string, { internalComment?: string }]>
+      repository.updateDeepAnalysisReport.mock.calls as unknown as Array<
+        [string, { internalComment?: string }]
+      >
     )
       .map((call) => call[1]?.internalComment)
       .filter((value): value is string => typeof value === 'string')
-      .map((value) => JSON.parse(value) as {
-        aggregate: {
-          requestCount: number;
-          successCount: number;
-          failureCount: number;
-          promptTokens: number;
-          completionTokens: number;
-          totalTokens: number;
-        };
-        calls: Array<{
-          stage: string;
-          index: number;
-          success: boolean;
-        }>;
-      });
+      .map(
+        (value) =>
+          JSON.parse(value) as {
+            aggregate: {
+              requestCount: number;
+              successCount: number;
+              failureCount: number;
+              promptTokens: number;
+              completionTokens: number;
+              totalTokens: number;
+            };
+            calls: Array<{
+              stage: string;
+              index: number;
+              success: boolean;
+            }>;
+          },
+      );
     const firstUsageUpdate = internalCommentUpdates.find(
       (payload) => payload.aggregate.requestCount === 1,
     );
@@ -404,11 +457,15 @@ describe('deep analysis report processor service', () => {
     );
 
     const finalCall = (
-      repository.updateDeepAnalysisReport.mock.calls as unknown as Array<[string, { internalComment?: string }]>
+      repository.updateDeepAnalysisReport.mock.calls as unknown as Array<
+        [string, { internalComment?: string }]
+      >
     ).at(-1);
     const finalPayload = finalCall?.[1];
     expect(finalPayload?.internalComment).toBeTruthy();
-    const finalInternalComment = JSON.parse(String(finalPayload?.internalComment)) as {
+    const finalInternalComment = JSON.parse(
+      String(finalPayload?.internalComment),
+    ) as {
       aggregate: {
         requestCount: number;
         successCount: number;
@@ -463,39 +520,46 @@ describe('deep analysis report processor service', () => {
         id: 'dar_progress',
         status: 'QUEUED',
         lang: 'en',
-        sourceSnapshotObjectKey: 'deep-analysis/reports/dar_progress/source.json.gz',
+        sourceSnapshotObjectKey:
+          'deep-analysis/reports/dar_progress/source.json.gz',
         internalComment: null,
       })),
       updateDeepAnalysisReport: jest.fn(async () => undefined),
     };
     const storage = {
-      getObjectBuffer: jest.fn(async () => gzipJson({
-        fetchedAt: '2026-03-28T00:00:00Z',
-        memoryCount: memories.length,
-        memories,
-      })),
+      getObjectBuffer: jest.fn(async () =>
+        gzipJson({
+          fetchedAt: '2026-03-28T00:00:00Z',
+          memoryCount: memories.length,
+          memories,
+        }),
+      ),
       putJson: jest.fn(async () => undefined),
     };
     const qwen = {
       getConfiguredModel: jest.fn(() => TEST_QWEN_MODEL),
       createJson: jest
         .fn()
-        .mockImplementationOnce(async () => createChunkResult({
-          success: false,
-          httpStatus: 200,
-          errorCode: 'QWEN_JSON_PARSE_FAILED',
-          errorMessage: 'Unexpected token',
-          parsed: null,
-        }))
-        .mockImplementationOnce(async () => createChunkResult({
-          success: false,
-          httpStatus: 200,
-          errorCode: 'QWEN_JSON_PARSE_FAILED',
-          errorMessage: 'Unexpected token',
-          requestedAt: '2026-03-28T00:00:02.000Z',
-          finishedAt: '2026-03-28T00:00:03.000Z',
-          parsed: null,
-        }))
+        .mockImplementationOnce(async () =>
+          createChunkResult({
+            success: false,
+            httpStatus: 200,
+            errorCode: 'QWEN_JSON_PARSE_FAILED',
+            errorMessage: 'Unexpected token',
+            parsed: null,
+          }),
+        )
+        .mockImplementationOnce(async () =>
+          createChunkResult({
+            success: false,
+            httpStatus: 200,
+            errorCode: 'QWEN_JSON_PARSE_FAILED',
+            errorMessage: 'Unexpected token',
+            requestedAt: '2026-03-28T00:00:02.000Z',
+            finishedAt: '2026-03-28T00:00:03.000Z',
+            parsed: null,
+          }),
+        )
         .mockImplementationOnce(async () => createSynthesisResult()),
     };
     const processor = new DeepAnalysisReportProcessorService(
@@ -512,12 +576,16 @@ describe('deep analysis report processor service', () => {
     });
 
     const progressUpdates = (
-      repository.updateDeepAnalysisReport.mock.calls as unknown as Array<[string, { progressPercent?: number }]>
+      repository.updateDeepAnalysisReport.mock.calls as unknown as Array<
+        [string, { progressPercent?: number }]
+      >
     )
       .map((call) => call[1]?.progressPercent)
       .filter((value): value is number => typeof value === 'number');
 
-    expect(progressUpdates).toEqual(expect.arrayContaining([10, 35, 47, 59, 60, 90, 100]));
+    expect(progressUpdates).toEqual(
+      expect.arrayContaining([10, 35, 47, 59, 60, 90, 100]),
+    );
   });
 
   it('filters malformed chunk theme and relationship fields instead of crashing before synthesis', async () => {
@@ -526,102 +594,119 @@ describe('deep analysis report processor service', () => {
         id: 'dar_malformed_chunk',
         status: 'QUEUED',
         lang: 'en',
-        sourceSnapshotObjectKey: 'deep-analysis/reports/dar_malformed_chunk/source.json.gz',
+        sourceSnapshotObjectKey:
+          'deep-analysis/reports/dar_malformed_chunk/source.json.gz',
         internalComment: null,
       })),
       updateDeepAnalysisReport: jest.fn(async () => undefined),
     };
     const storage = {
-      getObjectBuffer: jest.fn(async () => gzipJson({
-        fetchedAt: '2026-03-28T00:00:00Z',
-        memoryCount: 4,
-        memories: [
-          {
-            id: 'mem_1',
-            content: 'Prefer structured memory capture and work with Alice Johnson on the dashboard roadmap.',
-            createdAt: '2026-03-20T00:00:00Z',
-            updatedAt: '2026-03-20T00:00:00Z',
-            memoryType: 'insight',
-            tags: ['dashboard-roadmap'],
-            metadata: null,
-          },
-          {
-            id: 'mem_2',
-            content: 'Every morning Bosn reviews traffic dashboards and prioritizes concise but detailed summaries for the Platform Team.',
-            createdAt: '2026-03-21T00:00:00Z',
-            updatedAt: '2026-03-21T00:00:00Z',
-            memoryType: 'insight',
-            tags: ['traffic-ops'],
-            metadata: null,
-          },
-          {
-            id: 'mem_3',
-            content: 'Need to automate duplicate cleanup for memory analysis while keeping canonical entries stable.',
-            createdAt: '2026-03-22T00:00:00Z',
-            updatedAt: '2026-03-22T00:00:00Z',
-            memoryType: 'insight',
-            tags: ['memory-analysis'],
-            metadata: null,
-          },
-          {
-            id: 'mem_4',
-            content: 'Bosn plans to keep dashboard reporting workflows durable and document tradeoffs explicitly.',
-            createdAt: '2026-03-23T00:00:00Z',
-            updatedAt: '2026-03-23T00:00:00Z',
-            memoryType: 'insight',
-            tags: ['dashboard-roadmap'],
-            metadata: null,
-          },
-        ],
-      })),
+      getObjectBuffer: jest.fn(async () =>
+        gzipJson({
+          fetchedAt: '2026-03-28T00:00:00Z',
+          memoryCount: 4,
+          memories: [
+            {
+              id: 'mem_1',
+              content:
+                'Prefer structured memory capture and work with Alice Johnson on the dashboard roadmap.',
+              createdAt: '2026-03-20T00:00:00Z',
+              updatedAt: '2026-03-20T00:00:00Z',
+              memoryType: 'insight',
+              tags: ['dashboard-roadmap'],
+              metadata: null,
+            },
+            {
+              id: 'mem_2',
+              content:
+                'Every morning Bosn reviews traffic dashboards and prioritizes concise but detailed summaries for the Platform Team.',
+              createdAt: '2026-03-21T00:00:00Z',
+              updatedAt: '2026-03-21T00:00:00Z',
+              memoryType: 'insight',
+              tags: ['traffic-ops'],
+              metadata: null,
+            },
+            {
+              id: 'mem_3',
+              content:
+                'Need to automate duplicate cleanup for memory analysis while keeping canonical entries stable.',
+              createdAt: '2026-03-22T00:00:00Z',
+              updatedAt: '2026-03-22T00:00:00Z',
+              memoryType: 'insight',
+              tags: ['memory-analysis'],
+              metadata: null,
+            },
+            {
+              id: 'mem_4',
+              content:
+                'Bosn plans to keep dashboard reporting workflows durable and document tradeoffs explicitly.',
+              createdAt: '2026-03-23T00:00:00Z',
+              updatedAt: '2026-03-23T00:00:00Z',
+              memoryType: 'insight',
+              tags: ['dashboard-roadmap'],
+              metadata: null,
+            },
+          ],
+        }),
+      ),
       putJson: jest.fn(async () => undefined),
     };
     const qwen = {
       getConfiguredModel: jest.fn(() => TEST_QWEN_MODEL),
       createJson: jest
         .fn()
-        .mockImplementationOnce(async () => createChunkResult({
-          parsed: {
-            summary: 'dashboard collaboration and reporting routines',
-            themes: [
-              { name: 'dashboard roadmap', memoryIds: ['mem_1', 'mem_4'] },
-              { memoryIds: ['mem_2'] },
-            ],
-            entities: {
-              people: ['Alice Johnson', 'Bosn'],
-              teams: ['Platform Team'],
-              projects: ['dashboard roadmap'],
-              tools: ['React'],
-              places: [],
-            },
-            personaSignals: {
-              workingStyle: ['Prefers structured reviews and staged rollout decisions.'],
-              goals: ['Keep memory workflows durable.'],
-              preferences: ['Concise but information-dense summaries.'],
-              constraints: ['Do not delete canonical memories.'],
-              decisionSignals: ['Balances speed and correctness in dashboard work.'],
-              notableRoutines: ['Reviews dashboards every morning.'],
-              contradictionsOrTensions: ['Wants concise output without losing implementation detail.'],
-            },
-            relationships: [
-              {
-                source: 'user',
-                relation: 'works_with',
-                target: 'Alice Johnson',
-                confidence: 0.82,
-                evidenceMemoryIds: ['mem_1'],
-                evidenceExcerpts: ['Prefer structured memory capture and work with Alice Johnson on the dashboard roadmap.'],
+        .mockImplementationOnce(async () =>
+          createChunkResult({
+            parsed: {
+              summary: 'dashboard collaboration and reporting routines',
+              themes: [
+                { name: 'dashboard roadmap', memoryIds: ['mem_1', 'mem_4'] },
+                { memoryIds: ['mem_2'] },
+              ],
+              entities: {
+                people: ['Alice Johnson', 'Bosn'],
+                teams: ['Platform Team'],
+                projects: ['dashboard roadmap'],
+                tools: ['React'],
+                places: [],
               },
-              {
-                source: 'user',
-                relation: 'works_with',
-                confidence: 0.5,
-                evidenceMemoryIds: ['mem_2'],
-                evidenceExcerpts: ['invalid relationship without target'],
+              personaSignals: {
+                workingStyle: [
+                  'Prefers structured reviews and staged rollout decisions.',
+                ],
+                goals: ['Keep memory workflows durable.'],
+                preferences: ['Concise but information-dense summaries.'],
+                constraints: ['Do not delete canonical memories.'],
+                decisionSignals: [
+                  'Balances speed and correctness in dashboard work.',
+                ],
+                notableRoutines: ['Reviews dashboards every morning.'],
+                contradictionsOrTensions: [
+                  'Wants concise output without losing implementation detail.',
+                ],
               },
-            ],
-          },
-        }))
+              relationships: [
+                {
+                  source: 'user',
+                  relation: 'works_with',
+                  target: 'Alice Johnson',
+                  confidence: 0.82,
+                  evidenceMemoryIds: ['mem_1'],
+                  evidenceExcerpts: [
+                    'Prefer structured memory capture and work with Alice Johnson on the dashboard roadmap.',
+                  ],
+                },
+                {
+                  source: 'user',
+                  relation: 'works_with',
+                  confidence: 0.5,
+                  evidenceMemoryIds: ['mem_2'],
+                  evidenceExcerpts: ['invalid relationship without target'],
+                },
+              ],
+            },
+          }),
+        )
         .mockImplementationOnce(async () => createSynthesisResult()),
     };
     const processor = new DeepAnalysisReportProcessorService(
@@ -655,24 +740,30 @@ describe('deep analysis report processor service', () => {
     );
 
     const finalCall = (
-      repository.updateDeepAnalysisReport.mock.calls as unknown as Array<[string, { internalComment?: string }]>
+      repository.updateDeepAnalysisReport.mock.calls as unknown as Array<
+        [string, { internalComment?: string }]
+      >
     ).at(-1);
-    const finalInternalComment = JSON.parse(String(finalCall?.[1]?.internalComment)) as {
+    const finalInternalComment = JSON.parse(
+      String(finalCall?.[1]?.internalComment),
+    ) as {
       calls: Array<{
         stage: string;
         success: boolean;
       }>;
     };
-    expect(finalInternalComment.calls).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        stage: 'chunk_analysis',
-        success: true,
-      }),
-      expect.objectContaining({
-        stage: 'global_synthesis',
-        success: false,
-      }),
-    ]));
+    expect(finalInternalComment.calls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage: 'chunk_analysis',
+          success: true,
+        }),
+        expect.objectContaining({
+          stage: 'global_synthesis',
+          success: false,
+        }),
+      ]),
+    );
   });
 
   it('limits chunk analysis to five concurrent Qwen requests', async () => {
@@ -690,17 +781,20 @@ describe('deep analysis report processor service', () => {
         id: 'dar_concurrency',
         status: 'QUEUED',
         lang: 'en',
-        sourceSnapshotObjectKey: 'deep-analysis/reports/dar_concurrency/source.json.gz',
+        sourceSnapshotObjectKey:
+          'deep-analysis/reports/dar_concurrency/source.json.gz',
         internalComment: null,
       })),
       updateDeepAnalysisReport: jest.fn(async () => undefined),
     };
     const storage = {
-      getObjectBuffer: jest.fn(async () => gzipJson({
-        fetchedAt: '2026-03-28T00:00:00Z',
-        memoryCount: memories.length,
-        memories,
-      })),
+      getObjectBuffer: jest.fn(async () =>
+        gzipJson({
+          fetchedAt: '2026-03-28T00:00:00Z',
+          memoryCount: memories.length,
+          memories,
+        }),
+      ),
       putJson: jest.fn(async () => undefined),
     };
     let inFlight = 0;
@@ -745,7 +839,11 @@ describe('deep analysis report processor service', () => {
     expect(pendingChunkResolves).toHaveLength(5);
 
     pendingChunkResolves.splice(0).forEach((resolve) => resolve());
-    for (let attempt = 0; attempt < 20 && pendingChunkResolves.length < 2; attempt += 1) {
+    for (
+      let attempt = 0;
+      attempt < 20 && pendingChunkResolves.length < 2;
+      attempt += 1
+    ) {
       await new Promise((resolve) => setImmediate(resolve));
     }
     expect(maxInFlight).toBe(5);
@@ -763,85 +861,104 @@ describe('deep analysis report processor service', () => {
         id: 'dar_trim_failure',
         status: 'QUEUED',
         lang: 'en',
-        sourceSnapshotObjectKey: 'deep-analysis/reports/dar_trim_failure/source.json.gz',
+        sourceSnapshotObjectKey:
+          'deep-analysis/reports/dar_trim_failure/source.json.gz',
         internalComment: null,
       })),
       updateDeepAnalysisReport: jest.fn(async () => undefined),
     };
     const storage = {
-      getObjectBuffer: jest.fn(async () => gzipJson({
-        fetchedAt: '2026-03-28T00:00:00Z',
-        memoryCount: 4,
-        memories: [
-          {
-            id: 'mem_1',
-            content: 'Prefer structured memory capture and work with Alice Johnson on the dashboard roadmap.',
-            createdAt: '2026-03-20T00:00:00Z',
-            updatedAt: '2026-03-20T00:00:00Z',
-            memoryType: 'insight',
-            tags: ['dashboard-roadmap'],
-            metadata: null,
-          },
-          {
-            id: 'mem_2',
-            content: 'Every morning Bosn reviews traffic dashboards and prioritizes concise but detailed summaries for the Platform Team.',
-            createdAt: '2026-03-21T00:00:00Z',
-            updatedAt: '2026-03-21T00:00:00Z',
-            memoryType: 'insight',
-            tags: ['traffic-ops'],
-            metadata: null,
-          },
-          {
-            id: 'mem_3',
-            content: 'Need to automate duplicate cleanup for memory analysis while keeping canonical entries stable.',
-            createdAt: '2026-03-22T00:00:00Z',
-            updatedAt: '2026-03-22T00:00:00Z',
-            memoryType: 'insight',
-            tags: ['memory-analysis'],
-            metadata: null,
-          },
-          {
-            id: 'mem_4',
-            content: 'Bosn plans to keep dashboard reporting workflows durable and document tradeoffs explicitly.',
-            createdAt: '2026-03-23T00:00:00Z',
-            updatedAt: '2026-03-23T00:00:00Z',
-            memoryType: 'insight',
-            tags: ['dashboard-roadmap'],
-            metadata: null,
-          },
-        ],
-      })),
+      getObjectBuffer: jest.fn(async () =>
+        gzipJson({
+          fetchedAt: '2026-03-28T00:00:00Z',
+          memoryCount: 4,
+          memories: [
+            {
+              id: 'mem_1',
+              content:
+                'Prefer structured memory capture and work with Alice Johnson on the dashboard roadmap.',
+              createdAt: '2026-03-20T00:00:00Z',
+              updatedAt: '2026-03-20T00:00:00Z',
+              memoryType: 'insight',
+              tags: ['dashboard-roadmap'],
+              metadata: null,
+            },
+            {
+              id: 'mem_2',
+              content:
+                'Every morning Bosn reviews traffic dashboards and prioritizes concise but detailed summaries for the Platform Team.',
+              createdAt: '2026-03-21T00:00:00Z',
+              updatedAt: '2026-03-21T00:00:00Z',
+              memoryType: 'insight',
+              tags: ['traffic-ops'],
+              metadata: null,
+            },
+            {
+              id: 'mem_3',
+              content:
+                'Need to automate duplicate cleanup for memory analysis while keeping canonical entries stable.',
+              createdAt: '2026-03-22T00:00:00Z',
+              updatedAt: '2026-03-22T00:00:00Z',
+              memoryType: 'insight',
+              tags: ['memory-analysis'],
+              metadata: null,
+            },
+            {
+              id: 'mem_4',
+              content:
+                'Bosn plans to keep dashboard reporting workflows durable and document tradeoffs explicitly.',
+              createdAt: '2026-03-23T00:00:00Z',
+              updatedAt: '2026-03-23T00:00:00Z',
+              memoryType: 'insight',
+              tags: ['dashboard-roadmap'],
+              metadata: null,
+            },
+          ],
+        }),
+      ),
       putJson: jest.fn(async () => undefined),
     };
     const qwen = {
       getConfiguredModel: jest.fn(() => TEST_QWEN_MODEL),
       createJson: jest
         .fn()
-        .mockImplementationOnce(async () => createChunkResult({
-          parsed: {
-            summary: 'dashboard collaboration and reporting routines',
-            themes: [{ name: 'dashboard roadmap', memoryIds: ['mem_1', 'mem_4'] }],
-            entities: {
-              people: ['Alice Johnson', 'Bosn'],
-              teams: ['Platform Team'],
-              projects: ['dashboard roadmap'],
-              tools: ['React'],
-              places: [],
+        .mockImplementationOnce(async () =>
+          createChunkResult({
+            parsed: {
+              summary: 'dashboard collaboration and reporting routines',
+              themes: [
+                { name: 'dashboard roadmap', memoryIds: ['mem_1', 'mem_4'] },
+              ],
+              entities: {
+                people: ['Alice Johnson', 'Bosn'],
+                teams: ['Platform Team'],
+                projects: ['dashboard roadmap'],
+                tools: ['React'],
+                places: [],
+              },
+              personaSignals: {
+                workingStyle: [
+                  'Prefers structured reviews and staged rollout decisions.',
+                ],
+                goals: ['Keep memory workflows durable.'],
+                preferences: ['Concise but information-dense summaries.'],
+                constraints: ['Do not delete canonical memories.'],
+                decisionSignals: [
+                  'Balances speed and correctness in dashboard work.',
+                ],
+                notableRoutines: ['Reviews dashboards every morning.'],
+                contradictionsOrTensions: [
+                  'Wants concise output without losing implementation detail.',
+                ],
+              },
+              relationships: [],
             },
-            personaSignals: {
-              workingStyle: ['Prefers structured reviews and staged rollout decisions.'],
-              goals: ['Keep memory workflows durable.'],
-              preferences: ['Concise but information-dense summaries.'],
-              constraints: ['Do not delete canonical memories.'],
-              decisionSignals: ['Balances speed and correctness in dashboard work.'],
-              notableRoutines: ['Reviews dashboards every morning.'],
-              contradictionsOrTensions: ['Wants concise output without losing implementation detail.'],
-            },
-            relationships: [],
-          },
-        }))
+          }),
+        )
         .mockImplementationOnce(async () => {
-          throw new TypeError("Cannot read properties of undefined (reading 'trim')");
+          throw new TypeError(
+            "Cannot read properties of undefined (reading 'trim')",
+          );
         }),
     };
     const processor = new DeepAnalysisReportProcessorService(
@@ -869,9 +986,13 @@ describe('deep analysis report processor service', () => {
     );
 
     const finalCall = (
-      repository.updateDeepAnalysisReport.mock.calls as unknown as Array<[string, { internalComment?: string }]>
+      repository.updateDeepAnalysisReport.mock.calls as unknown as Array<
+        [string, { internalComment?: string }]
+      >
     ).at(-1);
-    const finalInternalComment = JSON.parse(String(finalCall?.[1]?.internalComment)) as {
+    const finalInternalComment = JSON.parse(
+      String(finalCall?.[1]?.internalComment),
+    ) as {
       events: Array<{
         event: string;
         stage: string;
@@ -883,14 +1004,16 @@ describe('deep analysis report processor service', () => {
         stack: string | null;
       }>;
     };
-    expect(finalInternalComment.events.map((item) => item.event)).toEqual(expect.arrayContaining([
-      'deep_analysis_process_started',
-      'deep_analysis_chunk_analysis_started',
-      'deep_analysis_chunk_started',
-      'deep_analysis_chunk_completed',
-      'deep_analysis_global_synthesis_started',
-      'deep_analysis_report_failed',
-    ]));
+    expect(finalInternalComment.events.map((item) => item.event)).toEqual(
+      expect.arrayContaining([
+        'deep_analysis_process_started',
+        'deep_analysis_chunk_analysis_started',
+        'deep_analysis_chunk_started',
+        'deep_analysis_chunk_completed',
+        'deep_analysis_global_synthesis_started',
+        'deep_analysis_report_failed',
+      ]),
+    );
     expect(finalInternalComment.runtimeErrors).toEqual([
       expect.objectContaining({
         stage: 'GLOBAL_SYNTHESIS',
@@ -907,54 +1030,61 @@ describe('deep analysis report processor service', () => {
         id: 'dar_validation_failure',
         status: 'QUEUED',
         lang: 'en',
-        sourceSnapshotObjectKey: 'deep-analysis/reports/dar_validation_failure/source.json.gz',
+        sourceSnapshotObjectKey:
+          'deep-analysis/reports/dar_validation_failure/source.json.gz',
         internalComment: null,
       })),
       updateDeepAnalysisReport: jest.fn(async () => undefined),
     };
     const storage = {
-      getObjectBuffer: jest.fn(async () => gzipJson({
-        fetchedAt: '2026-03-28T00:00:00Z',
-        memoryCount: 4,
-        memories: [
-          {
-            id: 'mem_1',
-            content: 'Prefer structured memory capture and work with Alice Johnson on the dashboard roadmap.',
-            createdAt: '2026-03-20T00:00:00Z',
-            updatedAt: '2026-03-20T00:00:00Z',
-            memoryType: 'insight',
-            tags: ['dashboard-roadmap'],
-            metadata: null,
-          },
-          {
-            id: 'mem_2',
-            content: 'Every morning Bosn reviews traffic dashboards and prioritizes concise but detailed summaries for the Platform Team.',
-            createdAt: '2026-03-21T00:00:00Z',
-            updatedAt: '2026-03-21T00:00:00Z',
-            memoryType: 'insight',
-            tags: ['traffic-ops'],
-            metadata: null,
-          },
-          {
-            id: 'mem_3',
-            content: 'Need to automate duplicate cleanup for memory analysis while keeping canonical entries stable.',
-            createdAt: '2026-03-22T00:00:00Z',
-            updatedAt: '2026-03-22T00:00:00Z',
-            memoryType: 'insight',
-            tags: ['memory-analysis'],
-            metadata: null,
-          },
-          {
-            id: 'mem_4',
-            content: 'Bosn plans to keep dashboard reporting workflows durable and document tradeoffs explicitly.',
-            createdAt: '2026-03-23T00:00:00Z',
-            updatedAt: '2026-03-23T00:00:00Z',
-            memoryType: 'insight',
-            tags: ['dashboard-roadmap'],
-            metadata: null,
-          },
-        ],
-      })),
+      getObjectBuffer: jest.fn(async () =>
+        gzipJson({
+          fetchedAt: '2026-03-28T00:00:00Z',
+          memoryCount: 4,
+          memories: [
+            {
+              id: 'mem_1',
+              content:
+                'Prefer structured memory capture and work with Alice Johnson on the dashboard roadmap.',
+              createdAt: '2026-03-20T00:00:00Z',
+              updatedAt: '2026-03-20T00:00:00Z',
+              memoryType: 'insight',
+              tags: ['dashboard-roadmap'],
+              metadata: null,
+            },
+            {
+              id: 'mem_2',
+              content:
+                'Every morning Bosn reviews traffic dashboards and prioritizes concise but detailed summaries for the Platform Team.',
+              createdAt: '2026-03-21T00:00:00Z',
+              updatedAt: '2026-03-21T00:00:00Z',
+              memoryType: 'insight',
+              tags: ['traffic-ops'],
+              metadata: null,
+            },
+            {
+              id: 'mem_3',
+              content:
+                'Need to automate duplicate cleanup for memory analysis while keeping canonical entries stable.',
+              createdAt: '2026-03-22T00:00:00Z',
+              updatedAt: '2026-03-22T00:00:00Z',
+              memoryType: 'insight',
+              tags: ['memory-analysis'],
+              metadata: null,
+            },
+            {
+              id: 'mem_4',
+              content:
+                'Bosn plans to keep dashboard reporting workflows durable and document tradeoffs explicitly.',
+              createdAt: '2026-03-23T00:00:00Z',
+              updatedAt: '2026-03-23T00:00:00Z',
+              memoryType: 'insight',
+              tags: ['dashboard-roadmap'],
+              metadata: null,
+            },
+          ],
+        }),
+      ),
       putJson: jest.fn(async () => undefined),
     };
     const invalidSynthesisReport = {
@@ -969,18 +1099,22 @@ describe('deep analysis report processor service', () => {
         },
       },
       persona: {
-        summary: 'Bosn consistently structures dashboard and automation work around review loops, explicit tradeoffs, and durable operating habits that can survive repeated context switching.',
+        summary:
+          'Bosn consistently structures dashboard and automation work around review loops, explicit tradeoffs, and durable operating habits that can survive repeated context switching.',
         workingStyle: ['Uses structured reviews and staged rollout decisions.'],
         goals: ['Keep memory insight workflows durable and actionable.'],
         preferences: ['Concise but information-dense summaries.'],
         constraints: ['Do not delete canonical memories without evidence.'],
         decisionSignals: ['Balances speed and correctness in dashboard work.'],
         notableRoutines: ['Reviews dashboards every morning.'],
-        contradictionsOrTensions: ['Wants concise output without losing implementation detail.'],
+        contradictionsOrTensions: [
+          'Wants concise output without losing implementation detail.',
+        ],
         evidenceHighlights: [
           {
             title: 'Dashboard review',
-            detail: 'Structured review loop around dashboards and prioritization.',
+            detail:
+              'Structured review loop around dashboards and prioritization.',
             memoryIds: ['mem_1'],
           },
         ],
@@ -993,10 +1127,38 @@ describe('deep analysis report processor service', () => {
         },
       ],
       entities: {
-        people: [{ label: 'Alice Johnson', role: 'Partner', count: 1, evidenceMemoryIds: ['chunk_insight_2'] }],
-        teams: [{ label: 'Platform Team', function: 'Operations', count: 1, evidenceMemoryIds: ['mem_2'] }],
-        projects: [{ label: 'dashboard roadmap', description: 'Roadmap work', count: 2, evidenceMemoryIds: ['chunk_insight_3'] }],
-        tools: [{ label: 'React', category: 'frontend', count: 1, evidenceMemoryIds: ['mem_1'] }],
+        people: [
+          {
+            label: 'Alice Johnson',
+            role: 'Partner',
+            count: 1,
+            evidenceMemoryIds: ['chunk_insight_2'],
+          },
+        ],
+        teams: [
+          {
+            label: 'Platform Team',
+            function: 'Operations',
+            count: 1,
+            evidenceMemoryIds: ['mem_2'],
+          },
+        ],
+        projects: [
+          {
+            label: 'dashboard roadmap',
+            description: 'Roadmap work',
+            count: 2,
+            evidenceMemoryIds: ['chunk_insight_3'],
+          },
+        ],
+        tools: [
+          {
+            label: 'React',
+            category: 'frontend',
+            count: 1,
+            evidenceMemoryIds: ['mem_1'],
+          },
+        ],
         places: [],
       },
       relationships: [],
@@ -1005,7 +1167,8 @@ describe('deep analysis report processor service', () => {
           id: 'focus:bad-memory',
           kind: 'focus_area' as const,
           title: 'Focus area',
-          summary: 'The report intentionally references a bad memory id for validation diagnostics.',
+          summary:
+            'The report intentionally references a bad memory id for validation diagnostics.',
           confidence: 0.82,
           evidenceMemoryIds: ['missing_mem_1'],
         },
@@ -1029,29 +1192,39 @@ describe('deep analysis report processor service', () => {
       getConfiguredModel: jest.fn(() => TEST_QWEN_MODEL),
       createJson: jest
         .fn()
-        .mockImplementationOnce(async () => createChunkResult({
-          parsed: {
-            summary: 'dashboard collaboration and reporting routines',
-            themes: [{ name: 'dashboard roadmap', memoryIds: ['mem_1', 'mem_4'] }],
-            entities: {
-              people: ['Alice Johnson', 'Bosn'],
-              teams: ['Platform Team'],
-              projects: ['dashboard roadmap'],
-              tools: ['React'],
-              places: [],
+        .mockImplementationOnce(async () =>
+          createChunkResult({
+            parsed: {
+              summary: 'dashboard collaboration and reporting routines',
+              themes: [
+                { name: 'dashboard roadmap', memoryIds: ['mem_1', 'mem_4'] },
+              ],
+              entities: {
+                people: ['Alice Johnson', 'Bosn'],
+                teams: ['Platform Team'],
+                projects: ['dashboard roadmap'],
+                tools: ['React'],
+                places: [],
+              },
+              personaSignals: {
+                workingStyle: [
+                  'Prefers structured reviews and staged rollout decisions.',
+                ],
+                goals: ['Keep memory workflows durable.'],
+                preferences: ['Concise but information-dense summaries.'],
+                constraints: ['Do not delete canonical memories.'],
+                decisionSignals: [
+                  'Balances speed and correctness in dashboard work.',
+                ],
+                notableRoutines: ['Reviews dashboards every morning.'],
+                contradictionsOrTensions: [
+                  'Wants concise output without losing implementation detail.',
+                ],
+              },
+              relationships: [],
             },
-            personaSignals: {
-              workingStyle: ['Prefers structured reviews and staged rollout decisions.'],
-              goals: ['Keep memory workflows durable.'],
-              preferences: ['Concise but information-dense summaries.'],
-              constraints: ['Do not delete canonical memories.'],
-              decisionSignals: ['Balances speed and correctness in dashboard work.'],
-              notableRoutines: ['Reviews dashboards every morning.'],
-              contradictionsOrTensions: ['Wants concise output without losing implementation detail.'],
-            },
-            relationships: [],
-          },
-        }))
+          }),
+        )
         .mockImplementationOnce(async () => ({
           parsed: invalidSynthesisReport,
           usage: {
@@ -1098,17 +1271,24 @@ describe('deep analysis report processor service', () => {
     );
 
     expect(storage.putJson).toHaveBeenCalledTimes(1);
-    const [, storedReport] = storage.putJson.mock.calls[0] as unknown as [string, {
-      persona: { summary: string };
-      themeLandscape: { highlights: Array<{ name: string; description: string }> };
-      entities: {
-        people: Array<{ label: string; evidenceMemoryIds: string[] }>;
-        projects: Array<{ label: string; evidenceMemoryIds: string[] }>;
-      };
-      discoveries: Array<{ title: string; evidenceMemoryIds: string[] }>;
-    }];
+    const [, storedReport] = storage.putJson.mock.calls[0] as unknown as [
+      string,
+      {
+        persona: { summary: string };
+        themeLandscape: {
+          highlights: Array<{ name: string; description: string }>;
+        };
+        entities: {
+          people: Array<{ label: string; evidenceMemoryIds: string[] }>;
+          projects: Array<{ label: string; evidenceMemoryIds: string[] }>;
+        };
+        discoveries: Array<{ title: string; evidenceMemoryIds: string[] }>;
+      },
+    ];
 
-    expect(storedReport.persona.summary).toBe(invalidSynthesisReport.persona.summary);
+    expect(storedReport.persona.summary).toBe(
+      invalidSynthesisReport.persona.summary,
+    );
     expect(storedReport.themeLandscape.highlights).toEqual([
       expect.objectContaining({
         name: 'dashboard roadmap',
@@ -1134,21 +1314,35 @@ describe('deep analysis report processor service', () => {
     ]);
     const allEvidenceIds = [
       ...storedReport.entities.people.flatMap((item) => item.evidenceMemoryIds),
-      ...storedReport.entities.projects.flatMap((item) => item.evidenceMemoryIds),
+      ...storedReport.entities.projects.flatMap(
+        (item) => item.evidenceMemoryIds,
+      ),
       ...storedReport.discoveries.flatMap((item) => item.evidenceMemoryIds),
     ];
-    expect(storedReport.discoveries[0]?.evidenceMemoryIds).toEqual(expect.arrayContaining(['mem_1', 'mem_4']));
-    expect(allEvidenceIds).not.toEqual(expect.arrayContaining([
-      'chunk_insight_2',
-      'chunk_insight_3',
-      'missing_mem_1',
-    ]));
-    expect(allEvidenceIds.every((memoryId) => ['mem_1', 'mem_2', 'mem_3', 'mem_4'].includes(memoryId))).toBe(true);
+    expect(storedReport.discoveries[0]?.evidenceMemoryIds).toEqual(
+      expect.arrayContaining(['mem_1', 'mem_4']),
+    );
+    expect(allEvidenceIds).not.toEqual(
+      expect.arrayContaining([
+        'chunk_insight_2',
+        'chunk_insight_3',
+        'missing_mem_1',
+      ]),
+    );
+    expect(
+      allEvidenceIds.every((memoryId) =>
+        ['mem_1', 'mem_2', 'mem_3', 'mem_4'].includes(memoryId),
+      ),
+    ).toBe(true);
 
     const finalCall = (
-      repository.updateDeepAnalysisReport.mock.calls as unknown as Array<[string, { internalComment?: string }]>
+      repository.updateDeepAnalysisReport.mock.calls as unknown as Array<
+        [string, { internalComment?: string }]
+      >
     ).at(-1);
-    const finalInternalComment = JSON.parse(String(finalCall?.[1]?.internalComment)) as {
+    const finalInternalComment = JSON.parse(
+      String(finalCall?.[1]?.internalComment),
+    ) as {
       events: Array<{ event: string }>;
       runtimeErrors: Array<unknown>;
       rawResponses: Array<{
@@ -1159,28 +1353,35 @@ describe('deep analysis report processor service', () => {
       }>;
     };
 
-    expect(finalInternalComment.events.map((item) => item.event)).toEqual(expect.arrayContaining([
-      'deep_analysis_report_repaired',
-      'deep_analysis_report_completed',
-    ]));
-    expect(finalInternalComment.events).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        event: 'deep_analysis_report_repaired',
-        fields: expect.objectContaining({
-          invalidEvidenceIdCount: 3,
-          invalidEvidenceIdsSample: expect.stringContaining('chunk_insight_2'),
+    expect(finalInternalComment.events.map((item) => item.event)).toEqual(
+      expect.arrayContaining([
+        'deep_analysis_report_repaired',
+        'deep_analysis_report_completed',
+      ]),
+    );
+    expect(finalInternalComment.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: 'deep_analysis_report_repaired',
+          fields: expect.objectContaining({
+            invalidEvidenceIdCount: 3,
+            invalidEvidenceIdsSample:
+              expect.stringContaining('chunk_insight_2'),
+          }),
         }),
-      }),
-    ]));
+      ]),
+    );
     expect(finalInternalComment.runtimeErrors).toEqual([]);
-    expect(finalInternalComment.rawResponses).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        stage: 'GLOBAL_SYNTHESIS',
-        reason: 'report_repaired',
-        source: 'parsed_report',
-        preview: expect.stringContaining('chunk_insight_2'),
-      }),
-    ]));
+    expect(finalInternalComment.rawResponses).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage: 'GLOBAL_SYNTHESIS',
+          reason: 'report_repaired',
+          source: 'parsed_report',
+          preview: expect.stringContaining('chunk_insight_2'),
+        }),
+      ]),
+    );
   });
 
   it('keeps internal comment audit consistent when chunks finish out of order and one times out', async () => {
@@ -1198,17 +1399,20 @@ describe('deep analysis report processor service', () => {
         id: 'dar_audit',
         status: 'QUEUED',
         lang: 'en',
-        sourceSnapshotObjectKey: 'deep-analysis/reports/dar_audit/source.json.gz',
+        sourceSnapshotObjectKey:
+          'deep-analysis/reports/dar_audit/source.json.gz',
         internalComment: null,
       })),
       updateDeepAnalysisReport: jest.fn(async () => undefined),
     };
     const storage = {
-      getObjectBuffer: jest.fn(async () => gzipJson({
-        fetchedAt: '2026-03-28T00:00:00Z',
-        memoryCount: memories.length,
-        memories,
-      })),
+      getObjectBuffer: jest.fn(async () =>
+        gzipJson({
+          fetchedAt: '2026-03-28T00:00:00Z',
+          memoryCount: memories.length,
+          memories,
+        }),
+      ),
       putJson: jest.fn(async () => undefined),
     };
     let firstResolve: (() => void) | undefined;
@@ -1265,7 +1469,11 @@ describe('deep analysis report processor service', () => {
       traceId: 'trace_audit',
     });
 
-    for (let attempt = 0; attempt < 20 && (!firstResolve || !secondResolve); attempt += 1) {
+    for (
+      let attempt = 0;
+      attempt < 20 && (!firstResolve || !secondResolve);
+      attempt += 1
+    ) {
       await new Promise((resolve) => setImmediate(resolve));
     }
 
@@ -1275,12 +1483,16 @@ describe('deep analysis report processor service', () => {
     await processPromise;
 
     const finalCall = (
-      repository.updateDeepAnalysisReport.mock.calls as unknown as Array<[string, { internalComment?: string; status?: string }]>
+      repository.updateDeepAnalysisReport.mock.calls as unknown as Array<
+        [string, { internalComment?: string; status?: string }]
+      >
     ).at(-1);
     expect(finalCall?.[1]?.status).toBe('COMPLETED');
     expect(finalCall?.[1]?.internalComment).toBeTruthy();
 
-    const finalInternalComment = JSON.parse(String(finalCall?.[1]?.internalComment)) as {
+    const finalInternalComment = JSON.parse(
+      String(finalCall?.[1]?.internalComment),
+    ) as {
       aggregate: {
         requestCount: number;
         successCount: number;
@@ -1355,17 +1567,20 @@ describe('deep analysis report processor service', () => {
         id: 'dar_order',
         status: 'QUEUED',
         lang: 'en',
-        sourceSnapshotObjectKey: 'deep-analysis/reports/dar_order/source.json.gz',
+        sourceSnapshotObjectKey:
+          'deep-analysis/reports/dar_order/source.json.gz',
         internalComment: null,
       })),
       updateDeepAnalysisReport: jest.fn(async () => undefined),
     };
     const storage = {
-      getObjectBuffer: jest.fn(async () => gzipJson({
-        fetchedAt: '2026-03-28T00:00:00Z',
-        memoryCount: memories.length,
-        memories,
-      })),
+      getObjectBuffer: jest.fn(async () =>
+        gzipJson({
+          fetchedAt: '2026-03-28T00:00:00Z',
+          memoryCount: memories.length,
+          memories,
+        }),
+      ),
       putJson: jest.fn(async () => undefined),
     };
     let chunkCallCount = 0;
@@ -1373,24 +1588,57 @@ describe('deep analysis report processor service', () => {
     let secondResolve: (() => void) | undefined;
     const qwen = {
       getConfiguredModel: jest.fn(() => TEST_QWEN_MODEL),
-      createJson: jest.fn(async (stage: string, _systemPrompt: string, userPrompt: string) => {
-        if (stage === 'global_synthesis') {
-          const payload = JSON.parse(userPrompt) as {
-            chunkInsights: Array<{ summary: string }>;
-          };
-          expect(payload.chunkInsights.map((item) => item.summary)).toEqual(['chunk-1', 'chunk-2']);
-          return createSynthesisResult();
-        }
+      createJson: jest.fn(
+        async (stage: string, _systemPrompt: string, userPrompt: string) => {
+          if (stage === 'global_synthesis') {
+            const payload = JSON.parse(userPrompt) as {
+              chunkInsights: Array<{ summary: string }>;
+            };
+            expect(payload.chunkInsights.map((item) => item.summary)).toEqual([
+              'chunk-1',
+              'chunk-2',
+            ]);
+            return createSynthesisResult();
+          }
 
-        chunkCallCount += 1;
-        if (chunkCallCount === 1) {
+          chunkCallCount += 1;
+          if (chunkCallCount === 1) {
+            await new Promise<void>((resolve) => {
+              firstResolve = resolve;
+            });
+            return createChunkResult({
+              index: 1,
+              parsed: {
+                summary: 'chunk-1',
+                themes: [],
+                entities: {
+                  people: [],
+                  teams: [],
+                  projects: [],
+                  tools: [],
+                  places: [],
+                },
+                personaSignals: {
+                  workingStyle: ['chunk-1 style'],
+                  goals: [],
+                  preferences: [],
+                  constraints: [],
+                  decisionSignals: [],
+                  notableRoutines: [],
+                  contradictionsOrTensions: [],
+                },
+                relationships: [],
+              },
+            });
+          }
+
           await new Promise<void>((resolve) => {
-            firstResolve = resolve;
+            secondResolve = resolve;
           });
           return createChunkResult({
-            index: 1,
+            index: 2,
             parsed: {
-              summary: 'chunk-1',
+              summary: 'chunk-2',
               themes: [],
               entities: {
                 people: [],
@@ -1400,7 +1648,7 @@ describe('deep analysis report processor service', () => {
                 places: [],
               },
               personaSignals: {
-                workingStyle: ['chunk-1 style'],
+                workingStyle: ['chunk-2 style'],
                 goals: [],
                 preferences: [],
                 constraints: [],
@@ -1411,36 +1659,8 @@ describe('deep analysis report processor service', () => {
               relationships: [],
             },
           });
-        }
-
-        await new Promise<void>((resolve) => {
-          secondResolve = resolve;
-        });
-        return createChunkResult({
-          index: 2,
-          parsed: {
-            summary: 'chunk-2',
-            themes: [],
-            entities: {
-              people: [],
-              teams: [],
-              projects: [],
-              tools: [],
-              places: [],
-            },
-            personaSignals: {
-              workingStyle: ['chunk-2 style'],
-              goals: [],
-              preferences: [],
-              constraints: [],
-              decisionSignals: [],
-              notableRoutines: [],
-              contradictionsOrTensions: [],
-            },
-            relationships: [],
-          },
-        });
-      }),
+        },
+      ),
     };
     const processor = new DeepAnalysisReportProcessorService(
       repository as never,
@@ -1455,7 +1675,11 @@ describe('deep analysis report processor service', () => {
       traceId: 'trace_order',
     });
 
-    for (let attempt = 0; attempt < 20 && (!firstResolve || !secondResolve); attempt += 1) {
+    for (
+      let attempt = 0;
+      attempt < 20 && (!firstResolve || !secondResolve);
+      attempt += 1
+    ) {
       await new Promise((resolve) => setImmediate(resolve));
     }
 

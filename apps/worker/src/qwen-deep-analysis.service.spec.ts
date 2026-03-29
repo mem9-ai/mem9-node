@@ -22,6 +22,9 @@ function createConfig(overrides?: {
       pepper: 'test-pepper-1234567890',
       ...overrides?.app,
     },
+    sentry: {
+      dsn: undefined,
+    },
     database: {
       url: 'mysql://localhost/mem9',
       ...overrides?.database,
@@ -86,24 +89,29 @@ describe('qwen deep analysis service', () => {
 
   it('parses usage on a successful JSON response', async () => {
     const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({
-        model: TEST_QWEN_MODEL,
-        usage: {
-          prompt_tokens: 123,
-          completion_tokens: 45,
-          total_tokens: 168,
-        },
-        choices: [{
-          message: {
-            content: '{"summary":"ok"}',
+      new Response(
+        JSON.stringify({
+          model: TEST_QWEN_MODEL,
+          usage: {
+            prompt_tokens: 123,
+            completion_tokens: 45,
+            total_tokens: 168,
           },
-        }],
-      }), {
-        status: 200,
-        headers: {
-          'Content-Type': 'application/json',
+          choices: [
+            {
+              message: {
+                content: '{"summary":"ok"}',
+              },
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json',
+          },
         },
-      }),
+      ),
     );
 
     const service = new QwenDeepAnalysisService(createConfig());
@@ -145,24 +153,29 @@ describe('qwen deep analysis service', () => {
 
   it('returns usage and failure metadata when JSON parsing fails', async () => {
     jest.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({
-        model: TEST_QWEN_MODEL,
-        usage: {
-          prompt_tokens: 20,
-          completion_tokens: 10,
-          total_tokens: 30,
-        },
-        choices: [{
-          message: {
-            content: '{bad json}',
+      new Response(
+        JSON.stringify({
+          model: TEST_QWEN_MODEL,
+          usage: {
+            prompt_tokens: 20,
+            completion_tokens: 10,
+            total_tokens: 30,
           },
-        }],
-      }), {
-        status: 200,
-        headers: {
-          'Content-Type': 'application/json',
+          choices: [
+            {
+              message: {
+                content: '{bad json}',
+              },
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json',
+          },
         },
-      }),
+      ),
     );
 
     const service = new QwenDeepAnalysisService(createConfig());
@@ -197,17 +210,20 @@ describe('qwen deep analysis service', () => {
 
   it('returns failure metadata and counts usage as missing on HTTP errors', async () => {
     jest.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({
-        error: {
-          code: 'quota_exceeded',
-          message: 'quota exceeded',
+      new Response(
+        JSON.stringify({
+          error: {
+            code: 'quota_exceeded',
+            message: 'quota exceeded',
+          },
+        }),
+        {
+          status: 429,
+          headers: {
+            'Content-Type': 'application/json',
+          },
         },
-      }), {
-        status: 429,
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      }),
+      ),
     );
 
     const service = new QwenDeepAnalysisService(createConfig());
@@ -238,20 +254,29 @@ describe('qwen deep analysis service', () => {
 
   it('times out stalled requests instead of waiting forever', async () => {
     jest.useFakeTimers();
-    jest.spyOn(globalThis, 'fetch').mockImplementation((async (_input, init) => {
+    jest.spyOn(globalThis, 'fetch').mockImplementation((async (
+      _input,
+      init,
+    ) => {
       const signal = init?.signal as AbortSignal | undefined;
       return await new Promise<Response>((_resolve, reject) => {
         signal?.addEventListener('abort', () => {
-          reject(Object.assign(new Error('The operation was aborted'), { name: 'AbortError' }));
+          reject(
+            Object.assign(new Error('The operation was aborted'), {
+              name: 'AbortError',
+            }),
+          );
         });
       });
     }) as typeof fetch);
 
-    const service = new QwenDeepAnalysisService(createConfig({
-      analysis: {
-        qwenRequestTimeoutMs: 50,
-      },
-    }));
+    const service = new QwenDeepAnalysisService(
+      createConfig({
+        analysis: {
+          qwenRequestTimeoutMs: 50,
+        },
+      }),
+    );
     const resultPromise = service.createJson<{ summary: string }>(
       'chunk_analysis',
       'system prompt',
@@ -282,32 +307,49 @@ describe('qwen deep analysis service', () => {
 
   it('disables thinking mode for both chunk and global synthesis requests', async () => {
     const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({
-        model: TEST_QWEN_MODEL,
-        usage: {
-          prompt_tokens: 1,
-          completion_tokens: 1,
-          total_tokens: 2,
-        },
-        choices: [{
-          message: {
-            content: '{"summary":"ok"}',
+      new Response(
+        JSON.stringify({
+          model: TEST_QWEN_MODEL,
+          usage: {
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            total_tokens: 2,
           },
-        }],
-      }), {
-        status: 200,
-        headers: {
-          'Content-Type': 'application/json',
+          choices: [
+            {
+              message: {
+                content: '{"summary":"ok"}',
+              },
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json',
+          },
         },
-      }),
+      ),
     );
     const service = new QwenDeepAnalysisService(createConfig());
 
-    await service.createJson<{ summary: string }>('chunk_analysis', 'system chunk', 'user chunk');
-    await service.createJson<{ summary: string }>('global_synthesis', 'system synthesis', 'user synthesis');
+    await service.createJson<{ summary: string }>(
+      'chunk_analysis',
+      'system chunk',
+      'user chunk',
+    );
+    await service.createJson<{ summary: string }>(
+      'global_synthesis',
+      'system synthesis',
+      'user synthesis',
+    );
 
     expect(fetchSpy).toHaveBeenCalledTimes(2);
-    expect(fetchSpy.mock.calls.map((call) => JSON.parse(String((call[1] as RequestInit).body)))).toEqual([
+    expect(
+      fetchSpy.mock.calls.map((call) =>
+        JSON.parse(String((call[1] as RequestInit).body)),
+      ),
+    ).toEqual([
       expect.objectContaining({
         enable_thinking: false,
         messages: expect.arrayContaining([
@@ -317,18 +359,23 @@ describe('qwen deep analysis service', () => {
       expect.objectContaining({
         enable_thinking: false,
         messages: expect.arrayContaining([
-          expect.objectContaining({ role: 'system', content: 'system synthesis' }),
+          expect.objectContaining({
+            role: 'system',
+            content: 'system synthesis',
+          }),
         ]),
       }),
     ]);
   });
 
   it('returns not configured when the qwen model env is missing', async () => {
-    const service = new QwenDeepAnalysisService(createConfig({
-      analysis: {
-        qwenModel: undefined,
-      },
-    }));
+    const service = new QwenDeepAnalysisService(
+      createConfig({
+        analysis: {
+          qwenModel: undefined,
+        },
+      }),
+    );
 
     const result = await service.createJson<{ summary: string }>(
       'chunk_analysis',
