@@ -190,6 +190,19 @@ function createService(overrides?: {
   };
 }
 
+function getCreateReportCall<T extends { requestDayKey: string }>(mockFn: unknown): T {
+  const createDeepAnalysisReport = mockFn as jest.MockedFunction<
+    (input: T) => Promise<unknown>
+  >;
+  const [input] = createDeepAnalysisReport.mock.lastCall ?? [];
+
+  if (!input) {
+    throw new Error('Expected createDeepAnalysisReport to be called');
+  }
+
+  return input;
+}
+
 describe('deep analysis service', () => {
   afterEach(() => {
     jest.useRealTimers();
@@ -223,27 +236,43 @@ describe('deep analysis service', () => {
     expect(sourcePreparation.schedule).not.toHaveBeenCalled();
   });
 
-  it('rejects requests with too few memories in production', async () => {
-    const { service, sourcePreparation } = createService({
+  it('allows production runs with fewer than 1000 memories', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-28T00:00:00Z'));
+
+    const { service, repository } = createService({
+      repository: {
+        createDeepAnalysisReport: jest.fn(
+          async (input: { requestDayKey: string; memoryCount: number }) => ({
+            id: 'dar_small',
+            status: 'QUEUED',
+            stage: 'FETCH_SOURCE',
+            progressPercent: 0,
+            requestedAt: new Date('2026-03-28T00:00:00Z'),
+            memoryCount: input.memoryCount,
+            requestDayKey: input.requestDayKey,
+          }),
+        ),
+      },
       source: {
-        countMemories: jest.fn(async () => 999),
+        countMemories: jest.fn(async () => 0),
       },
     });
 
-    await expect(
-      service.createReport(createContext(), {
-        lang: 'zh-CN',
-        timezone: 'Asia/Shanghai',
+    const response = await service.createReport(createContext(), {
+      lang: 'zh-CN',
+      timezone: 'Asia/Shanghai',
+    });
+
+    expect(response).toMatchObject({
+      reportId: 'dar_small',
+      memoryCount: 0,
+    });
+    expect(repository.createDeepAnalysisReport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestDayKey: '2026-03-28@Asia/Shanghai',
+        memoryCount: 0,
       }),
-    ).rejects.toMatchObject({
-      code: 'DEEP_ANALYSIS_TOO_FEW_MEMORIES',
-      details: {
-        memoryCount: 999,
-        minimum: 1000,
-      },
-    });
-
-    expect(sourcePreparation.schedule).not.toHaveBeenCalled();
+    );
   });
 
   it('creates a report and delegates source preparation', async () => {
@@ -296,6 +325,84 @@ describe('deep analysis service', () => {
     );
   });
 
+  it('uses the third daily slot for the third production run', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-28T00:00:00Z'));
+
+    const { service, repository } = createService({
+      repository: {
+        findDeepAnalysisReportsByDayPrefix: jest.fn(async () => [
+          {
+            id: 'dar_2',
+            status: 'COMPLETED',
+          },
+          {
+            id: 'dar_1',
+            status: 'FAILED',
+          },
+        ]),
+        createDeepAnalysisReport: jest.fn(
+          async (input: { requestDayKey: string; memoryCount: number }) => ({
+            id: 'dar_3',
+            status: 'QUEUED',
+            stage: 'FETCH_SOURCE',
+            progressPercent: 0,
+            requestedAt: new Date('2026-03-28T00:00:00Z'),
+            memoryCount: input.memoryCount,
+            requestDayKey: input.requestDayKey,
+          }),
+        ),
+      },
+    });
+
+    const response = await service.createReport(createContext(), {
+      lang: 'zh-CN',
+      timezone: 'Asia/Shanghai',
+    });
+
+    expect(response.reportId).toBe('dar_3');
+    expect(repository.createDeepAnalysisReport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestDayKey: '2026-03-28@Asia/Shanghai#3',
+      }),
+    );
+  });
+
+  it('rejects the fourth production run on the same day', async () => {
+    const { service, sourcePreparation } = createService({
+      repository: {
+        findDeepAnalysisReportsByDayPrefix: jest.fn(async () => [
+          {
+            id: 'dar_3',
+            status: 'COMPLETED',
+          },
+          {
+            id: 'dar_2',
+            status: 'FAILED',
+          },
+          {
+            id: 'dar_1',
+            status: 'COMPLETED',
+          },
+        ]),
+      },
+    });
+
+    await expect(
+      service.createReport(createContext(), {
+        lang: 'zh-CN',
+        timezone: 'Asia/Shanghai',
+      }),
+    ).rejects.toMatchObject({
+      code: 'DEEP_ANALYSIS_DAILY_LIMIT',
+      details: {
+        reportId: 'dar_3',
+        maximumPerDay: 3,
+      },
+    });
+
+    expect(sourcePreparation.schedule).not.toHaveBeenCalled();
+  });
+
   it('bypasses daily-limit and count gates outside production', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-28T00:00:00Z'));
 
@@ -332,12 +439,14 @@ describe('deep analysis service', () => {
     expect(
       repository.findDeepAnalysisReportsByDayPrefix,
     ).not.toHaveBeenCalled();
-    expect(repository.createDeepAnalysisReport).toHaveBeenCalledWith(
-      expect.objectContaining({
-        requestDayKey: expect.stringMatching(/^2026-03-28@Asia\/Shanghai#dev-/),
-        memoryCount: 12,
-      }),
+    const devCreateInput = getCreateReportCall<{
+      requestDayKey: string;
+      memoryCount: number;
+    }>(repository.createDeepAnalysisReport);
+    expect(devCreateInput.requestDayKey).toMatch(
+      /^2026-03-28@Asia\/Shanghai#dev-/,
     );
+    expect(devCreateInput.memoryCount).toBe(12);
   });
 
   it('allows production reruns for bypass fingerprints while keeping the same day prefix', async () => {
@@ -379,12 +488,11 @@ describe('deep analysis service', () => {
     });
 
     expect(response.reportId).toBe('dar_rerun');
-    expect(repository.createDeepAnalysisReport).toHaveBeenCalledWith(
-      expect.objectContaining({
-        requestDayKey: expect.stringMatching(
-          /^2026-03-28@Asia\/Shanghai#rerun-/,
-        ),
-      }),
+    const rerunCreateInput = getCreateReportCall<{
+      requestDayKey: string;
+    }>(repository.createDeepAnalysisReport);
+    expect(rerunCreateInput.requestDayKey).toMatch(
+      /^2026-03-28@Asia\/Shanghai#rerun-/,
     );
   });
 

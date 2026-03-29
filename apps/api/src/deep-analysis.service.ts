@@ -1,20 +1,21 @@
+import type { AppConfig } from '@mem9/config';
+import { APP_CONFIG } from '@mem9/config';
 import type {
   CreateDeepAnalysisReportResponse,
   DeepAnalysisReportDetail,
+  DeepAnalysisReportDocument,
   DeepAnalysisReportListItem,
   DeepAnalysisReportPreview,
   ListDeepAnalysisReportsResponse,
 } from '@mem9/contracts';
-import type { AppConfig } from '@mem9/config';
-import { APP_CONFIG } from '@mem9/config';
 import { AnalysisRepository, S3PayloadStorageService, createPrefixedId } from '@mem9/shared';
 import { Inject, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 
 import type { Mem9RequestContext } from './common/request-context';
 import { DeepAnalysisDuplicateOpsService } from './deep-analysis-duplicate-ops.service';
-import { DeepAnalysisPolicy } from './deep-analysis.policy';
 import { DeepAnalysisSourcePreparationService } from './deep-analysis-source-preparation.service';
+import { DeepAnalysisPolicy } from './deep-analysis.policy';
 import type { CreateDeepAnalysisReportDto } from './dto/create-deep-analysis-report.dto';
 import type { ListDeepAnalysisReportsDto } from './dto/list-deep-analysis-reports.dto';
 import { Mem9SourceService } from './mem9-source.service';
@@ -25,6 +26,10 @@ function toPreview(value: unknown): DeepAnalysisReportPreview | null {
   }
 
   return value as DeepAnalysisReportPreview;
+}
+
+function parseReportDocument(payload: Buffer): DeepAnalysisReportDocument {
+  return JSON.parse(payload.toString('utf8')) as DeepAnalysisReportDocument;
 }
 
 function toListItem(report: {
@@ -78,13 +83,15 @@ export class DeepAnalysisService {
     const isProduction = this.config.app.env === 'production';
     const memoryCount = await this.source.countMemories(context.rawApiKey);
     const baseRequestDayKey = DeepAnalysisPolicy.buildRequestDayKey(timezone);
-    const existingReports = isProduction
+    let existingReports = isProduction
       ? await this.repository.findDeepAnalysisReportsByDayPrefix(
         context.apiKeyFingerprint,
         baseRequestDayKey,
       )
       : [];
-    const policy = DeepAnalysisPolicy.resolveCreateReport({
+    const sourceSnapshotObjectKey = `deep-analysis/reports/${createPrefixedId('snapshot')}/source.json.gz`;
+
+    const resolvePolicy = () => DeepAnalysisPolicy.resolveCreateReport({
       env: this.config.app.env,
       timezone,
       existingReports,
@@ -92,33 +99,47 @@ export class DeepAnalysisService {
       bypassFingerprints: this.config.analysis.deepAnalysisDailyLimitBypassFingerprints,
       apiKeyFingerprintHex: context.apiKeyFingerprintHex,
     });
-    const sourceSnapshotObjectKey = `deep-analysis/reports/${createPrefixedId('snapshot')}/source.json.gz`;
 
+    let policy = resolvePolicy();
     let report;
-    try {
-      report = await this.repository.createDeepAnalysisReport({
-        fingerprint: context.apiKeyFingerprint,
-        requestDayKey: policy.requestDayKey,
-        lang: dto.lang.trim() || 'zh-CN',
-        timezone,
-        memoryCount,
-        sourceSnapshotObjectKey,
-      });
-    } catch (error) {
-      if (
-        error instanceof Prisma.PrismaClientKnownRequestError &&
-        error.code === 'P2002'
-      ) {
-        const concurrent = await this.repository.findDeepAnalysisReportsByDayPrefix(
-          context.apiKeyFingerprint,
-          policy.baseRequestDayKey,
-        );
-        const existing = concurrent.find((reportItem) => DeepAnalysisPolicy.isRunningStatus(reportItem.status)) ?? concurrent[0];
-        if (existing) {
-          throw DeepAnalysisPolicy.buildExistingReportError(existing);
+    let lastCreateError: unknown = null;
+    const maxCreateAttempts = isProduction ? 3 : 1;
+
+    for (let attempt = 0; attempt < maxCreateAttempts; attempt += 1) {
+      try {
+        report = await this.repository.createDeepAnalysisReport({
+          fingerprint: context.apiKeyFingerprint,
+          requestDayKey: policy.requestDayKey,
+          lang: dto.lang.trim() || 'zh-CN',
+          timezone,
+          memoryCount,
+          sourceSnapshotObjectKey,
+        });
+        break;
+      } catch (error) {
+        if (
+          !isProduction ||
+          !(error instanceof Prisma.PrismaClientKnownRequestError) ||
+          error.code !== 'P2002'
+        ) {
+          throw error;
         }
+
+        lastCreateError = error;
+        existingReports = await this.repository.findDeepAnalysisReportsByDayPrefix(
+          context.apiKeyFingerprint,
+          baseRequestDayKey,
+        );
+        policy = resolvePolicy();
       }
-      throw error;
+    }
+
+    if (!report) {
+      if (lastCreateError instanceof Error) {
+        throw lastCreateError;
+      }
+
+      throw new Error('Failed to create deep analysis report');
     }
 
     this.sourcePreparation.schedule({
@@ -164,11 +185,11 @@ export class DeepAnalysisService {
       reportId,
       context.apiKeyFingerprint,
     );
-    let document = null;
+    let document: DeepAnalysisReportDocument | null = null;
 
     if (report.reportObjectKey) {
       const payload = await this.storage.getObjectBuffer(report.reportObjectKey);
-      document = JSON.parse(payload.toString('utf8'));
+      document = parseReportDocument(payload);
     }
 
     return {

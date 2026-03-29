@@ -23,6 +23,8 @@ export interface DeepAnalysisCreatePolicyResult {
   isProduction: boolean;
 }
 
+const MAX_DAILY_REPORTS = 3;
+
 function normalizeTimezone(input: string): string {
   const timezone = input.trim() || 'UTC';
   try {
@@ -55,6 +57,12 @@ function buildScopedRequestDayKey(baseRequestDayKey: string, scope: 'dev' | 'rer
   return `${baseRequestDayKey}#${suffix}`;
 }
 
+function buildDailyRequestDayKey(baseRequestDayKey: string, runIndex: number): string {
+  return runIndex <= 1
+    ? baseRequestDayKey
+    : `${baseRequestDayKey}#${runIndex}`;
+}
+
 function isRunningStatus(status: DeepAnalysisReportStatus): boolean {
   return status === 'QUEUED' ||
     status === 'PREPARING' ||
@@ -67,17 +75,19 @@ function isTerminalStatus(status: DeepAnalysisReportStatus): boolean {
 }
 
 function buildExistingReportError(existing: ExistingReport): AppError {
+  const running = isRunningStatus(existing.status);
   return new AppError(
-    isRunningStatus(existing.status)
+    running
       ? 'A deep analysis report is already running for today'
-      : 'Deep analysis can only be executed once per day',
+      : `Deep analysis can be executed at most ${MAX_DAILY_REPORTS} times per day`,
     {
       statusCode: 409,
-      code: isRunningStatus(existing.status)
+      code: running
         ? 'DEEP_ANALYSIS_ALREADY_RUNNING'
         : 'DEEP_ANALYSIS_DAILY_LIMIT',
       details: {
         reportId: existing.id,
+        ...(running ? {} : { maximumPerDay: MAX_DAILY_REPORTS }),
       },
     },
   );
@@ -104,19 +114,8 @@ function resolveCreateReport({
       throw buildExistingReportError(runningReport);
     }
 
-    if (!bypassDailyLimit && existingReports.length > 0) {
+    if (!bypassDailyLimit && existingReports.length >= MAX_DAILY_REPORTS) {
       throw buildExistingReportError(existingReports[0]!);
-    }
-
-    if (memoryCount < 1000) {
-      throw new AppError('Deep analysis requires at least 1000 memories', {
-        statusCode: 422,
-        code: 'DEEP_ANALYSIS_TOO_FEW_MEMORIES',
-        details: {
-          memoryCount,
-          minimum: 1000,
-        },
-      });
     }
 
     if (memoryCount > 20000) {
@@ -136,7 +135,7 @@ function resolveCreateReport({
     requestDayKey: isProduction
       ? (bypassDailyLimit
         ? buildScopedRequestDayKey(baseRequestDayKey, 'rerun')
-        : baseRequestDayKey)
+        : buildDailyRequestDayKey(baseRequestDayKey, existingReports.length + 1))
       : buildScopedRequestDayKey(baseRequestDayKey, 'dev'),
     bypassDailyLimit,
     isProduction,
@@ -147,6 +146,7 @@ export const DeepAnalysisPolicy = {
   normalizeTimezone,
   buildRequestDayKey,
   buildScopedRequestDayKey,
+  buildDailyRequestDayKey,
   isRunningStatus,
   isTerminalStatus,
   buildExistingReportError,

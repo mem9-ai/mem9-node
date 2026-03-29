@@ -6,7 +6,8 @@
     "node": ">=22 <23"
   },
   "scripts": {
-    "build": "pnpm -r --workspace-concurrency=1 build && pnpm sentry:sourcemaps",
+    "build": "pnpm -r --workspace-concurrency=1 build",
+    "build:with-sourcemaps": "pnpm build && pnpm sentry:sourcemaps",
     "dev": "concurrently \"pnpm --filter @mem9/contracts build:watch\" \"pnpm --filter @mem9/config build:watch\" \"pnpm --filter @mem9/shared build:watch\" \"pnpm --filter @mem9/api dev\" \"pnpm --filter @mem9/worker dev\"",
     "lint": "pnpm -r --workspace-concurrency=1 lint",
     "typecheck": "pnpm -r --workspace-concurrency=1 typecheck",
