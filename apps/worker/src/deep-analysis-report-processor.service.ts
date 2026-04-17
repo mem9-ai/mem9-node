@@ -22,13 +22,18 @@ import {
   normalizeMemory,
 } from '@mem9/shared';
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { DeepAnalysisReportStage, DeepAnalysisReportStatus, Prisma } from '@prisma/client';
+import {
+  DeepAnalysisReportStage,
+  DeepAnalysisReportStatus,
+  Prisma,
+} from '@prisma/client';
 
 import {
   QwenDeepAnalysisService,
   type QwenAuditStage,
   type QwenJsonResult,
 } from './qwen-deep-analysis.service';
+import { DeepAnalysisMetricsService } from './deep-analysis-metrics.service';
 
 interface SourceSnapshotPayload {
   fetchedAt: string;
@@ -194,7 +199,12 @@ interface InternalCommentRuntimeError {
 interface InternalCommentRawResponse {
   at: string;
   stage: string;
-  reason: 'qwen_request_failed' | 'qwen_json_parse_failed' | 'report_validation_failed' | 'report_processing_failed' | 'report_repaired';
+  reason:
+    | 'qwen_request_failed'
+    | 'qwen_json_parse_failed'
+    | 'report_validation_failed'
+    | 'report_processing_failed'
+    | 'report_repaired';
   source: 'message_content' | 'response_payload' | 'parsed_report';
   preview: string;
   truncated: boolean;
@@ -245,33 +255,169 @@ interface ReportRepairOutcome {
 }
 
 const TOOL_HINTS = [
-  'react', 'typescript', 'javascript', 'node', 'go', 'python', 'docker', 'kubernetes',
-  'tidb', 'mysql', 'redis', 'neovim', 'vscode', 'github', 'gitlab', 'openai', 'qwen',
-  'claude', 'terraform', 'prometheus', 'grafana', 'feishu',
+  'react',
+  'typescript',
+  'javascript',
+  'node',
+  'go',
+  'python',
+  'docker',
+  'kubernetes',
+  'tidb',
+  'mysql',
+  'redis',
+  'neovim',
+  'vscode',
+  'github',
+  'gitlab',
+  'openai',
+  'qwen',
+  'claude',
+  'terraform',
+  'prometheus',
+  'grafana',
+  'feishu',
 ] as const;
 const PLACE_HINTS = [
-  'shanghai', 'beijing', 'singapore', 'tokyo', 'office', 'home', 'hangzhou',
+  'shanghai',
+  'beijing',
+  'singapore',
+  'tokyo',
+  'office',
+  'home',
+  'hangzhou',
 ] as const;
 const RELATION_PATTERNS = [
-  { pattern: /\bworks with ([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b/g, relation: 'works_with' },
-  { pattern: /\bcollaborates with ([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b/g, relation: 'collaborates_with' },
-  { pattern: /\bwith ([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b/g, relation: 'interacts_with' },
+  {
+    pattern: /\bworks with ([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b/g,
+    relation: 'works_with',
+  },
+  {
+    pattern: /\bcollaborates with ([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b/g,
+    relation: 'collaborates_with',
+  },
+  {
+    pattern: /\bwith ([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b/g,
+    relation: 'interacts_with',
+  },
 ] as const;
-const ACKNOWLEDGEMENT_PATTERN = /^(ok|done|noted|received|收到|好的|完成|明白了)$/iu;
+const ACKNOWLEDGEMENT_PATTERN =
+  /^(ok|done|noted|received|收到|好的|完成|明白了)$/iu;
 const EN_STOPWORDS = new Set<string>([
-  'the', 'and', 'for', 'with', 'from', 'into', 'that', 'this', 'have', 'has', 'had', 'been',
-  'were', 'was', 'will', 'would', 'should', 'could', 'there', 'their', 'about', 'after',
-  'before', 'because', 'while', 'where', 'when', 'what', 'which', 'then', 'than', 'them',
-  'they', 'your', 'ours', 'ourselves', 'myself', 'herself', 'himself', 'itself', 'user',
-  'users', 'agent', 'assistant', 'self', 'team', 'project', 'task', 'system', 'memory',
-  'workflow', 'workflows', 'group', 'thing', 'things', 'item', 'items', 'info', 'information',
-  'data', 'using', 'used', 'use', 'like', 'just', 'more', 'less', 'very', 'also', 'into',
-  'over', 'under', 'through', 'across', 'within', 'without', 'each', 'every',
+  'the',
+  'and',
+  'for',
+  'with',
+  'from',
+  'into',
+  'that',
+  'this',
+  'have',
+  'has',
+  'had',
+  'been',
+  'were',
+  'was',
+  'will',
+  'would',
+  'should',
+  'could',
+  'there',
+  'their',
+  'about',
+  'after',
+  'before',
+  'because',
+  'while',
+  'where',
+  'when',
+  'what',
+  'which',
+  'then',
+  'than',
+  'them',
+  'they',
+  'your',
+  'ours',
+  'ourselves',
+  'myself',
+  'herself',
+  'himself',
+  'itself',
+  'user',
+  'users',
+  'agent',
+  'assistant',
+  'self',
+  'team',
+  'project',
+  'task',
+  'system',
+  'memory',
+  'workflow',
+  'workflows',
+  'group',
+  'thing',
+  'things',
+  'item',
+  'items',
+  'info',
+  'information',
+  'data',
+  'using',
+  'used',
+  'use',
+  'like',
+  'just',
+  'more',
+  'less',
+  'very',
+  'also',
+  'into',
+  'over',
+  'under',
+  'through',
+  'across',
+  'within',
+  'without',
+  'each',
+  'every',
 ] as const);
 const ZH_STOPWORDS = new Set<string>([
-  '的', '了', '和', '是', '在', '与', '及', '一个', '这个', '那个', '需要', '可以', '进行',
-  '通过', '我们', '他们', '自己', '用户', '团队', '项目', '系统', '记忆', '工作流', '一些',
-  '这种', '这个人', '这个团队', '事情', '内容', '信息', '数据', '以及', '然后', '这里',
+  '的',
+  '了',
+  '和',
+  '是',
+  '在',
+  '与',
+  '及',
+  '一个',
+  '这个',
+  '那个',
+  '需要',
+  '可以',
+  '进行',
+  '通过',
+  '我们',
+  '他们',
+  '自己',
+  '用户',
+  '团队',
+  '项目',
+  '系统',
+  '记忆',
+  '工作流',
+  '一些',
+  '这种',
+  '这个人',
+  '这个团队',
+  '事情',
+  '内容',
+  '信息',
+  '数据',
+  '以及',
+  '然后',
+  '这里',
 ] as const);
 const DISALLOWED_THEME_TERMS = new Set<string>([
   ...EN_STOPWORDS,
@@ -295,7 +441,16 @@ const DISALLOWED_ENTITY_TERMS = new Set<string>([
   'memory',
 ]);
 const DISALLOWED_PROJECT_TAGS = new Set<string>([
-  'work', 'plan', 'task', 'tasks', 'project', 'projects', 'memory', 'workflow', 'agent', 'user',
+  'work',
+  'plan',
+  'task',
+  'tasks',
+  'project',
+  'projects',
+  'memory',
+  'workflow',
+  'agent',
+  'user',
 ]);
 const CHUNK_SIZE = 180;
 const CHUNK_ANALYSIS_PROGRESS_START = 35;
@@ -344,15 +499,19 @@ function normalizeToken(value: unknown): string {
 }
 
 function normalizeLookupKey(value: unknown): string {
-  return trimToString(value)
-    ?.toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, ' ')
-    .trim()
-    .replace(/\s+/gu, ' ')
-    ?? '';
+  return (
+    trimToString(value)
+      ?.toLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, ' ')
+      .trim()
+      .replace(/\s+/gu, ' ') ?? ''
+  );
 }
 
-function coerceStringArray(value: unknown, limit = Number.POSITIVE_INFINITY): string[] {
+function coerceStringArray(
+  value: unknown,
+  limit = Number.POSITIVE_INFINITY,
+): string[] {
   if (!Array.isArray(value)) {
     return [];
   }
@@ -376,7 +535,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
-function sanitizeChunkRelationships(value: unknown): DeepAnalysisRelationship[] {
+function sanitizeChunkRelationships(
+  value: unknown,
+): DeepAnalysisRelationship[] {
   if (!Array.isArray(value)) {
     return [];
   }
@@ -393,41 +554,51 @@ function sanitizeChunkRelationships(value: unknown): DeepAnalysisRelationship[] 
       return [];
     }
 
-    return [{
-      source,
-      relation,
-      target,
-      confidence: typeof item.confidence === 'number' && Number.isFinite(item.confidence)
-        ? item.confidence
-        : 0.5,
-      evidenceMemoryIds: coerceStringArray(item.evidenceMemoryIds, 6),
-      evidenceExcerpts: coerceStringArray(item.evidenceExcerpts, 4),
-    }];
+    return [
+      {
+        source,
+        relation,
+        target,
+        confidence:
+          typeof item.confidence === 'number' &&
+          Number.isFinite(item.confidence)
+            ? item.confidence
+            : 0.5,
+        evidenceMemoryIds: coerceStringArray(item.evidenceMemoryIds, 6),
+        evidenceExcerpts: coerceStringArray(item.evidenceExcerpts, 4),
+      },
+    ];
   });
 }
 
 function sanitizeChunkInsight(value: ChunkInsight): ChunkInsight {
-  const entities: Record<string, unknown> = isRecord(value.entities) ? value.entities : {};
-  const personaSignals: Record<string, unknown> = isRecord(value.personaSignals) ? value.personaSignals : {};
+  const entities: Record<string, unknown> = isRecord(value.entities)
+    ? value.entities
+    : {};
+  const personaSignals: Record<string, unknown> = isRecord(value.personaSignals)
+    ? value.personaSignals
+    : {};
 
   return {
     summary: trimToString(value.summary) ?? '',
     themes: Array.isArray(value.themes)
       ? value.themes.flatMap((item) => {
-        if (!isRecord(item)) {
-          return [];
-        }
+          if (!isRecord(item)) {
+            return [];
+          }
 
-        const name = trimToString(item.name);
-        if (!name) {
-          return [];
-        }
+          const name = trimToString(item.name);
+          if (!name) {
+            return [];
+          }
 
-        return [{
-          name,
-          memoryIds: coerceStringArray(item.memoryIds, 12),
-        }];
-      })
+          return [
+            {
+              name,
+              memoryIds: coerceStringArray(item.memoryIds, 12),
+            },
+          ];
+        })
       : [],
     entities: {
       people: coerceStringArray(entities.people, 12),
@@ -443,7 +614,10 @@ function sanitizeChunkInsight(value: ChunkInsight): ChunkInsight {
       constraints: coerceStringArray(personaSignals.constraints, 12),
       decisionSignals: coerceStringArray(personaSignals.decisionSignals, 12),
       notableRoutines: coerceStringArray(personaSignals.notableRoutines, 12),
-      contradictionsOrTensions: coerceStringArray(personaSignals.contradictionsOrTensions, 12),
+      contradictionsOrTensions: coerceStringArray(
+        personaSignals.contradictionsOrTensions,
+        12,
+      ),
     },
     relationships: sanitizeChunkRelationships(value.relationships),
   };
@@ -485,13 +659,21 @@ function tokenize(content: string): string[] {
 function titleCaseWords(value: string): string {
   return value
     .split(/\s+/u)
-    .map((part) => part ? part[0]!.toUpperCase() + part.slice(1).toLowerCase() : part)
+    .map((part) =>
+      part ? part[0]!.toUpperCase() + part.slice(1).toLowerCase() : part,
+    )
     .join(' ');
 }
 
-function pickTopEntries(map: Map<string, number>, limit: number): Array<[string, number]> {
+function pickTopEntries(
+  map: Map<string, number>,
+  limit: number,
+): Array<[string, number]> {
   return [...map.entries()]
-    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0], 'en'))
+    .sort(
+      (left, right) =>
+        right[1] - left[1] || left[0].localeCompare(right[0], 'en'),
+    )
     .slice(0, limit);
 }
 
@@ -508,8 +690,14 @@ function upsertCounter(
   map.set(label, current);
 }
 
-function appendSignal(target: SignalEntry[], text: string, memoryId: string): void {
-  if (!target.some((entry) => entry.text === text && entry.memoryId === memoryId)) {
+function appendSignal(
+  target: SignalEntry[],
+  text: string,
+  memoryId: string,
+): void {
+  if (
+    !target.some((entry) => entry.text === text && entry.memoryId === memoryId)
+  ) {
     target.push({ text, memoryId });
   }
 }
@@ -519,7 +707,10 @@ function buildEntityGroups(
   limit = 8,
 ): DeepAnalysisEntityGroup[] {
   return [...counters.entries()]
-    .sort((left, right) => right[1].count - left[1].count || left[0].localeCompare(right[0], 'en'))
+    .sort(
+      (left, right) =>
+        right[1].count - left[1].count || left[0].localeCompare(right[0], 'en'),
+    )
     .slice(0, limit)
     .map(([label, data]) => ({
       label,
@@ -529,14 +720,19 @@ function buildEntityGroups(
 }
 
 function extractProperNames(content: string): string[] {
-  const matches = content.match(/\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\b/g) ?? [];
-  return [...new Set(matches.filter((label) => isMeaningfulEntityLabel(label)))];
+  const matches =
+    content.match(/\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\b/g) ?? [];
+  return [
+    ...new Set(matches.filter((label) => isMeaningfulEntityLabel(label))),
+  ];
 }
 
 function extractTeamLabels(content: string): string[] {
   const labels = new Set<string>();
 
-  for (const match of content.matchAll(/\b([A-Za-z][A-Za-z-]+)\s+(team|group)\b/gi)) {
+  for (const match of content.matchAll(
+    /\b([A-Za-z][A-Za-z-]+)\s+(team|group)\b/gi,
+  )) {
     const name = match[1]?.trim();
     const suffix = match[2]?.trim();
     if (!name || !suffix || DISALLOWED_ENTITY_TERMS.has(normalizeToken(name))) {
@@ -545,7 +741,14 @@ function extractTeamLabels(content: string): string[] {
     labels.add(`${titleCaseWords(name)} ${titleCaseWords(suffix)}`);
   }
 
-  for (const hint of ['backend', 'frontend', 'platform', 'security', 'sales', 'product']) {
+  for (const hint of [
+    'backend',
+    'frontend',
+    'platform',
+    'security',
+    'sales',
+    'product',
+  ]) {
     if (new RegExp(`\\b${hint}\\s+team\\b`, 'i').test(content)) {
       labels.add(`${titleCaseWords(hint)} Team`);
     }
@@ -588,11 +791,20 @@ function uniqueStrings(items: string[], limit = items.length): string[] {
   return [...new Set(items)].slice(0, limit);
 }
 
-function collectRepresentativeSignals(entries: SignalEntry[], limit = 5): string[] {
-  return uniqueStrings(entries.map((entry) => entry.text), limit);
+function collectRepresentativeSignals(
+  entries: SignalEntry[],
+  limit = 5,
+): string[] {
+  return uniqueStrings(
+    entries.map((entry) => entry.text),
+    limit,
+  );
 }
 
-function buildEvidenceHighlights(entries: SignalEntry[], limit = 4): DeepAnalysisEvidenceHighlight[] {
+function buildEvidenceHighlights(
+  entries: SignalEntry[],
+  limit = 4,
+): DeepAnalysisEvidenceHighlight[] {
   return entries.slice(0, limit).map((entry, index) => ({
     title: `Evidence ${index + 1}`,
     detail: entry.text,
@@ -606,17 +818,34 @@ function buildContradictions(stats: CorpusStats): string[] {
     ...stats.preferenceSignals,
     ...stats.constraintSignals,
     ...stats.decisionSignals,
-  ].map((entry) => normalizeToken(entry.text)).join(' ');
+  ]
+    .map((entry) => normalizeToken(entry.text))
+    .join(' ');
   const contradictions: string[] = [];
 
-  if (/(concise|save token|节省|简洁)/u.test(combined) && /(detail|详细|全面|完整)/u.test(combined)) {
-    contradictions.push('The corpus shows a tension between concise communication and preserving rich implementation detail.');
+  if (
+    /(concise|save token|节省|简洁)/u.test(combined) &&
+    /(detail|详细|全面|完整)/u.test(combined)
+  ) {
+    contradictions.push(
+      'The corpus shows a tension between concise communication and preserving rich implementation detail.',
+    );
   }
-  if (/(automate|automation|自动化|脚本)/u.test(combined) && /(manual|手动|人工)/u.test(combined)) {
-    contradictions.push('The user values automation but still keeps manual control in sensitive workflows.');
+  if (
+    /(automate|automation|自动化|脚本)/u.test(combined) &&
+    /(manual|手动|人工)/u.test(combined)
+  ) {
+    contradictions.push(
+      'The user values automation but still keeps manual control in sensitive workflows.',
+    );
   }
-  if (/(fast|speed|效率|迅速)/u.test(combined) && /(stable|quality|严格|严谨|正确)/u.test(combined)) {
-    contradictions.push('The corpus balances speed and efficiency against reliability and correctness concerns.');
+  if (
+    /(fast|speed|效率|迅速)/u.test(combined) &&
+    /(stable|quality|严格|严谨|正确)/u.test(combined)
+  ) {
+    contradictions.push(
+      'The corpus balances speed and efficiency against reliability and correctness concerns.',
+    );
   }
 
   return contradictions;
@@ -632,19 +861,29 @@ function buildCoverageGaps(
   const gaps: string[] = [];
 
   if (peopleCount < 3) {
-    gaps.push('People and collaborator mentions are sparse; relationship coverage may still be incomplete.');
+    gaps.push(
+      'People and collaborator mentions are sparse; relationship coverage may still be incomplete.',
+    );
   }
   if (projectCount < 3) {
-    gaps.push('Project-level labels are still thin; clearer project naming would improve grouping quality.');
+    gaps.push(
+      'Project-level labels are still thin; clearer project naming would improve grouping quality.',
+    );
   }
   if (toolCount < 3) {
-    gaps.push('Tool and environment references are limited; operational context may be underrepresented.');
+    gaps.push(
+      'Tool and environment references are limited; operational context may be underrepresented.',
+    );
   }
   if (routineCount < 2) {
-    gaps.push('Routines and temporal habits are under-specified, so behavioral patterns may be incomplete.');
+    gaps.push(
+      'Routines and temporal habits are under-specified, so behavioral patterns may be incomplete.',
+    );
   }
   if (decisionCount < 2) {
-    gaps.push('Decision rationale is lightly captured; more explicit tradeoff memories would deepen future persona analysis.');
+    gaps.push(
+      'Decision rationale is lightly captured; more explicit tradeoff memories would deepen future persona analysis.',
+    );
   }
 
   return gaps;
@@ -659,29 +898,47 @@ function buildRecommendations(
   const recommendations: string[] = [];
 
   if (duplicateMemoryCount > 0) {
-    recommendations.push('Collapse repeated memories into stronger canonical entries and clean up duplicate drift regularly.');
+    recommendations.push(
+      'Collapse repeated memories into stronger canonical entries and clean up duplicate drift regularly.',
+    );
   }
   if (lowQualityCount > 0) {
-    recommendations.push('Rewrite or filter low-information memories so future analysis has denser evidence to work with.');
+    recommendations.push(
+      'Rewrite or filter low-information memories so future analysis has denser evidence to work with.',
+    );
   }
   if (relationshipCount < 4) {
-    recommendations.push('Capture more explicit collaborator, stakeholder, and project interactions to strengthen relationship signals.');
+    recommendations.push(
+      'Capture more explicit collaborator, stakeholder, and project interactions to strengthen relationship signals.',
+    );
   }
   if (contradictionsOrTensions.length > 0) {
-    recommendations.push('Track important tradeoffs explicitly so future persona summaries can separate stable preferences from situational compromises.');
+    recommendations.push(
+      'Track important tradeoffs explicitly so future persona summaries can separate stable preferences from situational compromises.',
+    );
   }
   if (recommendations.length === 0) {
-    recommendations.push('The corpus is already fairly healthy; focus next on richer relationship and decision-rationale capture.');
+    recommendations.push(
+      'The corpus is already fairly healthy; focus next on richer relationship and decision-rationale capture.',
+    );
   }
 
   return recommendations;
 }
 
 function makeDiscoveryId(prefix: string, value: string): string {
-  return `${prefix}:${normalizeToken(value).replace(/[^a-z0-9\u4e00-\u9fa5]+/giu, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'signal'}`;
+  return `${prefix}:${
+    normalizeToken(value)
+      .replace(/[^a-z0-9\u4e00-\u9fa5]+/giu, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 40) || 'signal'
+  }`;
 }
 
-function uniqueDiscoveryCards(cards: DeepAnalysisDiscoveryCard[], limit = cards.length): DeepAnalysisDiscoveryCard[] {
+function uniqueDiscoveryCards(
+  cards: DeepAnalysisDiscoveryCard[],
+  limit = cards.length,
+): DeepAnalysisDiscoveryCard[] {
   const seen = new Set<string>();
   const unique: DeepAnalysisDiscoveryCard[] = [];
 
@@ -714,17 +971,23 @@ function buildDiscoveryCards(input: {
   const topProject = input.entities.projects[0];
   const topPerson = input.entities.people[0];
   const topRoutine = input.persona.notableRoutines[0];
-  const topDecision = input.persona.decisionSignals[0] ?? input.persona.contradictionsOrTensions[0];
+  const topDecision =
+    input.persona.decisionSignals[0] ??
+    input.persona.contradictionsOrTensions[0];
 
   if (topTheme || topProject) {
     const title = topProject
       ? `Focus area: ${topProject.label}`
       : `Focus area: ${topTheme?.name ?? 'core themes'}`;
-    const summary = topProject && topTheme
-      ? `Project memories around ${topProject.label} repeatedly overlap with ${topTheme.name}, suggesting a sustained workstream rather than isolated notes.`
-      : `The corpus keeps returning to ${topTheme?.name ?? topProject?.label}, making it one of the strongest recurring focus areas.`;
+    const summary =
+      topProject && topTheme
+        ? `Project memories around ${topProject.label} repeatedly overlap with ${topTheme.name}, suggesting a sustained workstream rather than isolated notes.`
+        : `The corpus keeps returning to ${topTheme?.name ?? topProject?.label}, making it one of the strongest recurring focus areas.`;
     cards.push({
-      id: makeDiscoveryId('focus', topProject?.label ?? topTheme?.name ?? 'focus'),
+      id: makeDiscoveryId(
+        'focus',
+        topProject?.label ?? topTheme?.name ?? 'focus',
+      ),
       kind: 'focus_area',
       title,
       summary,
@@ -737,7 +1000,9 @@ function buildDiscoveryCards(input: {
   }
 
   if (topPerson) {
-    const related = input.relationships.find((item) => normalizeToken(item.target) === normalizeToken(topPerson.label));
+    const related = input.relationships.find(
+      (item) => normalizeToken(item.target) === normalizeToken(topPerson.label),
+    );
     cards.push({
       id: makeDiscoveryId('collaborator', topPerson.label),
       kind: 'collaborator',
@@ -753,7 +1018,9 @@ function buildDiscoveryCards(input: {
   }
 
   if (topRoutine) {
-    const evidence = input.persona.evidenceHighlights.find((item) => item.detail === topRoutine);
+    const evidence = input.persona.evidenceHighlights.find(
+      (item) => item.detail === topRoutine,
+    );
     cards.push({
       id: makeDiscoveryId('routine', topRoutine),
       kind: 'routine',
@@ -765,8 +1032,10 @@ function buildDiscoveryCards(input: {
   }
 
   if (topDecision) {
-    const evidence = input.persona.evidenceHighlights.find((item) => item.detail === topDecision)
-      ?? input.persona.evidenceHighlights[0];
+    const evidence =
+      input.persona.evidenceHighlights.find(
+        (item) => item.detail === topDecision,
+      ) ?? input.persona.evidenceHighlights[0];
     cards.push({
       id: makeDiscoveryId('decision', topDecision),
       kind: 'decision',
@@ -779,14 +1048,20 @@ function buildDiscoveryCards(input: {
 
   if (input.duplicateMemoryCount > 0 || input.lowQualityExamples.length > 0) {
     cards.push({
-      id: makeDiscoveryId('hygiene', `dup-${input.duplicateMemoryCount}-low-${input.lowQualityExamples.length}`),
+      id: makeDiscoveryId(
+        'hygiene',
+        `dup-${input.duplicateMemoryCount}-low-${input.lowQualityExamples.length}`,
+      ),
       kind: 'hygiene',
       title: 'Memory hygiene opportunity',
-      summary: input.duplicateMemoryCount > 0
-        ? `${input.duplicateMemoryCount} duplicate memories were detected, so cleanup would immediately improve future analysis density and reduce drift.`
-        : `${input.lowQualityExamples.length} low-information memories were detected, so a cleanup pass would improve future synthesis quality.`,
+      summary:
+        input.duplicateMemoryCount > 0
+          ? `${input.duplicateMemoryCount} duplicate memories were detected, so cleanup would immediately improve future analysis density and reduce drift.`
+          : `${input.lowQualityExamples.length} low-information memories were detected, so a cleanup pass would improve future synthesis quality.`,
       confidence: 0.9,
-      evidenceMemoryIds: input.lowQualityExamples.slice(0, 4).map((item) => item.memoryId),
+      evidenceMemoryIds: input.lowQualityExamples
+        .slice(0, 4)
+        .map((item) => item.memoryId),
     });
   }
 
@@ -797,10 +1072,11 @@ function buildDiscoveryCards(input: {
       title: 'Coverage opportunity',
       summary: input.coverageGaps[0]!,
       confidence: 0.68,
-      evidenceMemoryIds: input.entities.projects[0]?.evidenceMemoryIds.slice(0, 4)
-        ?? input.entities.tools[0]?.evidenceMemoryIds.slice(0, 4)
-        ?? input.entities.people[0]?.evidenceMemoryIds.slice(0, 4)
-        ?? [],
+      evidenceMemoryIds:
+        input.entities.projects[0]?.evidenceMemoryIds.slice(0, 4) ??
+        input.entities.tools[0]?.evidenceMemoryIds.slice(0, 4) ??
+        input.entities.people[0]?.evidenceMemoryIds.slice(0, 4) ??
+        [],
     });
   } else if (input.recommendations[0]) {
     cards.push({
@@ -809,20 +1085,26 @@ function buildDiscoveryCards(input: {
       title: 'Next enrichment opportunity',
       summary: input.recommendations[0],
       confidence: 0.66,
-      evidenceMemoryIds: input.entities.projects[0]?.evidenceMemoryIds.slice(0, 4)
-        ?? input.entities.people[0]?.evidenceMemoryIds.slice(0, 4)
-        ?? input.entities.tools[0]?.evidenceMemoryIds.slice(0, 4)
-        ?? [],
+      evidenceMemoryIds:
+        input.entities.projects[0]?.evidenceMemoryIds.slice(0, 4) ??
+        input.entities.people[0]?.evidenceMemoryIds.slice(0, 4) ??
+        input.entities.tools[0]?.evidenceMemoryIds.slice(0, 4) ??
+        [],
     });
   }
 
   return uniqueDiscoveryCards(cards, 6);
 }
 
-function buildPreview(report: DeepAnalysisReportDocument): DeepAnalysisReportPreview {
+function buildPreview(
+  report: DeepAnalysisReportDocument,
+): DeepAnalysisReportPreview {
   return {
-    generatedAt: trimToString(report.overview?.generatedAt) ?? new Date().toISOString(),
-    summary: trimToString(report.persona?.summary) ?? 'Deep analysis report generated.',
+    generatedAt:
+      trimToString(report.overview?.generatedAt) ?? new Date().toISOString(),
+    summary:
+      trimToString(report.persona?.summary) ??
+      'Deep analysis report generated.',
     topThemes: (report.themeLandscape?.highlights ?? [])
       .map((item) => trimToString(item?.name))
       .filter((item): item is string => item !== null)
@@ -831,12 +1113,20 @@ function buildPreview(report: DeepAnalysisReportDocument): DeepAnalysisReportPre
   };
 }
 
-function validateMemoryReferences(memoryIds: Set<string>, ids: string[], errorMessage: string): void {
-  const unknownMemoryIds = uniqueStrings(ids.filter((memoryId) => !memoryIds.has(memoryId)), 5);
+function validateMemoryReferences(
+  memoryIds: Set<string>,
+  ids: string[],
+  errorMessage: string,
+): void {
+  const unknownMemoryIds = uniqueStrings(
+    ids.filter((memoryId) => !memoryIds.has(memoryId)),
+    5,
+  );
   if (unknownMemoryIds.length > 0) {
-    const suffix = unknownMemoryIds.length === 1
-      ? unknownMemoryIds[0]
-      : `${unknownMemoryIds.join(', ')}`;
+    const suffix =
+      unknownMemoryIds.length === 1
+        ? unknownMemoryIds[0]
+        : `${unknownMemoryIds.join(', ')}`;
     throw new AppError(`${errorMessage}: ${suffix}`, {
       statusCode: 500,
       code: 'DEEP_ANALYSIS_REPORT_INVALID',
@@ -851,26 +1141,36 @@ function validateReport(
   deduplicatedMemoryCount: number,
 ): void {
   if (report.overview?.memoryCount !== totalMemoryCount) {
-    throw new AppError('Report overview count does not match source memory count', {
-      statusCode: 500,
-      code: 'DEEP_ANALYSIS_REPORT_INVALID',
-    });
+    throw new AppError(
+      'Report overview count does not match source memory count',
+      {
+        statusCode: 500,
+        code: 'DEEP_ANALYSIS_REPORT_INVALID',
+      },
+    );
   }
 
   if (report.overview?.deduplicatedMemoryCount !== deduplicatedMemoryCount) {
-    throw new AppError('Report deduplicated count does not match prepared memory count', {
-      statusCode: 500,
-      code: 'DEEP_ANALYSIS_REPORT_INVALID',
-    });
+    throw new AppError(
+      'Report deduplicated count does not match prepared memory count',
+      {
+        statusCode: 500,
+        code: 'DEEP_ANALYSIS_REPORT_INVALID',
+      },
+    );
   }
 
-  const themeNames = (report.themeLandscape?.highlights ?? [])
-    .map((item) => normalizeToken(item?.name));
+  const themeNames = (report.themeLandscape?.highlights ?? []).map((item) =>
+    normalizeToken(item?.name),
+  );
   if (themeNames.some((name) => !name || DISALLOWED_THEME_TERMS.has(name))) {
-    throw new AppError('Report theme landscape contains generic or disallowed terms', {
-      statusCode: 500,
-      code: 'DEEP_ANALYSIS_REPORT_INVALID',
-    });
+    throw new AppError(
+      'Report theme landscape contains generic or disallowed terms',
+      {
+        statusCode: 500,
+        code: 'DEEP_ANALYSIS_REPORT_INVALID',
+      },
+    );
   }
 
   for (const group of [
@@ -882,10 +1182,13 @@ function validateReport(
   ]) {
     const label = normalizeToken(group?.label);
     if (!label || DISALLOWED_ENTITY_TERMS.has(label)) {
-      throw new AppError('Report entities contain generic or disallowed labels', {
-        statusCode: 500,
-        code: 'DEEP_ANALYSIS_REPORT_INVALID',
-      });
+      throw new AppError(
+        'Report entities contain generic or disallowed labels',
+        {
+          statusCode: 500,
+          code: 'DEEP_ANALYSIS_REPORT_INVALID',
+        },
+      );
     }
     validateMemoryReferences(
       memoryIds,
@@ -915,10 +1218,13 @@ function validateReport(
   for (const issue of report.quality?.lowQualityExamples ?? []) {
     const memoryId = trimToString(issue?.memoryId);
     if (!memoryId) {
-      throw new AppError('Report low-quality examples contain empty memory ids', {
-        statusCode: 500,
-        code: 'DEEP_ANALYSIS_REPORT_INVALID',
-      });
+      throw new AppError(
+        'Report low-quality examples contain empty memory ids',
+        {
+          statusCode: 500,
+          code: 'DEEP_ANALYSIS_REPORT_INVALID',
+        },
+      );
     }
     validateMemoryReferences(
       memoryIds,
@@ -930,14 +1236,20 @@ function validateReport(
   for (const cluster of report.quality?.duplicateClusters ?? []) {
     const canonicalMemoryId = trimToString(cluster?.canonicalMemoryId);
     if (!canonicalMemoryId) {
-      throw new AppError('Report duplicate clusters contain empty canonical ids', {
-        statusCode: 500,
-        code: 'DEEP_ANALYSIS_REPORT_INVALID',
-      });
+      throw new AppError(
+        'Report duplicate clusters contain empty canonical ids',
+        {
+          statusCode: 500,
+          code: 'DEEP_ANALYSIS_REPORT_INVALID',
+        },
+      );
     }
     validateMemoryReferences(
       memoryIds,
-      [canonicalMemoryId, ...coerceStringArray(cluster?.duplicateMemoryIds, 12)],
+      [
+        canonicalMemoryId,
+        ...coerceStringArray(cluster?.duplicateMemoryIds, 12),
+      ],
       'Report duplicate cluster references an unknown memory',
     );
   }
@@ -967,7 +1279,10 @@ function validateReport(
     (report.persona?.notableRoutines?.length ?? 0) +
     (report.persona?.evidenceHighlights?.length ?? 0);
 
-  if ((trimToString(report.persona?.summary)?.length ?? 0) < 80 || personaSignalCount < 4) {
+  if (
+    (trimToString(report.persona?.summary)?.length ?? 0) < 80 ||
+    personaSignalCount < 4
+  ) {
     throw new AppError('Report persona section is too shallow', {
       statusCode: 500,
       code: 'DEEP_ANALYSIS_REPORT_INVALID',
@@ -1062,7 +1377,10 @@ function normalizeTextList(
     return fallback;
   }
 
-  if (Array.isArray(value) && normalized.length < Math.min(value.length, limit)) {
+  if (
+    Array.isArray(value) &&
+    normalized.length < Math.min(value.length, limit)
+  ) {
     noteRepair(diagnostics);
   }
 
@@ -1093,25 +1411,32 @@ function sanitizeThemeHighlights(
   const repaired = new Map<string, DeepAnalysisThemeItem>();
 
   for (const item of highlights) {
-    const name = typeof item === 'string'
-      ? trimToString(item)
-      : isRecord(item)
-        ? trimToString(item.name)
-        : null;
+    const name =
+      typeof item === 'string'
+        ? trimToString(item)
+        : isRecord(item)
+          ? trimToString(item.name)
+          : null;
     const normalizedName = normalizeLookupKey(name);
 
-    if (!name || !normalizedName || DISALLOWED_THEME_TERMS.has(normalizedName)) {
+    if (
+      !name ||
+      !normalizedName ||
+      DISALLOWED_THEME_TERMS.has(normalizedName)
+    ) {
       noteRepair(diagnostics);
       continue;
     }
 
     const fallbackItem = fallbackByName.get(normalizedName);
     const description = isRecord(item)
-      ? trimToString(item.description) ?? fallbackItem?.description ?? `Recurring signal around ${name}.`
-      : fallbackItem?.description ?? `Recurring signal around ${name}.`;
+      ? (trimToString(item.description) ??
+        fallbackItem?.description ??
+        `Recurring signal around ${name}.`)
+      : (fallbackItem?.description ?? `Recurring signal around ${name}.`);
     const count = isRecord(item)
       ? normalizePositiveNumber(item.count, fallbackItem?.count ?? 1)
-      : fallbackItem?.count ?? 1;
+      : (fallbackItem?.count ?? 1);
 
     repaired.set(normalizedName, {
       name,
@@ -1139,25 +1464,36 @@ function sanitizeEntityGroups(
   const repaired = new Map<string, DeepAnalysisEntityGroup>();
 
   for (const item of value) {
-    const label = typeof item === 'string'
-      ? trimToString(item)
-      : isRecord(item)
-        ? trimToString(item.label ?? item.name)
-        : null;
+    const label =
+      typeof item === 'string'
+        ? trimToString(item)
+        : isRecord(item)
+          ? trimToString(item.label ?? item.name)
+          : null;
     const normalizedLabel = normalizeLookupKey(label);
 
-    if (!label || !normalizedLabel || DISALLOWED_ENTITY_TERMS.has(normalizedLabel)) {
+    if (
+      !label ||
+      !normalizedLabel ||
+      DISALLOWED_ENTITY_TERMS.has(normalizedLabel)
+    ) {
       noteRepair(diagnostics);
       continue;
     }
 
     const fallbackItem = fallbackByLabel.get(normalizedLabel);
     const evidenceMemoryIds = isRecord(item)
-      ? normalizeEvidenceIds(item.evidenceMemoryIds, validMemoryIds, diagnostics, 6)
+      ? normalizeEvidenceIds(
+          item.evidenceMemoryIds,
+          validMemoryIds,
+          diagnostics,
+          6,
+        )
       : [];
-    const finalEvidenceMemoryIds = evidenceMemoryIds.length > 0
-      ? evidenceMemoryIds
-      : fallbackItem?.evidenceMemoryIds ?? [];
+    const finalEvidenceMemoryIds =
+      evidenceMemoryIds.length > 0
+        ? evidenceMemoryIds
+        : (fallbackItem?.evidenceMemoryIds ?? []);
 
     if (evidenceMemoryIds.length === 0) {
       noteRepair(diagnostics);
@@ -1167,8 +1503,11 @@ function sanitizeEntityGroups(
     }
 
     const count = isRecord(item)
-      ? normalizePositiveNumber(item.count, fallbackItem?.count ?? finalEvidenceMemoryIds.length)
-      : fallbackItem?.count ?? finalEvidenceMemoryIds.length;
+      ? normalizePositiveNumber(
+          item.count,
+          fallbackItem?.count ?? finalEvidenceMemoryIds.length,
+        )
+      : (fallbackItem?.count ?? finalEvidenceMemoryIds.length);
     const existing = repaired.get(normalizedLabel);
 
     if (existing) {
@@ -1190,7 +1529,9 @@ function sanitizeEntityGroups(
   return repaired.size > 0 ? [...repaired.values()].slice(0, 8) : fallback;
 }
 
-function relationshipKey(value: Pick<DeepAnalysisRelationship, 'source' | 'relation' | 'target'>): string {
+function relationshipKey(
+  value: Pick<DeepAnalysisRelationship, 'source' | 'relation' | 'target'>,
+): string {
   return `${normalizeLookupKey(value.source)}|${normalizeLookupKey(value.relation)}|${normalizeLookupKey(value.target)}`;
 }
 
@@ -1225,10 +1566,16 @@ function sanitizeRelationships(
 
     const key = relationshipKey({ source, relation, target });
     const fallbackItem = fallbackByKey.get(key);
-    const evidenceMemoryIds = normalizeEvidenceIds(item.evidenceMemoryIds, validMemoryIds, diagnostics, 6);
-    const finalEvidenceMemoryIds = evidenceMemoryIds.length > 0
-      ? evidenceMemoryIds
-      : fallbackItem?.evidenceMemoryIds ?? [];
+    const evidenceMemoryIds = normalizeEvidenceIds(
+      item.evidenceMemoryIds,
+      validMemoryIds,
+      diagnostics,
+      6,
+    );
+    const finalEvidenceMemoryIds =
+      evidenceMemoryIds.length > 0
+        ? evidenceMemoryIds
+        : (fallbackItem?.evidenceMemoryIds ?? []);
 
     if (evidenceMemoryIds.length === 0) {
       noteRepair(diagnostics);
@@ -1243,7 +1590,10 @@ function sanitizeRelationships(
       diagnostics,
       4,
     );
-    const confidence = normalizeConfidence(item.confidence, fallbackItem?.confidence ?? 0.5);
+    const confidence = normalizeConfidence(
+      item.confidence,
+      fallbackItem?.confidence ?? 0.5,
+    );
     const existing = repaired.get(key);
 
     if (existing) {
@@ -1272,9 +1622,14 @@ function sanitizeRelationships(
   return repaired.size > 0 ? [...repaired.values()].slice(0, 18) : fallback;
 }
 
-function normalizeDiscoveryKind(value: unknown): DeepAnalysisDiscoveryCard['kind'] | null {
+function normalizeDiscoveryKind(
+  value: unknown,
+): DeepAnalysisDiscoveryCard['kind'] | null {
   const kind = trimToString(value);
-  if (!kind || !ALLOWED_DISCOVERY_KINDS.has(kind as DeepAnalysisDiscoveryCard['kind'])) {
+  if (
+    !kind ||
+    !ALLOWED_DISCOVERY_KINDS.has(kind as DeepAnalysisDiscoveryCard['kind'])
+  ) {
     return null;
   }
 
@@ -1312,22 +1667,37 @@ function sanitizeDiscoveries(
     const title = trimToString(item.title);
     const rawKind = normalizeDiscoveryKind(item.kind);
     const fallbackItem =
-      (rawKind ? fallbackByKind.get(rawKind) : undefined)
-      ?? (id ? fallbackById.get(normalizeLookupKey(id)) : undefined)
-      ?? (title ? fallbackByTitle.get(normalizeLookupKey(title)) : undefined);
+      (rawKind ? fallbackByKind.get(rawKind) : undefined) ??
+      (id ? fallbackById.get(normalizeLookupKey(id)) : undefined) ??
+      (title ? fallbackByTitle.get(normalizeLookupKey(title)) : undefined);
     const kind = rawKind ?? fallbackItem?.kind ?? null;
     const summary = trimToString(item.summary) ?? fallbackItem?.summary ?? null;
     const finalTitle = title ?? fallbackItem?.title ?? null;
-    const finalId = id ?? fallbackItem?.id ?? (kind && finalTitle ? makeDiscoveryId(kind, finalTitle) : null);
-    const evidenceMemoryIds = normalizeEvidenceIds(item.evidenceMemoryIds, validMemoryIds, diagnostics, 6);
-    const finalEvidenceMemoryIds = evidenceMemoryIds.length > 0
-      ? evidenceMemoryIds
-      : fallbackItem?.evidenceMemoryIds ?? [];
+    const finalId =
+      id ??
+      fallbackItem?.id ??
+      (kind && finalTitle ? makeDiscoveryId(kind, finalTitle) : null);
+    const evidenceMemoryIds = normalizeEvidenceIds(
+      item.evidenceMemoryIds,
+      validMemoryIds,
+      diagnostics,
+      6,
+    );
+    const finalEvidenceMemoryIds =
+      evidenceMemoryIds.length > 0
+        ? evidenceMemoryIds
+        : (fallbackItem?.evidenceMemoryIds ?? []);
 
     if (evidenceMemoryIds.length === 0) {
       noteRepair(diagnostics);
     }
-    if (!kind || !summary || !finalTitle || !finalId || finalEvidenceMemoryIds.length === 0) {
+    if (
+      !kind ||
+      !summary ||
+      !finalTitle ||
+      !finalId ||
+      finalEvidenceMemoryIds.length === 0
+    ) {
       continue;
     }
 
@@ -1336,7 +1706,10 @@ function sanitizeDiscoveries(
       kind,
       title: finalTitle,
       summary,
-      confidence: normalizeConfidence(item.confidence, fallbackItem?.confidence ?? 0.66),
+      confidence: normalizeConfidence(
+        item.confidence,
+        fallbackItem?.confidence ?? 0.66,
+      ),
       evidenceMemoryIds: finalEvidenceMemoryIds,
     });
   }
@@ -1371,15 +1744,19 @@ function sanitizeEvidenceHighlights(
     const title = trimToString(item.title);
     const detail = trimToString(item.detail);
     const fallbackItem =
-      (title ? fallbackByTitle.get(normalizeLookupKey(title)) : undefined)
-      ?? (detail ? fallbackByDetail.get(normalizeLookupKey(detail)) : undefined)
-      ?? fallback[index];
+      (title ? fallbackByTitle.get(normalizeLookupKey(title)) : undefined) ??
+      (detail ? fallbackByDetail.get(normalizeLookupKey(detail)) : undefined) ??
+      fallback[index];
     const finalTitle = title ?? fallbackItem?.title ?? null;
     const finalDetail = detail ?? fallbackItem?.detail ?? null;
-    const memoryIds = normalizeEvidenceIds(item.memoryIds, validMemoryIds, diagnostics, 6);
-    const finalMemoryIds = memoryIds.length > 0
-      ? memoryIds
-      : fallbackItem?.memoryIds ?? [];
+    const memoryIds = normalizeEvidenceIds(
+      item.memoryIds,
+      validMemoryIds,
+      diagnostics,
+      6,
+    );
+    const finalMemoryIds =
+      memoryIds.length > 0 ? memoryIds : (fallbackItem?.memoryIds ?? []);
 
     if (memoryIds.length === 0) {
       noteRepair(diagnostics);
@@ -1419,7 +1796,13 @@ function sanitizeLowQualityExamples(
       continue;
     }
 
-    const memoryId = normalizeEvidenceIds([item.memoryId], validMemoryIds, diagnostics, 1)[0] ?? null;
+    const memoryId =
+      normalizeEvidenceIds(
+        [item.memoryId],
+        validMemoryIds,
+        diagnostics,
+        1,
+      )[0] ?? null;
     if (!memoryId) {
       noteRepair(diagnostics);
       continue;
@@ -1427,7 +1810,10 @@ function sanitizeLowQualityExamples(
 
     repaired.push({
       memoryId,
-      reason: trimToString(item.reason) ?? fallbackByMemoryId.get(memoryId)?.reason ?? 'Low-information memory',
+      reason:
+        trimToString(item.reason) ??
+        fallbackByMemoryId.get(memoryId)?.reason ??
+        'Low-information memory',
     });
   }
 
@@ -1450,19 +1836,31 @@ function sanitizeDuplicateClusters(
       return [];
     }
 
-    const canonicalMemoryId = normalizeEvidenceIds([item.canonicalMemoryId], validMemoryIds, diagnostics, 1)[0] ?? null;
-    const duplicateMemoryIds = normalizeEvidenceIds(item.duplicateMemoryIds, validMemoryIds, diagnostics, 12)
-      .filter((memoryId) => memoryId !== canonicalMemoryId);
+    const canonicalMemoryId =
+      normalizeEvidenceIds(
+        [item.canonicalMemoryId],
+        validMemoryIds,
+        diagnostics,
+        1,
+      )[0] ?? null;
+    const duplicateMemoryIds = normalizeEvidenceIds(
+      item.duplicateMemoryIds,
+      validMemoryIds,
+      diagnostics,
+      12,
+    ).filter((memoryId) => memoryId !== canonicalMemoryId);
 
     if (!canonicalMemoryId || duplicateMemoryIds.length === 0) {
       noteRepair(diagnostics);
       return [];
     }
 
-    return [{
-      canonicalMemoryId,
-      duplicateMemoryIds,
-    }];
+    return [
+      {
+        canonicalMemoryId,
+        duplicateMemoryIds,
+      },
+    ];
   });
 
   return repaired.length > 0 ? repaired.slice(0, 10) : fallback;
@@ -1478,48 +1876,56 @@ function sanitizeProductSignals(
   }
 
   const candidateNodes = Array.isArray(value.candidateNodes)
-    ? value.candidateNodes.flatMap((item) => {
-      if (!isRecord(item)) {
-        noteRepair(diagnostics);
-        return [];
-      }
+    ? value.candidateNodes
+        .flatMap((item) => {
+          if (!isRecord(item)) {
+            noteRepair(diagnostics);
+            return [];
+          }
 
-      const label = trimToString(item.label);
-      const kind = trimToString(item.kind);
-      if (!label || !kind) {
-        noteRepair(diagnostics);
-        return [];
-      }
+          const label = trimToString(item.label);
+          const kind = trimToString(item.kind);
+          if (!label || !kind) {
+            noteRepair(diagnostics);
+            return [];
+          }
 
-      return [{
-        label,
-        kind,
-        count: normalizePositiveNumber(item.count, 1),
-      }];
-    }).slice(0, 8)
+          return [
+            {
+              label,
+              kind,
+              count: normalizePositiveNumber(item.count, 1),
+            },
+          ];
+        })
+        .slice(0, 8)
     : fallback.candidateNodes;
   const candidateEdges = Array.isArray(value.candidateEdges)
-    ? value.candidateEdges.flatMap((item) => {
-      if (!isRecord(item)) {
-        noteRepair(diagnostics);
-        return [];
-      }
+    ? value.candidateEdges
+        .flatMap((item) => {
+          if (!isRecord(item)) {
+            noteRepair(diagnostics);
+            return [];
+          }
 
-      const source = trimToString(item.source);
-      const relation = trimToString(item.relation);
-      const target = trimToString(item.target);
-      if (!source || !relation || !target) {
-        noteRepair(diagnostics);
-        return [];
-      }
+          const source = trimToString(item.source);
+          const relation = trimToString(item.relation);
+          const target = trimToString(item.target);
+          if (!source || !relation || !target) {
+            noteRepair(diagnostics);
+            return [];
+          }
 
-      return [{
-        source,
-        relation,
-        target,
-        confidence: normalizeConfidence(item.confidence, 0.5),
-      }];
-    }).slice(0, 10)
+          return [
+            {
+              source,
+              relation,
+              target,
+              confidence: normalizeConfidence(item.confidence, 0.5),
+            },
+          ];
+        })
+        .slice(0, 10)
     : fallback.candidateEdges;
   const searchSeeds = normalizeTextList(
     value.searchSeeds,
@@ -1529,8 +1935,10 @@ function sanitizeProductSignals(
   );
 
   return {
-    candidateNodes: candidateNodes.length > 0 ? candidateNodes : fallback.candidateNodes,
-    candidateEdges: candidateEdges.length > 0 ? candidateEdges : fallback.candidateEdges,
+    candidateNodes:
+      candidateNodes.length > 0 ? candidateNodes : fallback.candidateNodes,
+    candidateEdges:
+      candidateEdges.length > 0 ? candidateEdges : fallback.candidateEdges,
     searchSeeds,
   };
 }
@@ -1571,7 +1979,10 @@ function appendInternalEvent(
   });
 
   if (internalComment.events.length > INTERNAL_COMMENT_EVENT_LIMIT) {
-    internalComment.events.splice(0, internalComment.events.length - INTERNAL_COMMENT_EVENT_LIMIT);
+    internalComment.events.splice(
+      0,
+      internalComment.events.length - INTERNAL_COMMENT_EVENT_LIMIT,
+    );
   }
 }
 
@@ -1588,7 +1999,7 @@ function appendRuntimeError(
 ): void {
   const errorName = error instanceof Error ? error.name : 'UnknownError';
   const errorMessage = error instanceof Error ? error.message : String(error);
-  const stack = error instanceof Error ? error.stack ?? null : null;
+  const stack = error instanceof Error ? (error.stack ?? null) : null;
 
   internalComment.runtimeErrors.push({
     at: new Date().toISOString(),
@@ -1600,10 +2011,13 @@ function appendRuntimeError(
     isTrimError: isTrimRuntimeError(error),
   });
 
-  if (internalComment.runtimeErrors.length > INTERNAL_COMMENT_RUNTIME_ERROR_LIMIT) {
+  if (
+    internalComment.runtimeErrors.length > INTERNAL_COMMENT_RUNTIME_ERROR_LIMIT
+  ) {
     internalComment.runtimeErrors.splice(
       0,
-      internalComment.runtimeErrors.length - INTERNAL_COMMENT_RUNTIME_ERROR_LIMIT,
+      internalComment.runtimeErrors.length -
+        INTERNAL_COMMENT_RUNTIME_ERROR_LIMIT,
     );
   }
 }
@@ -1643,11 +2057,11 @@ function appendRawResponse(
 ): void {
   const lastEntry = internalComment.rawResponses.at(-1);
   if (
-    lastEntry
-    && lastEntry.stage === entry.stage
-    && lastEntry.reason === entry.reason
-    && lastEntry.source === entry.source
-    && lastEntry.preview === entry.preview
+    lastEntry &&
+    lastEntry.stage === entry.stage &&
+    lastEntry.reason === entry.reason &&
+    lastEntry.source === entry.source &&
+    lastEntry.preview === entry.preview
   ) {
     return;
   }
@@ -1657,7 +2071,9 @@ function appendRawResponse(
     ...entry,
   });
 
-  if (internalComment.rawResponses.length > INTERNAL_COMMENT_RAW_RESPONSE_LIMIT) {
+  if (
+    internalComment.rawResponses.length > INTERNAL_COMMENT_RAW_RESPONSE_LIMIT
+  ) {
     internalComment.rawResponses.splice(
       0,
       internalComment.rawResponses.length - INTERNAL_COMMENT_RAW_RESPONSE_LIMIT,
@@ -1678,9 +2094,10 @@ function parseInternalComment(
     return {
       version: 1,
       provider: 'qwen',
-      model: typeof parsed.model === 'string' && parsed.model.length > 0
-        ? parsed.model
-        : fallbackModel,
+      model:
+        typeof parsed.model === 'string' && parsed.model.length > 0
+          ? parsed.model
+          : fallbackModel,
       aggregate: {
         requestCount: Number(parsed.aggregate?.requestCount ?? 0),
         successCount: Number(parsed.aggregate?.successCount ?? 0),
@@ -1689,13 +2106,17 @@ function parseInternalComment(
         completionTokens: Number(parsed.aggregate?.completionTokens ?? 0),
         totalTokens: Number(parsed.aggregate?.totalTokens ?? 0),
       },
-      calls: Array.isArray(parsed.calls) ? parsed.calls as InternalCommentCall[] : [],
-      events: Array.isArray(parsed.events) ? parsed.events as InternalCommentEvent[] : [],
+      calls: Array.isArray(parsed.calls)
+        ? (parsed.calls as InternalCommentCall[])
+        : [],
+      events: Array.isArray(parsed.events)
+        ? (parsed.events as InternalCommentEvent[])
+        : [],
       runtimeErrors: Array.isArray(parsed.runtimeErrors)
-        ? parsed.runtimeErrors as InternalCommentRuntimeError[]
+        ? (parsed.runtimeErrors as InternalCommentRuntimeError[])
         : [],
       rawResponses: Array.isArray(parsed.rawResponses)
-        ? parsed.rawResponses as InternalCommentRawResponse[]
+        ? (parsed.rawResponses as InternalCommentRawResponse[])
         : [],
     };
   } catch {
@@ -1712,11 +2133,14 @@ export class DeepAnalysisReportProcessorService {
     private readonly storage: S3PayloadStorageService,
     private readonly qwen: QwenDeepAnalysisService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
+    private readonly deepAnalysisMetrics: DeepAnalysisMetricsService = new DeepAnalysisMetricsService(),
   ) {}
 
   public async process(message: DeepAnalysisReportMessage): Promise<void> {
     const processStartedAt = Date.now();
-    const reportRecord = await this.repository.getDeepAnalysisReport(message.reportId);
+    const reportRecord = await this.repository.getDeepAnalysisReport(
+      message.reportId,
+    );
     const internalComment = parseInternalComment(
       reportRecord.internalComment,
       this.qwen.getConfiguredModel(),
@@ -1726,18 +2150,25 @@ export class DeepAnalysisReportProcessorService {
       successCount: 0,
       failureCount: 0,
     };
-    let currentStage: DeepAnalysisReportStage = DeepAnalysisReportStage.PREPROCESS;
+    let currentStage: DeepAnalysisReportStage =
+      DeepAnalysisReportStage.PREPROCESS;
     let latestSynthesisReport: DeepAnalysisReportDocument | null = null;
 
     if (reportRecord.status === DeepAnalysisReportStatus.COMPLETED) {
       return;
     }
 
-    appendInternalEvent(internalComment, 'info', currentStage, 'deep_analysis_process_started', {
-      reportId: reportRecord.id,
-      status: reportRecord.status,
-      lang: reportRecord.lang,
-    });
+    appendInternalEvent(
+      internalComment,
+      'info',
+      currentStage,
+      'deep_analysis_process_started',
+      {
+        reportId: reportRecord.id,
+        status: reportRecord.status,
+        lang: reportRecord.lang,
+      },
+    );
     await this.repository.updateDeepAnalysisReport(reportRecord.id, {
       status: DeepAnalysisReportStatus.PREPARING,
       stage: DeepAnalysisReportStage.PREPROCESS,
@@ -1749,7 +2180,9 @@ export class DeepAnalysisReportProcessorService {
     });
 
     try {
-      const payloadBuffer = await this.storage.getObjectBuffer(reportRecord.sourceSnapshotObjectKey);
+      const payloadBuffer = await this.storage.getObjectBuffer(
+        reportRecord.sourceSnapshotObjectKey,
+      );
       const payload = gunzipJson<SourceSnapshotPayload>(payloadBuffer);
       const prepared = this.prepareMemories(payload.memories);
       const memoryIds = new Set(payload.memories.map((memory) => memory.id));
@@ -1761,15 +2194,21 @@ export class DeepAnalysisReportProcessorService {
         stage: DeepAnalysisReportStage.CHUNK_ANALYSIS,
         progressPercent: CHUNK_ANALYSIS_PROGRESS_START,
       });
-      appendInternalEvent(internalComment, 'info', currentStage, 'deep_analysis_chunk_analysis_started', {
-        reportId: reportRecord.id,
-        memoryCount: payload.memories.length,
-        deduplicatedMemoryCount: prepared.deduplicatedCount,
-        totalChunks,
-        concurrency: chunkConcurrency,
-        model: this.qwen.getConfiguredModel(),
-        thinkingDisabled: true,
-      });
+      appendInternalEvent(
+        internalComment,
+        'info',
+        currentStage,
+        'deep_analysis_chunk_analysis_started',
+        {
+          reportId: reportRecord.id,
+          memoryCount: payload.memories.length,
+          deduplicatedMemoryCount: prepared.deduplicatedCount,
+          totalChunks,
+          concurrency: chunkConcurrency,
+          model: this.qwen.getConfiguredModel(),
+          thinkingDisabled: true,
+        },
+      );
       this.logInfo('deep_analysis_chunk_analysis_started', {
         reportId: reportRecord.id,
         memoryCount: payload.memories.length,
@@ -1794,10 +2233,16 @@ export class DeepAnalysisReportProcessorService {
         stage: DeepAnalysisReportStage.GLOBAL_SYNTHESIS,
         progressPercent: 60,
       });
-      appendInternalEvent(internalComment, 'info', currentStage, 'deep_analysis_global_synthesis_started', {
-        reportId: reportRecord.id,
-        totalChunks: chunkSummary.totalChunks,
-      });
+      appendInternalEvent(
+        internalComment,
+        'info',
+        currentStage,
+        'deep_analysis_global_synthesis_started',
+        {
+          reportId: reportRecord.id,
+          totalChunks: chunkSummary.totalChunks,
+        },
+      );
       this.logInfo('deep_analysis_global_synthesis_started', {
         reportId: reportRecord.id,
         totalChunks: chunkSummary.totalChunks,
@@ -1811,26 +2256,34 @@ export class DeepAnalysisReportProcessorService {
         chunkInsights,
         corpusSignals,
       );
-      const rawSynthesisReport = synthesisOutcome.fallbackUsed ? null : synthesisOutcome.report;
+      const rawSynthesisReport = synthesisOutcome.fallbackUsed
+        ? null
+        : synthesisOutcome.report;
       latestSynthesisReport = rawSynthesisReport;
       const repairOutcome = rawSynthesisReport
         ? this.normalizeAndRepairSynthesizedReport(
-          reportRecord.id,
-          rawSynthesisReport,
-          reportRecord.lang,
-          prepared,
-          corpusSignals,
-          memoryIds,
-          internalComment,
-        )
+            reportRecord.id,
+            rawSynthesisReport,
+            reportRecord.lang,
+            prepared,
+            corpusSignals,
+            memoryIds,
+            internalComment,
+          )
         : null;
       let report = repairOutcome?.report ?? synthesisOutcome.report;
-      appendInternalEvent(internalComment, 'info', currentStage, 'deep_analysis_global_synthesis_completed', {
-        reportId: reportRecord.id,
-        durationMs: synthesisOutcome.durationMs,
-        fallbackUsed: synthesisOutcome.fallbackUsed,
-        errorCode: synthesisOutcome.errorCode,
-      });
+      appendInternalEvent(
+        internalComment,
+        'info',
+        currentStage,
+        'deep_analysis_global_synthesis_completed',
+        {
+          reportId: reportRecord.id,
+          durationMs: synthesisOutcome.durationMs,
+          fallbackUsed: synthesisOutcome.fallbackUsed,
+          errorCode: synthesisOutcome.errorCode,
+        },
+      );
       this.logInfo('deep_analysis_global_synthesis_completed', {
         reportId: reportRecord.id,
         durationMs: synthesisOutcome.durationMs,
@@ -1853,7 +2306,12 @@ export class DeepAnalysisReportProcessorService {
           prepared.deduplicatedCount,
         );
       } catch (error) {
-        appendRuntimeError(internalComment, currentStage, error, 'DEEP_ANALYSIS_REPORT_INVALID');
+        appendRuntimeError(
+          internalComment,
+          currentStage,
+          error,
+          'DEEP_ANALYSIS_REPORT_INVALID',
+        );
         const rawPreview = serializeRawPreview(latestSynthesisReport ?? report);
         if (rawPreview) {
           appendRawResponse(internalComment, {
@@ -1864,13 +2322,25 @@ export class DeepAnalysisReportProcessorService {
             truncated: rawPreview.truncated,
           });
         }
-        appendInternalEvent(internalComment, 'warn', currentStage, 'deep_analysis_validation_failed', {
-          reportId: reportRecord.id,
-          errorCode: 'DEEP_ANALYSIS_REPORT_INVALID',
-          isTrimError: isTrimRuntimeError(error),
-        });
-        this.logger.warn(`Validation failed for report ${reportRecord.id}; retrying with heuristic synthesis`);
-        report = this.buildHeuristicReport(reportRecord.lang, prepared, corpusSignals);
+        appendInternalEvent(
+          internalComment,
+          'warn',
+          currentStage,
+          'deep_analysis_validation_failed',
+          {
+            reportId: reportRecord.id,
+            errorCode: 'DEEP_ANALYSIS_REPORT_INVALID',
+            isTrimError: isTrimRuntimeError(error),
+          },
+        );
+        this.logger.warn(
+          `Validation failed for report ${reportRecord.id}; retrying with heuristic synthesis`,
+        );
+        report = this.buildHeuristicReport(
+          reportRecord.lang,
+          prepared,
+          corpusSignals,
+        );
         validateReport(
           report,
           memoryIds,
@@ -1882,13 +2352,19 @@ export class DeepAnalysisReportProcessorService {
       const reportObjectKey = `deep-analysis/reports/${reportRecord.id}/report.json`;
       await this.storage.putJson(reportObjectKey, report);
       currentStage = DeepAnalysisReportStage.COMPLETE;
-      appendInternalEvent(internalComment, 'info', currentStage, 'deep_analysis_report_completed', {
-        reportId: reportRecord.id,
-        totalDurationMs: Date.now() - processStartedAt,
-        totalChunks: chunkSummary.totalChunks,
-        chunkSuccessCount: chunkSummary.successCount,
-        chunkFailureCount: chunkSummary.failureCount,
-      });
+      appendInternalEvent(
+        internalComment,
+        'info',
+        currentStage,
+        'deep_analysis_report_completed',
+        {
+          reportId: reportRecord.id,
+          totalDurationMs: Date.now() - processStartedAt,
+          totalChunks: chunkSummary.totalChunks,
+          chunkSuccessCount: chunkSummary.successCount,
+          chunkFailureCount: chunkSummary.failureCount,
+        },
+      );
       await this.repository.updateDeepAnalysisReport(reportRecord.id, {
         status: DeepAnalysisReportStatus.COMPLETED,
         stage: DeepAnalysisReportStage.COMPLETE,
@@ -1906,10 +2382,14 @@ export class DeepAnalysisReportProcessorService {
         chunkFailureCount: chunkSummary.failureCount,
       });
     } catch (error) {
-      const errorCode = error instanceof AppError ? error.code : 'DEEP_ANALYSIS_PROCESSING_FAILED';
+      const errorCode =
+        error instanceof AppError
+          ? error.code
+          : 'DEEP_ANALYSIS_PROCESSING_FAILED';
       if (
-        latestSynthesisReport
-        && (currentStage === DeepAnalysisReportStage.GLOBAL_SYNTHESIS || currentStage === DeepAnalysisReportStage.VALIDATE)
+        latestSynthesisReport &&
+        (currentStage === DeepAnalysisReportStage.GLOBAL_SYNTHESIS ||
+          currentStage === DeepAnalysisReportStage.VALIDATE)
       ) {
         const rawPreview = serializeRawPreview(latestSynthesisReport);
         if (rawPreview) {
@@ -1923,22 +2403,31 @@ export class DeepAnalysisReportProcessorService {
         }
       }
       appendRuntimeError(internalComment, currentStage, error, errorCode);
-      appendInternalEvent(internalComment, 'error', currentStage, 'deep_analysis_report_failed', {
-        reportId: reportRecord.id,
-        totalDurationMs: Date.now() - processStartedAt,
-        totalChunks: chunkSummary.totalChunks,
-        chunkSuccessCount: chunkSummary.successCount,
-        chunkFailureCount: chunkSummary.failureCount,
-        errorCode,
-        isTrimError: isTrimRuntimeError(error),
-      });
+      appendInternalEvent(
+        internalComment,
+        'error',
+        currentStage,
+        'deep_analysis_report_failed',
+        {
+          reportId: reportRecord.id,
+          totalDurationMs: Date.now() - processStartedAt,
+          totalChunks: chunkSummary.totalChunks,
+          chunkSuccessCount: chunkSummary.successCount,
+          chunkFailureCount: chunkSummary.failureCount,
+          errorCode,
+          isTrimError: isTrimRuntimeError(error),
+        },
+      );
       await this.repository.updateDeepAnalysisReport(reportRecord.id, {
         status: DeepAnalysisReportStatus.FAILED,
         stage: DeepAnalysisReportStage.VALIDATE,
         progressPercent: 100,
         completedAt: new Date(),
         errorCode,
-        errorMessage: error instanceof Error ? error.message.slice(0, 512) : 'Deep analysis failed',
+        errorMessage:
+          error instanceof Error
+            ? error.message.slice(0, 512)
+            : 'Deep analysis failed',
         internalComment: JSON.stringify(internalComment),
       });
       this.logger.error(
@@ -1956,7 +2445,9 @@ export class DeepAnalysisReportProcessorService {
     }
   }
 
-  private prepareMemories(memories: DeepAnalysisMemorySnapshot[]): PreparedCorpus {
+  private prepareMemories(
+    memories: DeepAnalysisMemorySnapshot[],
+  ): PreparedCorpus {
     const groupedByHash = new Map<string, PreparedMemory[]>();
 
     for (const memory of memories) {
@@ -1981,8 +2472,15 @@ export class DeepAnalysisReportProcessorService {
 
     const uniqueMemories: PreparedMemory[] = [];
     const duplicateClusters = [...groupedByHash.values()]
-      .map((group) => group.sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime()))
-      .sort((left, right) => left[0]!.createdAt.getTime() - right[0]!.createdAt.getTime())
+      .map((group) =>
+        group.sort(
+          (left, right) => left.createdAt.getTime() - right.createdAt.getTime(),
+        ),
+      )
+      .sort(
+        (left, right) =>
+          left[0]!.createdAt.getTime() - right[0]!.createdAt.getTime(),
+      )
       .flatMap((group) => {
         uniqueMemories.push(group[0]!);
 
@@ -1990,12 +2488,17 @@ export class DeepAnalysisReportProcessorService {
           return [];
         }
 
-        return [{
-          canonicalMemoryId: group[0]!.id,
-          duplicateMemoryIds: group.slice(1).map((memory) => memory.id),
-        }];
+        return [
+          {
+            canonicalMemoryId: group[0]!.id,
+            duplicateMemoryIds: group.slice(1).map((memory) => memory.id),
+          },
+        ];
       })
-      .sort((left, right) => right.duplicateMemoryIds.length - left.duplicateMemoryIds.length)
+      .sort(
+        (left, right) =>
+          right.duplicateMemoryIds.length - left.duplicateMemoryIds.length,
+      )
       .slice(0, 10);
 
     return {
@@ -2032,7 +2535,9 @@ export class DeepAnalysisReportProcessorService {
     let failureCount = 0;
     let commitChain = Promise.resolve();
 
-    const commitChunkResult = (execution: ChunkExecutionResult): Promise<void> => {
+    const commitChunkResult = (
+      execution: ChunkExecutionResult,
+    ): Promise<void> => {
       commitChain = commitChain.then(async () => {
         insights[execution.index] = execution.insight;
         this.appendModelCall(
@@ -2046,17 +2551,26 @@ export class DeepAnalysisReportProcessorService {
           failureCount += 1;
         }
         completedChunkCount += 1;
-        const progressPercent = this.buildChunkAnalysisProgress(completedChunkCount, chunks.length);
-        appendInternalEvent(internalComment, 'info', DeepAnalysisReportStage.CHUNK_ANALYSIS, 'deep_analysis_chunk_completed', {
-          reportId,
-          chunkIndex: execution.index + 1,
-          totalChunks: chunks.length,
-          chunkSize: execution.chunkSize,
-          durationMs: execution.durationMs,
-          fallbackUsed: execution.fallbackUsed,
-          errorCode: execution.result.requestMeta.errorCode,
-          progressPercent,
-        });
+        const progressPercent = this.buildChunkAnalysisProgress(
+          completedChunkCount,
+          chunks.length,
+        );
+        appendInternalEvent(
+          internalComment,
+          'info',
+          DeepAnalysisReportStage.CHUNK_ANALYSIS,
+          'deep_analysis_chunk_completed',
+          {
+            reportId,
+            chunkIndex: execution.index + 1,
+            totalChunks: chunks.length,
+            chunkSize: execution.chunkSize,
+            durationMs: execution.durationMs,
+            fallbackUsed: execution.fallbackUsed,
+            errorCode: execution.result.requestMeta.errorCode,
+            progressPercent,
+          },
+        );
         await this.repository.updateDeepAnalysisReport(reportId, {
           progressPercent,
           internalComment: JSON.stringify(internalComment),
@@ -2076,13 +2590,22 @@ export class DeepAnalysisReportProcessorService {
       return commitChain;
     };
 
-    const runChunk = async (index: number, chunk: PreparedMemory[]): Promise<void> => {
-      appendInternalEvent(internalComment, 'info', DeepAnalysisReportStage.CHUNK_ANALYSIS, 'deep_analysis_chunk_started', {
-        reportId,
-        chunkIndex: index + 1,
-        totalChunks: chunks.length,
-        chunkSize: chunk.length,
-      });
+    const runChunk = async (
+      index: number,
+      chunk: PreparedMemory[],
+    ): Promise<void> => {
+      appendInternalEvent(
+        internalComment,
+        'info',
+        DeepAnalysisReportStage.CHUNK_ANALYSIS,
+        'deep_analysis_chunk_started',
+        {
+          reportId,
+          chunkIndex: index + 1,
+          totalChunks: chunks.length,
+          chunkSize: chunk.length,
+        },
+      );
       this.logInfo('deep_analysis_chunk_started', {
         reportId,
         chunkIndex: index + 1,
@@ -2108,6 +2631,7 @@ export class DeepAnalysisReportProcessorService {
           })),
         }),
       );
+      this.deepAnalysisMetrics.recordQwenResult(qwenInsight);
       const durationMs = Date.now() - chunkStartedAt;
       const fallbackUsed = qwenInsight.parsed === null;
       const insight = qwenInsight.parsed
@@ -2145,7 +2669,10 @@ export class DeepAnalysisReportProcessorService {
     };
   }
 
-  private buildChunkAnalysisProgress(processedChunks: number, totalChunks: number): number {
+  private buildChunkAnalysisProgress(
+    processedChunks: number,
+    totalChunks: number,
+  ): number {
     if (totalChunks <= 0) {
       return CHUNK_ANALYSIS_PROGRESS_START;
     }
@@ -2153,7 +2680,8 @@ export class DeepAnalysisReportProcessorService {
     const spread = CHUNK_ANALYSIS_PROGRESS_END - CHUNK_ANALYSIS_PROGRESS_START;
     return Math.min(
       CHUNK_ANALYSIS_PROGRESS_END,
-      CHUNK_ANALYSIS_PROGRESS_START + Math.floor((processedChunks / totalChunks) * spread),
+      CHUNK_ANALYSIS_PROGRESS_START +
+        Math.floor((processedChunks / totalChunks) * spread),
     );
   }
 
@@ -2170,28 +2698,50 @@ export class DeepAnalysisReportProcessorService {
       return 0;
     }
 
-    return Math.min(this.config.analysis.deepAnalysisChunkConcurrency, totalChunks);
+    return Math.min(
+      this.config.analysis.deepAnalysisChunkConcurrency,
+      totalChunks,
+    );
   }
 
   private buildHeuristicChunkInsight(memories: PreparedMemory[]): ChunkInsight {
     const stats = this.collectCorpusStats(memories);
-    const themeNames = this.buildThemeHighlights(stats.tokenCounts, stats.phraseCounts).map((item) => ({
+    const themeNames = this.buildThemeHighlights(
+      stats.tokenCounts,
+      stats.phraseCounts,
+    ).map((item) => ({
       name: item.name,
       memoryIds: [],
     }));
 
     return {
-      summary: this.buildPersonaSection(themeNames.map((item) => item.name), stats).summary,
+      summary: this.buildPersonaSection(
+        themeNames.map((item) => item.name),
+        stats,
+      ).summary,
       themes: themeNames,
       entities: {
-        people: buildEntityGroups(stats.personCounters, 5).map((item) => item.label),
-        teams: buildEntityGroups(stats.teamCounters, 5).map((item) => item.label),
-        projects: buildEntityGroups(stats.projectCounters, 5).map((item) => item.label),
-        tools: buildEntityGroups(stats.toolCounters, 5).map((item) => item.label),
-        places: buildEntityGroups(stats.placeCounters, 5).map((item) => item.label),
+        people: buildEntityGroups(stats.personCounters, 5).map(
+          (item) => item.label,
+        ),
+        teams: buildEntityGroups(stats.teamCounters, 5).map(
+          (item) => item.label,
+        ),
+        projects: buildEntityGroups(stats.projectCounters, 5).map(
+          (item) => item.label,
+        ),
+        tools: buildEntityGroups(stats.toolCounters, 5).map(
+          (item) => item.label,
+        ),
+        places: buildEntityGroups(stats.placeCounters, 5).map(
+          (item) => item.label,
+        ),
       },
       personaSignals: {
-        workingStyle: collectRepresentativeSignals(stats.workingStyleSignals, 4),
+        workingStyle: collectRepresentativeSignals(
+          stats.workingStyleSignals,
+          4,
+        ),
         goals: collectRepresentativeSignals(stats.goalSignals, 4),
         preferences: collectRepresentativeSignals(stats.preferenceSignals, 4),
         constraints: collectRepresentativeSignals(stats.constraintSignals, 4),
@@ -2233,7 +2783,10 @@ export class DeepAnalysisReportProcessorService {
       }
 
       for (const phrase of uniquePhrases) {
-        stats.phraseCounts.set(phrase, (stats.phraseCounts.get(phrase) ?? 0) + 1);
+        stats.phraseCounts.set(
+          phrase,
+          (stats.phraseCounts.get(phrase) ?? 0) + 1,
+        );
       }
 
       for (const name of extractProperNames(memory.content)) {
@@ -2267,26 +2820,53 @@ export class DeepAnalysisReportProcessorService {
         }
       }
 
-      if (/(prefer|prefers|like|likes|favorite|偏好|喜欢|更喜欢|倾向于)/iu.test(memory.content)) {
+      if (
+        /(prefer|prefers|like|likes|favorite|偏好|喜欢|更喜欢|倾向于)/iu.test(
+          memory.content,
+        )
+      ) {
         appendSignal(stats.preferenceSignals, preview, memory.id);
       }
-      if (/(debug|refactor|review|document|structured|structure|automation|automate|iterate|迭代|自动化|结构化|细节|详细|简洁|token|workflow|memory insight)/iu.test(memory.content)) {
+      if (
+        /(debug|refactor|review|document|structured|structure|automation|automate|iterate|迭代|自动化|结构化|细节|详细|简洁|token|workflow|memory insight)/iu.test(
+          memory.content,
+        )
+      ) {
         appendSignal(stats.workingStyleSignals, preview, memory.id);
       }
-      if (/(goal|plan to|target|roadmap|objective|目标|计划|路线图|想要)/iu.test(memory.content)) {
+      if (
+        /(goal|plan to|target|roadmap|objective|目标|计划|路线图|想要)/iu.test(
+          memory.content,
+        )
+      ) {
         appendSignal(stats.goalSignals, preview, memory.id);
       }
-      if (/(must|need to|should not|cannot|can't|avoid|禁止|不要|约束|限制|必须|不能|避免)/iu.test(memory.content)) {
+      if (
+        /(must|need to|should not|cannot|can't|avoid|禁止|不要|约束|限制|必须|不能|避免)/iu.test(
+          memory.content,
+        )
+      ) {
         appendSignal(stats.constraintSignals, preview, memory.id);
       }
-      if (/(decide|decision|choose|selected|tradeoff|priority|prioritize|consider|决定|选择|取舍|优先级|权衡|考虑)/iu.test(memory.content)) {
+      if (
+        /(decide|decision|choose|selected|tradeoff|priority|prioritize|consider|决定|选择|取舍|优先级|权衡|考虑)/iu.test(
+          memory.content,
+        )
+      ) {
         appendSignal(stats.decisionSignals, preview, memory.id);
       }
-      if (/(daily|weekly|every day|every morning|usually|routine|habit|每天|每周|经常|习惯|工作时间)/iu.test(memory.content)) {
+      if (
+        /(daily|weekly|every day|every morning|usually|routine|habit|每天|每周|经常|习惯|工作时间)/iu.test(
+          memory.content,
+        )
+      ) {
         appendSignal(stats.routineSignals, preview, memory.id);
       }
 
-      if (memory.content.trim().length < 24 || ACKNOWLEDGEMENT_PATTERN.test(lower)) {
+      if (
+        memory.content.trim().length < 24 ||
+        ACKNOWLEDGEMENT_PATTERN.test(lower)
+      ) {
         stats.lowQualityExamples.push({
           memoryId: memory.id,
           reason: 'Very short or low-information memory',
@@ -2356,20 +2936,41 @@ export class DeepAnalysisReportProcessorService {
     return highlights;
   }
 
-  private buildPersonaSection(themeNames: string[], stats: CorpusStats): PersonaSummarySection {
-    const workingStyle = collectRepresentativeSignals(stats.workingStyleSignals, 5);
+  private buildPersonaSection(
+    themeNames: string[],
+    stats: CorpusStats,
+  ): PersonaSummarySection {
+    const workingStyle = collectRepresentativeSignals(
+      stats.workingStyleSignals,
+      5,
+    );
     const goals = collectRepresentativeSignals(stats.goalSignals, 5);
-    const preferences = collectRepresentativeSignals(stats.preferenceSignals, 5);
-    const constraints = collectRepresentativeSignals(stats.constraintSignals, 5);
-    const decisionSignals = collectRepresentativeSignals(stats.decisionSignals, 5);
-    const notableRoutines = collectRepresentativeSignals(stats.routineSignals, 5);
+    const preferences = collectRepresentativeSignals(
+      stats.preferenceSignals,
+      5,
+    );
+    const constraints = collectRepresentativeSignals(
+      stats.constraintSignals,
+      5,
+    );
+    const decisionSignals = collectRepresentativeSignals(
+      stats.decisionSignals,
+      5,
+    );
+    const notableRoutines = collectRepresentativeSignals(
+      stats.routineSignals,
+      5,
+    );
     const contradictionsOrTensions = buildContradictions(stats);
-    const evidenceHighlights = buildEvidenceHighlights([
-      ...stats.preferenceSignals,
-      ...stats.workingStyleSignals,
-      ...stats.goalSignals,
-      ...stats.constraintSignals,
-    ], 4);
+    const evidenceHighlights = buildEvidenceHighlights(
+      [
+        ...stats.preferenceSignals,
+        ...stats.workingStyleSignals,
+        ...stats.goalSignals,
+        ...stats.constraintSignals,
+      ],
+      4,
+    );
     const summaryParts: string[] = [];
 
     if (themeNames.length > 0) {
@@ -2394,9 +2995,10 @@ export class DeepAnalysisReportProcessorService {
     }
 
     return {
-      summary: summaryParts.length > 0
-        ? summaryParts.join(' ')
-        : 'The corpus contains repeated operational memories, but the current evidence is still too sparse to form a sharper persona summary.',
+      summary:
+        summaryParts.length > 0
+          ? summaryParts.join(' ')
+          : 'The corpus contains repeated operational memories, but the current evidence is still too sparse to form a sharper persona summary.',
       workingStyle,
       goals,
       preferences,
@@ -2413,7 +3015,10 @@ export class DeepAnalysisReportProcessorService {
     chunkInsights: ChunkInsight[],
   ): CorpusSignals {
     const stats = this.collectCorpusStats(corpus.uniqueMemories);
-    const themeHighlights = this.buildThemeHighlights(stats.tokenCounts, stats.phraseCounts);
+    const themeHighlights = this.buildThemeHighlights(
+      stats.tokenCounts,
+      stats.phraseCounts,
+    );
     const chunkThemeBoosts = new Map<string, number>();
 
     for (const chunk of chunkInsights) {
@@ -2422,7 +3027,11 @@ export class DeepAnalysisReportProcessorService {
         if (!normalized || DISALLOWED_THEME_TERMS.has(normalized)) {
           continue;
         }
-        chunkThemeBoosts.set(normalized, (chunkThemeBoosts.get(normalized) ?? 0) + (theme.memoryIds?.length || 1));
+        chunkThemeBoosts.set(
+          normalized,
+          (chunkThemeBoosts.get(normalized) ?? 0) +
+            (theme.memoryIds?.length || 1),
+        );
       }
     }
 
@@ -2437,13 +3046,21 @@ export class DeepAnalysisReportProcessorService {
         })),
     ].slice(0, 8);
 
-    const relationships = [...stats.relationships, ...chunkInsights.flatMap((item) => item.relationships ?? [])]
-      .filter((item, index, list) =>
-        list.findIndex((candidate) =>
-          candidate.source === item.source &&
-          candidate.relation === item.relation &&
-          candidate.target === item.target &&
-          candidate.evidenceMemoryIds.join('|') === item.evidenceMemoryIds.join('|')) === index)
+    const relationships = [
+      ...stats.relationships,
+      ...chunkInsights.flatMap((item) => item.relationships ?? []),
+    ]
+      .filter(
+        (item, index, list) =>
+          list.findIndex(
+            (candidate) =>
+              candidate.source === item.source &&
+              candidate.relation === item.relation &&
+              candidate.target === item.target &&
+              candidate.evidenceMemoryIds.join('|') ===
+                item.evidenceMemoryIds.join('|'),
+          ) === index,
+      )
       .slice(0, 18);
     const persona = this.buildPersonaSection(
       boostedHighlights.map((item) => item.name),
@@ -2500,12 +3117,14 @@ export class DeepAnalysisReportProcessorService {
         count: item.count,
       })),
     ].slice(0, 8);
-    const candidateEdges: DeepAnalysisCandidateEdge[] = relationships.slice(0, 10).map((item) => ({
-      source: item.source,
-      relation: item.relation,
-      target: item.target,
-      confidence: item.confidence,
-    }));
+    const candidateEdges: DeepAnalysisCandidateEdge[] = relationships
+      .slice(0, 10)
+      .map((item) => ({
+        source: item.source,
+        relation: item.relation,
+        target: item.target,
+        confidence: item.confidence,
+      }));
 
     return {
       persona,
@@ -2520,11 +3139,18 @@ export class DeepAnalysisReportProcessorService {
       productSignals: {
         candidateNodes,
         candidateEdges,
-        searchSeeds: uniqueStrings([
-          ...boostedHighlights.slice(0, 6).map((item) => item.name),
-          ...buildEntityGroups(stats.projectCounters, 4).map((item) => item.label),
-          ...buildEntityGroups(stats.personCounters, 4).map((item) => item.label),
-        ], 8),
+        searchSeeds: uniqueStrings(
+          [
+            ...boostedHighlights.slice(0, 6).map((item) => item.name),
+            ...buildEntityGroups(stats.projectCounters, 4).map(
+              (item) => item.label,
+            ),
+            ...buildEntityGroups(stats.personCounters, 4).map(
+              (item) => item.label,
+            ),
+          ],
+          8,
+        ),
       },
     };
   }
@@ -2539,36 +3165,90 @@ export class DeepAnalysisReportProcessorService {
     internalComment: InternalCommentPayload,
   ): ReportRepairOutcome {
     const diagnostics = createRepairDiagnostics();
-    const fallbackReport = this.buildHeuristicReport(lang, corpus, corpusSignals);
+    const fallbackReport = this.buildHeuristicReport(
+      lang,
+      corpus,
+      corpusSignals,
+    );
     const rawReport: Record<string, unknown> = isRecord(report) ? report : {};
-    const rawOverview: Record<string, unknown> = isRecord(rawReport.overview) ? rawReport.overview : {};
-    const rawPersona: Record<string, unknown> = isRecord(rawReport.persona) ? rawReport.persona : {};
-    const rawEntities: Record<string, unknown> = isRecord(rawReport.entities) ? rawReport.entities : {};
-    const rawQuality: Record<string, unknown> = isRecord(rawReport.quality) ? rawReport.quality : {};
+    const rawOverview: Record<string, unknown> = isRecord(rawReport.overview)
+      ? rawReport.overview
+      : {};
+    const rawPersona: Record<string, unknown> = isRecord(rawReport.persona)
+      ? rawReport.persona
+      : {};
+    const rawEntities: Record<string, unknown> = isRecord(rawReport.entities)
+      ? rawReport.entities
+      : {};
+    const rawQuality: Record<string, unknown> = isRecord(rawReport.quality)
+      ? rawReport.quality
+      : {};
 
     const repairedReport: DeepAnalysisReportDocument = {
       overview: {
         memoryCount: corpus.originalCount,
         deduplicatedMemoryCount: corpus.deduplicatedCount,
-        generatedAt: trimToString(rawOverview.generatedAt) ?? fallbackReport.overview.generatedAt,
+        generatedAt:
+          trimToString(rawOverview.generatedAt) ??
+          fallbackReport.overview.generatedAt,
         lang,
         timeSpan: {
-          start: trimToString(rawOverview.timeSpan && isRecord(rawOverview.timeSpan) ? rawOverview.timeSpan.start : null)
-            ?? fallbackReport.overview.timeSpan.start,
-          end: trimToString(rawOverview.timeSpan && isRecord(rawOverview.timeSpan) ? rawOverview.timeSpan.end : null)
-            ?? fallbackReport.overview.timeSpan.end,
+          start:
+            trimToString(
+              rawOverview.timeSpan && isRecord(rawOverview.timeSpan)
+                ? rawOverview.timeSpan.start
+                : null,
+            ) ?? fallbackReport.overview.timeSpan.start,
+          end:
+            trimToString(
+              rawOverview.timeSpan && isRecord(rawOverview.timeSpan)
+                ? rawOverview.timeSpan.end
+                : null,
+            ) ?? fallbackReport.overview.timeSpan.end,
         },
       },
       persona: {
-        summary: (trimToString(rawPersona.summary)?.length ?? 0) >= 80
-          ? trimToString(rawPersona.summary) ?? fallbackReport.persona.summary
-          : fallbackReport.persona.summary,
-        workingStyle: normalizeTextList(rawPersona.workingStyle, fallbackReport.persona.workingStyle ?? [], diagnostics, 5),
-        goals: normalizeTextList(rawPersona.goals, fallbackReport.persona.goals ?? [], diagnostics, 5),
-        preferences: normalizeTextList(rawPersona.preferences, fallbackReport.persona.preferences ?? [], diagnostics, 5),
-        constraints: normalizeTextList(rawPersona.constraints, fallbackReport.persona.constraints ?? [], diagnostics, 5),
-        decisionSignals: normalizeTextList(rawPersona.decisionSignals, fallbackReport.persona.decisionSignals ?? [], diagnostics, 5),
-        notableRoutines: normalizeTextList(rawPersona.notableRoutines, fallbackReport.persona.notableRoutines ?? [], diagnostics, 5),
+        summary:
+          (trimToString(rawPersona.summary)?.length ?? 0) >= 80
+            ? (trimToString(rawPersona.summary) ??
+              fallbackReport.persona.summary)
+            : fallbackReport.persona.summary,
+        workingStyle: normalizeTextList(
+          rawPersona.workingStyle,
+          fallbackReport.persona.workingStyle ?? [],
+          diagnostics,
+          5,
+        ),
+        goals: normalizeTextList(
+          rawPersona.goals,
+          fallbackReport.persona.goals ?? [],
+          diagnostics,
+          5,
+        ),
+        preferences: normalizeTextList(
+          rawPersona.preferences,
+          fallbackReport.persona.preferences ?? [],
+          diagnostics,
+          5,
+        ),
+        constraints: normalizeTextList(
+          rawPersona.constraints,
+          fallbackReport.persona.constraints ?? [],
+          diagnostics,
+          5,
+        ),
+        decisionSignals: normalizeTextList(
+          rawPersona.decisionSignals,
+          fallbackReport.persona.decisionSignals ?? [],
+          diagnostics,
+          5,
+        ),
+        notableRoutines: normalizeTextList(
+          rawPersona.notableRoutines,
+          fallbackReport.persona.notableRoutines ?? [],
+          diagnostics,
+          5,
+        ),
         contradictionsOrTensions: normalizeTextList(
           rawPersona.contradictionsOrTensions,
           fallbackReport.persona.contradictionsOrTensions ?? [],
@@ -2590,11 +3270,36 @@ export class DeepAnalysisReportProcessorService {
         ),
       },
       entities: {
-        people: sanitizeEntityGroups(rawEntities.people, fallbackReport.entities.people, validMemoryIds, diagnostics),
-        teams: sanitizeEntityGroups(rawEntities.teams, fallbackReport.entities.teams, validMemoryIds, diagnostics),
-        projects: sanitizeEntityGroups(rawEntities.projects, fallbackReport.entities.projects, validMemoryIds, diagnostics),
-        tools: sanitizeEntityGroups(rawEntities.tools, fallbackReport.entities.tools, validMemoryIds, diagnostics),
-        places: sanitizeEntityGroups(rawEntities.places, fallbackReport.entities.places, validMemoryIds, diagnostics),
+        people: sanitizeEntityGroups(
+          rawEntities.people,
+          fallbackReport.entities.people,
+          validMemoryIds,
+          diagnostics,
+        ),
+        teams: sanitizeEntityGroups(
+          rawEntities.teams,
+          fallbackReport.entities.teams,
+          validMemoryIds,
+          diagnostics,
+        ),
+        projects: sanitizeEntityGroups(
+          rawEntities.projects,
+          fallbackReport.entities.projects,
+          validMemoryIds,
+          diagnostics,
+        ),
+        tools: sanitizeEntityGroups(
+          rawEntities.tools,
+          fallbackReport.entities.tools,
+          validMemoryIds,
+          diagnostics,
+        ),
+        places: sanitizeEntityGroups(
+          rawEntities.places,
+          fallbackReport.entities.places,
+          validMemoryIds,
+          diagnostics,
+        ),
       },
       relationships: sanitizeRelationships(
         rawReport.relationships,
@@ -2644,9 +3349,13 @@ export class DeepAnalysisReportProcessorService {
       ),
     };
 
-    repairedReport.quality.noisyMemoryCount = repairedReport.quality.lowQualityExamples.length;
+    repairedReport.quality.noisyMemoryCount =
+      repairedReport.quality.lowQualityExamples.length;
 
-    if (diagnostics.repairCount > 0 || diagnostics.invalidEvidenceIds.length > 0) {
+    if (
+      diagnostics.repairCount > 0 ||
+      diagnostics.invalidEvidenceIds.length > 0
+    ) {
       const rawPreview = serializeRawPreview(report);
       if (rawPreview) {
         appendRawResponse(internalComment, {
@@ -2657,17 +3366,25 @@ export class DeepAnalysisReportProcessorService {
           truncated: rawPreview.truncated,
         });
       }
-      appendInternalEvent(internalComment, 'info', DeepAnalysisReportStage.GLOBAL_SYNTHESIS, 'deep_analysis_report_repaired', {
-        reportId,
-        repairCount: diagnostics.repairCount,
-        invalidEvidenceIdCount: diagnostics.invalidEvidenceIds.length,
-        invalidEvidenceIdsSample: diagnostics.invalidEvidenceIds.slice(0, 5).join(', ') || null,
-      });
+      appendInternalEvent(
+        internalComment,
+        'info',
+        DeepAnalysisReportStage.GLOBAL_SYNTHESIS,
+        'deep_analysis_report_repaired',
+        {
+          reportId,
+          repairCount: diagnostics.repairCount,
+          invalidEvidenceIdCount: diagnostics.invalidEvidenceIds.length,
+          invalidEvidenceIdsSample:
+            diagnostics.invalidEvidenceIds.slice(0, 5).join(', ') || null,
+        },
+      );
       this.logInfo('deep_analysis_report_repaired', {
         reportId,
         repairCount: diagnostics.repairCount,
         invalidEvidenceIdCount: diagnostics.invalidEvidenceIds.length,
-        invalidEvidenceIdsSample: diagnostics.invalidEvidenceIds.slice(0, 5).join(', ') || null,
+        invalidEvidenceIdsSample:
+          diagnostics.invalidEvidenceIds.slice(0, 5).join(', ') || null,
       });
     }
 
@@ -2715,6 +3432,7 @@ export class DeepAnalysisReportProcessorService {
         corpusSignals,
       }),
     );
+    this.deepAnalysisMetrics.recordQwenResult(qwenReport);
     this.appendModelCall(internalComment, 1, qwenReport);
     await this.repository.updateDeepAnalysisReport(reportId, {
       internalComment: JSON.stringify(internalComment),
@@ -2779,28 +3497,34 @@ export class DeepAnalysisReportProcessorService {
     if (result.rawResponse) {
       appendRawResponse(internalComment, {
         stage: result.requestMeta.stage,
-        reason: result.requestMeta.errorCode === 'QWEN_JSON_PARSE_FAILED'
-          ? 'qwen_json_parse_failed'
-          : 'qwen_request_failed',
+        reason:
+          result.requestMeta.errorCode === 'QWEN_JSON_PARSE_FAILED'
+            ? 'qwen_json_parse_failed'
+            : 'qwen_request_failed',
         source: result.rawResponse.source,
         preview: result.rawResponse.preview,
         truncated: result.rawResponse.truncated,
       });
     }
-    internalComment.calls.sort((left, right) =>
-      INTERNAL_COMMENT_STAGE_ORDER[left.stage] - INTERNAL_COMMENT_STAGE_ORDER[right.stage] ||
-      left.index - right.index ||
-      left.requestedAt.localeCompare(right.requestedAt));
+    internalComment.calls.sort(
+      (left, right) =>
+        INTERNAL_COMMENT_STAGE_ORDER[left.stage] -
+          INTERNAL_COMMENT_STAGE_ORDER[right.stage] ||
+        left.index - right.index ||
+        left.requestedAt.localeCompare(right.requestedAt),
+    );
   }
 
   private logInfo(
     event: string,
     fields: Record<string, string | number | boolean | null>,
   ): void {
-    this.logger.log(JSON.stringify({
-      event,
-      ...fields,
-    }));
+    this.logger.log(
+      JSON.stringify({
+        event,
+        ...fields,
+      }),
+    );
   }
 
   private buildHeuristicReport(
@@ -2830,9 +3554,14 @@ export class DeepAnalysisReportProcessorService {
       relationships: corpusSignals.relationships,
       discoveries: corpusSignals.discoveries,
       quality: {
-        duplicateRatio: corpus.originalCount === 0
-          ? 0
-          : Number((corpusSignals.duplicateMemoryCount / corpus.originalCount).toFixed(2)),
+        duplicateRatio:
+          corpus.originalCount === 0
+            ? 0
+            : Number(
+                (
+                  corpusSignals.duplicateMemoryCount / corpus.originalCount
+                ).toFixed(2),
+              ),
         duplicateMemoryCount: corpusSignals.duplicateMemoryCount,
         noisyMemoryCount: corpusSignals.lowQualityExamples.length,
         duplicateClusters: corpus.duplicateClusters,
