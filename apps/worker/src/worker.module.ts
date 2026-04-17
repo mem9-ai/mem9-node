@@ -15,6 +15,7 @@ import { LoggerModule } from 'nestjs-pino';
 import { SentryModule } from '@sentry/nestjs/setup';
 
 import { BatchProcessorService } from './batch-processor.service';
+import { DeepAnalysisMetricsService } from './deep-analysis-metrics.service';
 import { DeepAnalysisReportProcessorService } from './deep-analysis-report-processor.service';
 import { LlmFallbackService } from './llm-fallback.service';
 import { QwenDeepAnalysisService } from './qwen-deep-analysis.service';
@@ -47,6 +48,7 @@ const appConfig = loadConfig();
     GoVerifyService,
     RateLimitWindowService,
     BatchProcessorService,
+    DeepAnalysisMetricsService,
     DeepAnalysisReportProcessorService,
     SqsConsumerService,
     LlmFallbackService,
