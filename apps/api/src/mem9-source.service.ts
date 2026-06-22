@@ -5,7 +5,7 @@ import { AppError } from '@mem9/shared';
 import { Inject, Injectable } from '@nestjs/common';
 
 interface Mem9MemoryListResponse {
-  memories: Array<{
+  memories: {
     id: string;
     content: string;
     created_at: string;
@@ -13,7 +13,18 @@ interface Mem9MemoryListResponse {
     memory_type?: string;
     tags?: string[];
     metadata?: Record<string, unknown> | null;
-  }>;
+  }[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+interface FetchPageOptions {
+  memoryType?: string;
+}
+
+export interface Mem9MemoryPage {
+  memories: DeepAnalysisMemorySnapshot[];
   total: number;
   limit: number;
   offset: number;
@@ -24,8 +35,24 @@ export class Mem9SourceService {
   public constructor(@Inject(APP_CONFIG) private readonly config: AppConfig) {}
 
   public async countMemories(apiKey: string): Promise<number> {
-    const page = await this.fetchPage(apiKey, 1, 0);
+    const page = await this.fetchPage(apiKey, 1, 0, {
+      memoryType: 'pinned,insight',
+    });
     return page.total;
+  }
+
+  public async fetchMemories(
+    apiKey: string,
+    limit: number,
+    offset: number,
+  ): Promise<Mem9MemoryPage> {
+    const page = await this.fetchPage(apiKey, limit, offset);
+    return {
+      memories: page.memories.map((memory) => this.toMemorySnapshot(memory)),
+      total: page.total,
+      limit: page.limit,
+      offset: page.offset,
+    };
   }
 
   public async fetchAllMemories(apiKey: string): Promise<DeepAnalysisMemorySnapshot[]> {
@@ -35,20 +62,14 @@ export class Mem9SourceService {
     let offset = 0;
 
     while (offset < total) {
-      const page = await this.fetchPage(apiKey, pageSize, offset);
+      const page = await this.fetchPage(apiKey, pageSize, offset, {
+        memoryType: 'pinned,insight',
+      });
       total = page.total;
       offset += page.limit;
 
       for (const memory of page.memories) {
-        memories.push({
-          id: memory.id,
-          content: memory.content,
-          createdAt: memory.created_at,
-          updatedAt: memory.updated_at,
-          memoryType: memory.memory_type,
-          tags: Array.isArray(memory.tags) ? memory.tags : [],
-          metadata: memory.metadata ?? null,
-        });
+        memories.push(this.toMemorySnapshot(memory));
       }
 
       if (page.memories.length === 0) {
@@ -83,13 +104,18 @@ export class Mem9SourceService {
     apiKey: string,
     limit: number,
     offset: number,
+    options: FetchPageOptions = {},
   ): Promise<Mem9MemoryListResponse> {
     const query = new URLSearchParams({
       limit: String(limit),
       offset: String(offset),
       state: 'active',
-      memory_type: 'pinned,insight',
     });
+
+    if (options.memoryType) {
+      query.set('memory_type', options.memoryType);
+    }
+
     const response = await this.requestWithRetry({
       url: `${this.baseUrl()}/memories?${query.toString()}`,
       init: {
@@ -98,7 +124,7 @@ export class Mem9SourceService {
       isSuccess: (value) => value.ok,
     });
 
-    if (!response || !response.ok) {
+    if (response?.ok !== true) {
       throw new AppError('Failed to fetch memories from mem9 source API', {
         statusCode: 502,
         code: 'DEEP_ANALYSIS_SOURCE_FETCH_FAILED',
@@ -258,5 +284,17 @@ export class Mem9SourceService {
 
   private baseUrl(): string {
     return this.config.analysis.mem9SourceApiBaseUrl.replace(/\/+$/, '');
+  }
+
+  private toMemorySnapshot(memory: Mem9MemoryListResponse['memories'][number]): DeepAnalysisMemorySnapshot {
+    return {
+      id: memory.id,
+      content: memory.content,
+      createdAt: memory.created_at,
+      updatedAt: memory.updated_at,
+      memoryType: memory.memory_type,
+      tags: Array.isArray(memory.tags) ? memory.tags : [],
+      metadata: memory.metadata ?? null,
+    };
   }
 }
