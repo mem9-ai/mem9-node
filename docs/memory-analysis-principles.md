@@ -27,7 +27,7 @@
 - metadata allowlist
 - 长内容 head + tail
 - 显式标记截断
-- label enum
+- dimension enum
 - confidence clamp
 - sentiment score clamp
 - evidence 来自真实 memory

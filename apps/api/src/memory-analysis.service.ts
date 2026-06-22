@@ -9,49 +9,8 @@ import { Mem9SourceService } from './mem9-source.service';
 
 export type MemorySignalDimension = 'long_term_goal' | 'focus_area' | 'emotion';
 
-export type LongTermGoalLabel =
-  | 'exam_goal'
-  | 'learning_goal'
-  | 'career_goal'
-  | 'health_goal'
-  | 'habit_goal'
-  | 'financial_goal'
-  | 'relationship_goal'
-  | 'personal_growth_goal'
-  | 'other_goal';
-
-export type FocusAreaLabel =
-  | 'learning'
-  | 'work'
-  | 'health'
-  | 'relationship'
-  | 'finance'
-  | 'productivity'
-  | 'project'
-  | 'memory_analysis'
-  | 'life_management'
-  | 'self_growth'
-  | 'other_focus';
-
-export type EmotionSignalLabel =
-  | 'joy'
-  | 'sadness'
-  | 'anger'
-  | 'fear'
-  | 'anxiety'
-  | 'stress'
-  | 'fatigue'
-  | 'frustration'
-  | 'calm'
-  | 'anticipation'
-  | 'relief'
-  | 'confusion'
-  | 'neutral'
-  | 'uncertain';
-
 export interface MemorySignalCandidate {
   dimension: MemorySignalDimension;
-  label: LongTermGoalLabel | FocusAreaLabel | EmotionSignalLabel;
   confidence: number;
   evidenceQuote: string;
 }
@@ -107,83 +66,44 @@ const DIMENSIONS = new Set<MemorySignalDimension>([
   'emotion',
 ]);
 
-const LABELS_BY_DIMENSION: Record<MemorySignalDimension, Set<string>> = {
-  long_term_goal: new Set<LongTermGoalLabel>([
-    'exam_goal',
-    'learning_goal',
-    'career_goal',
-    'health_goal',
-    'habit_goal',
-    'financial_goal',
-    'relationship_goal',
-    'personal_growth_goal',
-    'other_goal',
-  ]),
-  focus_area: new Set<FocusAreaLabel>([
-    'learning',
-    'work',
-    'health',
-    'relationship',
-    'finance',
-    'productivity',
-    'project',
-    'memory_analysis',
-    'life_management',
-    'self_growth',
-    'other_focus',
-  ]),
-  emotion: new Set<EmotionSignalLabel>([
-    'joy',
-    'sadness',
-    'anger',
-    'fear',
-    'anxiety',
-    'stress',
-    'fatigue',
-    'frustration',
-    'calm',
-    'anticipation',
-    'relief',
-    'confusion',
-    'neutral',
-    'uncertain',
-  ]),
-};
-
 const MEMORY_SIGNAL_SYSTEM_PROMPT = [
-  '你是 memory 多维候选信号提取器。',
+  'You are a high-recall memory signal extractor.',
   '',
-  '任务：阅读输入 memories，只提取与三个维度相关的候选信号：long_term_goal、focus_area、emotion。',
+  'Task: read the input memories and extract candidate signals for exactly three dimensions: long_term_goal, focus_area, emotion.',
   '',
-  '核心原则：',
-  '- 第一轮只做候选路由，不做总结、趋势、人格判断。',
-  '- 三个维度独立判断，不能从一个维度推导另一个维度。',
-  '- 只有原文有直接证据时才能输出 candidate。',
-  '- 没有明确证据时 candidates 为空。',
-  '- 每条 memory 最多 3 个 candidates，只保留证据最强的。',
-  '- 每个 candidate 必须有原文 evidenceQuote，尽量短。',
-  '- 如果 contentTruncated 为 true，只能基于输入中实际保留的文本做判断。',
-  '- 不要医疗诊断。',
-  '- 不要 markdown，只返回 JSON。',
+  'Core rules:',
+  '- This is the first-pass extraction step only. Do not summarize, infer trends, judge personality, or produce final analysis.',
+  '- Prefer recall over precision. If a memory has direct evidence for any dimension, keep a candidate.',
+  '- Judge each dimension independently. Do not infer one dimension from another.',
+  '- Output a candidate only when it is directly supported by the input text.',
+  '- If there is no direct evidence, return an empty candidates array for that memory.',
+  '- Return at most 3 candidates per memory, keeping the strongest evidence.',
+  '- Every candidate must include a short evidenceQuote copied from the input memory.',
+  '- If contentTruncated is true, only judge from the retained input text.',
+  '- Do not output labels or categories beyond dimension.',
+  '- Do not drop a candidate just because it does not fit a predefined label.',
+  '- Do not make medical diagnoses.',
+  '- Return JSON only. No markdown.',
   '',
-  '维度定义：',
+  'Dimension definitions:',
   '',
-  'long_term_goal：长期目标、备考、职业规划、健康目标、习惯建设、持续性计划。必须体现持续性、未来目标或较长周期。',
-  '不要把一次性任务、当前工作项、临时希望误判为长期目标。',
-  '健康习惯如果只是“先保持”“暂时做到”，应优先归为 focus_area: health，不要归为 long_term_goal。',
-  '“希望先把某功能跑通”这类短期交付目标，应优先归为 focus_area: project 或 memory_analysis，不要归为 long_term_goal。',
+  'long_term_goal: long-term goals, exam preparation, career planning, health goals, habit building, or sustained plans. The evidence must imply future orientation, continuity, or a longer time horizon.',
+  'Do not classify one-off tasks, current work items, or temporary wishes as long_term_goal.',
   '',
-  'focus_area：近期关注点、正在投入精力的问题、反复处理的话题、当前项目或主题。可以是短期。',
+  'focus_area: current or recent attention, topics, projects, problems being worked on, repeated concerns, short-term interests, purchase intent, entertainment plans, and things the user wants to go to, buy, try, or arrange. Short-term signals are allowed.',
   '',
-  'emotion：用户自身表达出的情绪或状态。不要把被描述对象的情绪当成用户情绪。区分过去和当前，允许混合情绪。',
+  'emotion: emotions or mental states expressed by the user themself. Do not treat another person or object’s emotion as the user’s emotion. Distinguish past from present, and allow mixed emotions.',
   '',
-  '允许 labels：',
-  'long_term_goal: exam_goal, learning_goal, career_goal, health_goal, habit_goal, financial_goal, relationship_goal, personal_growth_goal, other_goal',
-  'focus_area: learning, work, health, relationship, finance, productivity, project, memory_analysis, life_management, self_growth, other_focus',
-  'emotion: joy, sadness, anger, fear, anxiety, stress, fatigue, frustration, calm, anticipation, relief, confusion, neutral, uncertain',
+  'Chinese boundary examples:',
+  '- “准备英语六级 / 法律职业资格考试 / 律师资格证” can be long_term_goal when it implies a sustained plan.',
+  '- “想买高达手办 / 高达模型有点心动” is focus_area when it shows short-term interest or purchase intent.',
+  '- “想去看五月天演唱会” is focus_area when it shows an entertainment plan or short-term interest.',
+  '- “健康习惯先保持基础步数” is usually focus_area, not long_term_goal, unless it implies a sustained goal.',
+  '- “希望先把某功能跑通” is usually focus_area, not long_term_goal.',
+  '- “我很焦虑 / 压力很大 / 真的好累” is emotion.',
   '',
-  '输出 JSON：',
-  '{"items":[{"memoryId":"string","candidates":[{"dimension":"long_term_goal | focus_area | emotion","label":"string","confidence":0.0,"evidenceQuote":"string"}]}]}',
+  'Output JSON schema:',
+  '{"items":[{"memoryId":"string","candidates":[{"dimension":"long_term_goal | focus_area | emotion","confidence":0.0,"evidenceQuote":"string"}]}]}',
 ].join('\n');
 
 @Injectable()
@@ -199,8 +119,6 @@ export class MemoryAnalysisService {
     apiKey: string,
     dto: AnalyzeMemorySourceDto,
   ): Promise<AnalyzeMemorySourceResponse> {
-    this.ensureQwenConfigured();
-
     const page = await this.source.fetchMemories(apiKey, dto.limit, dto.offset);
     const allMemoryIds = page.memories.map((memory) => memory.id);
     const memories = this.buildPromptMemories(page.memories);
@@ -209,13 +127,15 @@ export class MemoryAnalysisService {
         total: page.total,
         limit: page.limit,
         offset: page.offset,
-        model: this.config.analysis.qwenModel!,
+        model: this.config.analysis.qwenModel ?? '',
         items: allMemoryIds.map((memoryId) => ({
           memoryId,
           candidates: [],
         })),
       };
     }
+
+    this.ensureQwenConfigured();
 
     const content = await this.callQwenForCandidates(memories, dto.lang ?? 'zh-CN');
     const parsed = this.parseJsonObject(content);
@@ -396,10 +316,6 @@ export class MemoryAnalysisService {
         if (!dimension) {
           return null;
         }
-        const label = this.normalizeLabel(dimension, candidate.label);
-        if (!label) {
-          return null;
-        }
         const evidenceQuote = this.normalizeText(candidate.evidenceQuote, '').slice(0, 280);
         if (!this.isEvidenceInContent(evidenceQuote, memoryContent)) {
           return null;
@@ -407,7 +323,6 @@ export class MemoryAnalysisService {
 
         return {
           dimension,
-          label,
           confidence: this.clampNumber(candidate.confidence, 0, 1, 0.5),
           evidenceQuote,
         };
@@ -424,19 +339,6 @@ export class MemoryAnalysisService {
     const normalized = value.trim().toLowerCase();
     return DIMENSIONS.has(normalized as MemorySignalDimension)
       ? normalized as MemorySignalDimension
-      : null;
-  }
-
-  private normalizeLabel(
-    dimension: MemorySignalDimension,
-    value: unknown,
-  ): MemorySignalCandidate['label'] | null {
-    if (typeof value !== 'string') {
-      return null;
-    }
-    const normalized = value.trim().toLowerCase();
-    return LABELS_BY_DIMENSION[dimension].has(normalized)
-      ? normalized as MemorySignalCandidate['label']
       : null;
   }
 

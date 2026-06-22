@@ -46,7 +46,9 @@ export class Mem9SourceService {
     limit: number,
     offset: number,
   ): Promise<Mem9MemoryPage> {
-    const page = await this.fetchPage(apiKey, limit, offset);
+    const page = await this.fetchPage(apiKey, limit, offset, {
+      memoryType: 'session',
+    });
     return {
       memories: page.memories.map((memory) => this.toMemorySnapshot(memory)),
       total: page.total,
@@ -125,11 +127,13 @@ export class Mem9SourceService {
     });
 
     if (response?.ok !== true) {
+      const errorBody = await this.readErrorBody(response);
       throw new AppError('Failed to fetch memories from mem9 source API', {
         statusCode: 502,
         code: 'DEEP_ANALYSIS_SOURCE_FETCH_FAILED',
         details: {
           status: response?.status,
+          body: errorBody,
         },
       });
     }
@@ -280,6 +284,23 @@ export class Mem9SourceService {
       'X-API-Key': apiKey,
       'X-Mnemo-Agent-Id': 'mem9-deep-analysis',
     };
+  }
+
+  private async readErrorBody(response: Response | null): Promise<unknown> {
+    if (!response) {
+      return undefined;
+    }
+
+    const text = await response.text().catch(() => '');
+    if (!text) {
+      return undefined;
+    }
+
+    try {
+      return JSON.parse(text) as unknown;
+    } catch {
+      return text.slice(0, 1000);
+    }
   }
 
   private baseUrl(): string {
