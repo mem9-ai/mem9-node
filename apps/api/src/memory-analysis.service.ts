@@ -7,7 +7,12 @@ import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
 import type { AnalyzeMemorySourceDto } from './dto/analyze-memory-source.dto';
 import { Mem9SourceService } from './mem9-source.service';
 
-export type MemorySignalDimension = 'long_term_goal' | 'focus_area' | 'emotion';
+export type MemorySignalDimension =
+  | 'long_term_goal'
+  | 'focus_area'
+  | 'emotion'
+  | 'preference_signal'
+  | 'growth_signal';
 
 export interface MemorySignalCandidate {
   dimension: MemorySignalDimension;
@@ -64,12 +69,14 @@ const DIMENSIONS = new Set<MemorySignalDimension>([
   'long_term_goal',
   'focus_area',
   'emotion',
+  'preference_signal',
+  'growth_signal',
 ]);
 
 const MEMORY_SIGNAL_SYSTEM_PROMPT = [
   'You are a high-recall memory signal extractor.',
   '',
-  'Task: read the input memories and extract candidate signals for exactly three dimensions: long_term_goal, focus_area, emotion.',
+  'Task: read the input memories and extract candidate signals for exactly five dimensions: long_term_goal, focus_area, emotion, preference_signal, growth_signal.',
   '',
   'Core rules:',
   '- This is the first-pass extraction step only. Do not summarize, infer trends, judge personality, or produce final analysis.',
@@ -94,16 +101,24 @@ const MEMORY_SIGNAL_SYSTEM_PROMPT = [
   '',
   'emotion: emotions or mental states expressed by the user themself. Do not treat another person or object’s emotion as the user’s emotion. Distinguish past from present, and allow mixed emotions.',
   '',
+  'preference_signal: direct evidence of what the user prefers, likes, dislikes, avoids, values, or wants in communication, work style, tools, products, entertainment, learning, or life. This is only a candidate signal, not a final stable preference.',
+  '',
+  'growth_signal: direct evidence of learning, improvement, increased capability, reflection, changed behavior, overcoming difficulty, or becoming better at something. This is only a candidate signal, not a final growth conclusion.',
+  '',
   'Chinese boundary examples:',
   '- “准备英语六级 / 法律职业资格考试 / 律师资格证” can be long_term_goal when it implies a sustained plan.',
   '- “想买高达手办 / 高达模型有点心动” is focus_area when it shows short-term interest or purchase intent.',
   '- “想去看五月天演唱会” is focus_area when it shows an entertainment plan or short-term interest.',
+  '- “我更喜欢直接给结论，不要太啰嗦” is preference_signal.',
+  '- “以后我还是想用更简洁的方式沟通需求” is preference_signal.',
+  '- “这次虽然踩坑很多，但终于自己调通了” is growth_signal.',
+  '- “我开始能主动判断架构问题，而不是只等别人告诉我” is growth_signal.',
   '- “健康习惯先保持基础步数” is usually focus_area, not long_term_goal, unless it implies a sustained goal.',
   '- “希望先把某功能跑通” is usually focus_area, not long_term_goal.',
   '- “我很焦虑 / 压力很大 / 真的好累” is emotion.',
   '',
   'Output JSON schema:',
-  '{"items":[{"memoryId":"string","candidates":[{"dimension":"long_term_goal | focus_area | emotion","confidence":0.0,"evidenceQuote":"string"}]}]}',
+  '{"items":[{"memoryId":"string","candidates":[{"dimension":"long_term_goal | focus_area | emotion | preference_signal | growth_signal","confidence":0.0,"evidenceQuote":"string"}]}]}',
 ].join('\n');
 
 @Injectable()

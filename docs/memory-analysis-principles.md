@@ -5,6 +5,8 @@
 - 只基于输入，不脑补
 - 证据绑定
 - 一次扫描，多维过滤
+- 稳定偏好只提候选，不下最终结论
+- 成长观察只提候选，不下最终结论
 - candidates 必须可追溯到 memoryId
 - 固定 schema + enum
 - 允许 neutral / uncertain
