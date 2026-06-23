@@ -20,20 +20,11 @@ export class MemoryAnalysisController {
   public constructor(private readonly service: MemoryAnalysisService) {}
 
   @Post('analyze-source')
-  @ApiOperation({ summary: 'Extract memory analysis candidates from source memories using Qwen' })
+  @ApiOperation({ summary: 'Analyze source memories and build local change groups' })
   public analyzeSource(
     @CurrentContext() context: Mem9RequestContext,
     @Body() dto: AnalyzeMemorySourceDto,
   ) {
     return this.service.analyzeSource(context.rawApiKey, dto);
-  }
-
-  @Post('analyze-source-changes')
-  @ApiOperation({ summary: 'Extract memory analysis candidates and build local change groups' })
-  public analyzeSourceChanges(
-    @CurrentContext() context: Mem9RequestContext,
-    @Body() dto: AnalyzeMemorySourceDto,
-  ) {
-    return this.service.analyzeSourceChanges(context.rawApiKey, dto);
   }
 }

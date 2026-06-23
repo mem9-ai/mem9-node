@@ -15,14 +15,10 @@ export type MemorySignalDimension =
   | 'growth_signal';
 
 export interface MemorySignalCandidate {
+  evidenceId: string;
   dimension: MemorySignalDimension;
-  confidence: number;
+  summary: string;
   evidenceQuote: string;
-  topicKey: string;
-  topic: string;
-  state: string;
-  intensity: number;
-  tags: string[];
 }
 
 export interface MemorySignalItem {
@@ -40,23 +36,17 @@ export interface AnalyzeMemorySourceResponse {
 }
 
 export interface MemoryAnalysisEvidence {
+  evidenceId: string;
   memoryId: string;
   createdAt?: string;
+  dimension: MemorySignalDimension;
+  summary: string;
   quote: string;
-  confidence: number;
 }
 
 export interface MemoryAnalysisTimelinePoint {
   at?: string;
-  state: string;
-  intensity: number;
-  transitionFromPrevious?: {
-    type: 'initial' | 'strengthened' | 'weakened' | 'persisted';
-    fromState?: string;
-    fromIntensity?: number;
-    toState: string;
-    toIntensity: number;
-  };
+  evidenceIds: string[];
   evidenceMemoryIds: string[];
 }
 
@@ -65,24 +55,11 @@ export interface MemoryAnalysisChangeDetail {
   evidence: MemoryAnalysisEvidence[];
 }
 
-export interface MemoryAnalysisTopicChange {
-  id: string;
-  dimension: MemorySignalDimension;
-  topicKey: string;
-  topic: string;
-  currentState: string;
-  currentIntensity: number;
-  changeType: 'single' | 'strengthened' | 'weakened' | 'persisted';
-  status: 'high' | 'needs_confirm' | 'low_confidence';
-  confidence: number;
-  relatedMemoryCount: number;
-  tags: string[];
-  detail: MemoryAnalysisChangeDetail;
-}
-
 export interface MemoryAnalysisDimensionGroup {
   dimension: MemorySignalDimension;
-  topics: MemoryAnalysisTopicChange[];
+  confidence: number;
+  relatedMemoryCount: number;
+  detail: MemoryAnalysisChangeDetail;
 }
 
 export interface AnalyzeMemorySourceChangesResponse extends AnalyzeMemorySourceResponse {
@@ -91,6 +68,14 @@ export interface AnalyzeMemorySourceChangesResponse extends AnalyzeMemorySourceR
 
 interface QwenChatCompletionPayload {
   model?: string;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+    promptTokens?: number;
+    completionTokens?: number;
+    totalTokens?: number;
+  };
   choices?: {
     message?: {
       content?: string;
@@ -108,28 +93,17 @@ interface RawMemorySignalResult {
 
 interface PromptMemory {
   id: string;
-  content: string;
-  createdAt?: string;
-  memoryType?: string;
-  tags: string[];
-  metadata: Record<string, unknown>;
-  contentTruncated?: boolean;
-  truncationStrategy?: 'head_tail';
+  text: string;
 }
 
 interface SignalObservation {
   dimension: MemorySignalDimension;
-  topic: string;
-  topicKey: string;
-  state: string;
-  intensity: number;
-  tags: string[];
   evidence: MemoryAnalysisEvidence;
 }
 
 const MAX_CONTENT_CHARS = 12000;
 const MAX_BATCH_CONTENT_CHARS = 60000;
-const MAX_CANDIDATES_PER_MEMORY = 3;
+const MAX_CANDIDATES_PER_MEMORY = 5;
 
 const DIMENSIONS = new Set<MemorySignalDimension>([
   'long_term_goal',
@@ -142,25 +116,19 @@ const DIMENSIONS = new Set<MemorySignalDimension>([
 const MEMORY_SIGNAL_SYSTEM_PROMPT = [
   'You are a high-recall memory signal extractor.',
   '',
-  'Task: read the input memories and extract candidate signals for exactly five dimensions: long_term_goal, focus_area, emotion, preference_signal, growth_signal.',
+  'Task: read the input memories and extract evidence-backed candidate signals for exactly five dimensions: long_term_goal, focus_area, emotion, preference_signal, growth_signal.',
   '',
   'Core rules:',
-  '- This is the first-pass extraction step only. Do not summarize, infer trends, judge personality, or produce final analysis.',
+  '- This is the first-pass extraction step only. Do not infer trends, judge personality, or produce final analysis.',
   '- Prefer recall over precision. If a memory has direct evidence for any dimension, keep a candidate.',
   '- Judge each dimension independently. Do not infer one dimension from another.',
   '- Output a candidate only when it is directly supported by the input text.',
   '- If there is no direct evidence, return an empty candidates array for that memory.',
-  '- Return at most 3 candidates per memory, keeping the strongest evidence.',
-  '- Every candidate must include a short evidenceQuote copied from the input memory.',
-  '- Every candidate must include topicKey, topic, state, intensity, and tags.',
-  '- topicKey must be stable snake_case English. Use the same topicKey for the same underlying topic across memories in this request.',
-  '- topic must be a concise noun phrase derived from the evidence, not a broad dimension name.',
-  '- state must describe the current observed stage or condition in a concise phrase.',
-  '- intensity is an integer from 1 to 5. It is a dimension-local strength score, not a medical or universal severity score.',
-  '- tags are short structured descriptors derived from the evidence. Keep 1 to 5 short tags.',
-  '- If contentTruncated is true, only judge from the retained input text.',
-  '- topic/state/tags are structured metadata. Do not use them to suppress an evidence-backed candidate.',
-  '- Do not drop a candidate just because it does not fit a predefined label.',
+  '- Return at most one candidate per dimension per memory.',
+  '- Every candidate must include only dim and summary.',
+  '- dim must be one of: long_term_goal, focus_area, emotion, preference_signal, growth_signal.',
+  '- summary must be a concise display phrase, 3-10 Chinese characters when the memory is Chinese, or 2-6 English words when the memory is English.',
+  '- summary must describe the signal itself, not the dimension name.',
   '- Do not make medical diagnoses.',
   '- Return JSON only. No markdown.',
   '',
@@ -190,7 +158,7 @@ const MEMORY_SIGNAL_SYSTEM_PROMPT = [
   '- “我很焦虑 / 压力很大 / 真的好累” is emotion.',
   '',
   'Output JSON schema:',
-  '{"items":[{"memoryId":"string","candidates":[{"dimension":"long_term_goal | focus_area | emotion | preference_signal | growth_signal","confidence":0.0,"evidenceQuote":"string","topicKey":"stable_snake_case","topic":"string","state":"string","intensity":1,"tags":["string"]}]}]}',
+  '{"items":[{"id":"memory id","candidates":[{"dim":"long_term_goal | focus_area | emotion | preference_signal | growth_signal","summary":"string"}]}]}',
 ].join('\n');
 
 @Injectable()
@@ -205,11 +173,52 @@ export class MemoryAnalysisService {
   public async analyzeSource(
     apiKey: string,
     dto: AnalyzeMemorySourceDto,
+  ): Promise<AnalyzeMemorySourceChangesResponse> {
+    const startedAt = Date.now();
+    const firstPass = await this.extractSourceCandidates(apiKey, dto);
+    const aggregationStartedAt = Date.now();
+    const dimensions = this.buildChangeDimensions(firstPass.items);
+    const aggregationDurationMs = Date.now() - aggregationStartedAt;
+    this.logger.log(JSON.stringify({
+      event: 'memory_analysis_completed',
+      durationMs: Date.now() - startedAt,
+      aggregationDurationMs,
+      total: firstPass.total,
+      returnedItems: firstPass.items.length,
+      candidateCount: firstPass.items.reduce((count, item) => count + item.candidates.length, 0),
+      dimensionCount: dimensions.length,
+    }));
+
+    return {
+      ...firstPass,
+      dimensions,
+    };
+  }
+
+  private async extractSourceCandidates(
+    apiKey: string,
+    dto: AnalyzeMemorySourceDto,
   ): Promise<AnalyzeMemorySourceResponse> {
+    const fetchStartedAt = Date.now();
     const page = await this.source.fetchMemories(apiKey, dto.limit, dto.offset);
+    const fetchDurationMs = Date.now() - fetchStartedAt;
     const allMemoryIds = page.memories.map((memory) => memory.id);
     const createdAtByMemoryId = new Map(page.memories.map((memory) => [memory.id, memory.createdAt]));
+    const promptStartedAt = Date.now();
     const memories = this.buildPromptMemories(page.memories);
+    const promptDurationMs = Date.now() - promptStartedAt;
+    const promptContentChars = memories.reduce((count, memory) => count + memory.text.length, 0);
+    this.logger.log(JSON.stringify({
+      event: 'memory_analysis_source_prepared',
+      fetchDurationMs,
+      promptDurationMs,
+      total: page.total,
+      returnedMemories: page.memories.length,
+      promptMemories: memories.length,
+      promptContentChars,
+      maxPromptMemoryChars: Math.max(0, ...memories.map((memory) => memory.text.length)),
+    }));
+
     if (memories.length === 0) {
       return {
         total: page.total,
@@ -226,14 +235,24 @@ export class MemoryAnalysisService {
 
     this.ensureQwenConfigured();
 
+    const qwenStartedAt = Date.now();
     const content = await this.callQwenForCandidates(memories, dto.lang ?? 'zh-CN');
+    const qwenDurationMs = Date.now() - qwenStartedAt;
+    const normalizeStartedAt = Date.now();
     const parsed = this.parseJsonObject(content);
     const items = this.normalizeSignalResult(
       parsed,
       new Set(allMemoryIds),
-      new Map(memories.map((memory) => [memory.id, memory.content])),
+      new Map(memories.map((memory) => [memory.id, memory.text])),
       createdAtByMemoryId,
     );
+    this.logger.log(JSON.stringify({
+      event: 'memory_analysis_candidates_normalized',
+      qwenDurationMs,
+      normalizeDurationMs: Date.now() - normalizeStartedAt,
+      responseChars: content.length,
+      candidateCount: items.reduce((count, item) => count + item.candidates.length, 0),
+    }));
 
     return {
       total: page.total,
@@ -244,39 +263,13 @@ export class MemoryAnalysisService {
     };
   }
 
-  public async analyzeSourceChanges(
-    apiKey: string,
-    dto: AnalyzeMemorySourceDto,
-  ): Promise<AnalyzeMemorySourceChangesResponse> {
-    const firstPass = await this.analyzeSource(apiKey, dto);
-    return {
-      ...firstPass,
-      dimensions: this.buildChangeDimensions(firstPass.items),
-    };
-  }
-
   private buildChangeDimensions(items: MemorySignalItem[]): MemoryAnalysisDimensionGroup[] {
     const observations = this.buildSignalObservations(items);
     const byDimension = this.groupBy(observations, (item) => item.dimension);
 
     return [...DIMENSIONS]
-      .map((dimension) => {
-        const dimensionObservations = byDimension.get(dimension) ?? [];
-        const topicGroups = this.groupBy(dimensionObservations, (item) => item.topicKey);
-        const topics = [...topicGroups.values()]
-          .map((group) => this.buildTopicChange(dimension, group))
-          .sort((left, right) => {
-            const leftAt = left.detail.timeline[0]?.at ?? '';
-            const rightAt = right.detail.timeline[0]?.at ?? '';
-            return leftAt.localeCompare(rightAt);
-          });
-
-        return {
-          dimension,
-          topics,
-        };
-      })
-      .filter((group) => group.topics.length > 0);
+      .map((dimension) => this.buildDimensionGroup(dimension, byDimension.get(dimension) ?? []))
+      .filter((group): group is MemoryAnalysisDimensionGroup => group !== null);
   }
 
   private buildSignalObservations(items: MemorySignalItem[]): SignalObservation[] {
@@ -284,19 +277,15 @@ export class MemoryAnalysisService {
 
     for (const item of items) {
       for (const candidate of item.candidates) {
-        const topic = candidate.topic || this.defaultTopic(candidate.dimension);
         observations.push({
           dimension: candidate.dimension,
-          topic,
-          topicKey: candidate.topicKey || this.slugify(topic),
-          state: candidate.state || 'observed',
-          intensity: candidate.intensity,
-          tags: candidate.tags,
           evidence: {
+            evidenceId: candidate.evidenceId,
             memoryId: item.memoryId,
             createdAt: item.createdAt,
+            dimension: candidate.dimension,
+            summary: candidate.summary,
             quote: candidate.evidenceQuote,
-            confidence: candidate.confidence,
           },
         });
       }
@@ -305,28 +294,22 @@ export class MemoryAnalysisService {
     return observations.sort((left, right) => (left.evidence.createdAt ?? '').localeCompare(right.evidence.createdAt ?? ''));
   }
 
-  private buildTopicChange(
+  private buildDimensionGroup(
     dimension: MemorySignalDimension,
     observations: SignalObservation[],
-  ): MemoryAnalysisTopicChange {
+  ): MemoryAnalysisDimensionGroup | null {
+    if (observations.length === 0) {
+      return null;
+    }
+
     const sorted = [...observations].sort((left, right) => (left.evidence.createdAt ?? '').localeCompare(right.evidence.createdAt ?? ''));
-    const first = sorted[0]!;
-    const last = sorted[sorted.length - 1]!;
-    const confidence = this.roundConfidence(Math.max(...sorted.map((item) => item.evidence.confidence)));
-    const tags = this.unique(sorted.flatMap((item) => item.tags)).slice(0, 5);
+    const memoryIds = this.unique(sorted.map((item) => item.evidence.memoryId));
+    const dayCount = this.unique(sorted.map((item) => (item.evidence.createdAt ?? '').slice(0, 10)).filter((value) => value.length > 0)).length;
 
     return {
-      id: `${dimension}-${first.topicKey}`,
       dimension,
-      topicKey: first.topicKey,
-      topic: first.topic,
-      currentState: last.state,
-      currentIntensity: last.intensity,
-      changeType: this.topicChangeType(first, last, sorted.length),
-      status: this.topicStatus(sorted.length, confidence),
-      confidence,
-      relatedMemoryCount: this.unique(sorted.map((item) => item.evidence.memoryId)).length,
-      tags,
+      confidence: this.calculateDimensionConfidence(memoryIds.length, dayCount),
+      relatedMemoryCount: memoryIds.length,
       detail: {
         timeline: this.buildTimeline(sorted),
         evidence: sorted.map((item) => item.evidence),
@@ -335,101 +318,19 @@ export class MemoryAnalysisService {
   }
 
   private buildTimeline(observations: SignalObservation[]): MemoryAnalysisTimelinePoint[] {
-    return observations.map((item, index) => {
-      const previous = index > 0 ? observations[index - 1] : undefined;
-      return {
-        at: item.evidence.createdAt,
-        state: item.state,
-        intensity: item.intensity,
-        transitionFromPrevious: this.buildTransition(previous, item),
-        evidenceMemoryIds: [item.evidence.memoryId],
-      };
-    });
-  }
-
-  private topicChangeType(
-    first: SignalObservation,
-    last: SignalObservation,
-    count: number,
-  ): MemoryAnalysisTopicChange['changeType'] {
-    if (count === 1) {
-      return 'single';
-    }
-
-    if (last.intensity > first.intensity) {
-      return 'strengthened';
-    }
-    if (last.intensity < first.intensity) {
-      return 'weakened';
-    }
-    return 'persisted';
-  }
-
-  private buildTransition(
-    previous: SignalObservation | undefined,
-    current: SignalObservation,
-  ): MemoryAnalysisTimelinePoint['transitionFromPrevious'] {
-    if (!previous) {
-      return {
-        type: 'initial',
-        toState: current.state,
-        toIntensity: current.intensity,
-      };
-    }
-
-    if (current.intensity > previous.intensity) {
-      return {
-        type: 'strengthened',
-        fromState: previous.state,
-        fromIntensity: previous.intensity,
-        toState: current.state,
-        toIntensity: current.intensity,
-      };
-    }
-
-    if (current.intensity < previous.intensity) {
-      return {
-        type: 'weakened',
-        fromState: previous.state,
-        fromIntensity: previous.intensity,
-        toState: current.state,
-        toIntensity: current.intensity,
-      };
-    }
-
-    return {
-      type: 'persisted',
-      fromState: previous.state,
-      fromIntensity: previous.intensity,
-      toState: current.state,
-      toIntensity: current.intensity,
-    };
-  }
-
-  private topicStatus(count: number, confidence: number): MemoryAnalysisTopicChange['status'] {
-    if (count >= 2 && confidence >= 0.85) {
-      return 'high';
-    }
-    if (confidence < 0.7) {
-      return 'low_confidence';
-    }
-    return 'needs_confirm';
-  }
-
-  private defaultTopic(dimension: MemorySignalDimension): string {
-    return dimension;
-  }
-
-  private slugify(value: string): string {
-    return value
-      .toLowerCase()
-      .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 48) || 'unknown';
+    return observations.map((item) => ({
+      at: item.evidence.createdAt,
+      evidenceIds: [item.evidence.evidenceId],
+      evidenceMemoryIds: [item.evidence.memoryId],
+    }));
   }
 
   private unique<T>(values: T[]): T[] {
     return [...new Set(values)];
+  }
+
+  private calculateDimensionConfidence(memoryCount: number, dayCount: number): number {
+    return this.roundConfidence(Math.min(0.95, 0.45 + memoryCount * 0.1 + dayCount * 0.08));
   }
 
   private roundConfidence(value: number): number {
@@ -474,6 +375,29 @@ export class MemoryAnalysisService {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     timeout.unref?.();
+    const requestStartedAt = Date.now();
+    const userContent = JSON.stringify({
+      lang,
+      memories,
+    });
+    const requestBody = JSON.stringify({
+      model: this.config.analysis.qwenModel,
+      temperature: 0.1,
+      enable_thinking: false,
+      response_format: {
+        type: 'json_object',
+      },
+      messages: [
+        {
+          role: 'system',
+          content: MEMORY_SIGNAL_SYSTEM_PROMPT,
+        },
+        {
+          role: 'user',
+          content: userContent,
+        },
+      ],
+    });
 
     try {
       const response = await fetch(`${this.config.analysis.qwenApiBaseUrl.replace(/\/+$/, '')}/chat/completions`, {
@@ -483,29 +407,23 @@ export class MemoryAnalysisService {
           Authorization: `Bearer ${this.config.analysis.qwenApiKey}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          model: this.config.analysis.qwenModel,
-          temperature: 0.1,
-          enable_thinking: false,
-          response_format: {
-            type: 'json_object',
-          },
-          messages: [
-            {
-              role: 'system',
-              content: MEMORY_SIGNAL_SYSTEM_PROMPT,
-            },
-            {
-              role: 'user',
-              content: JSON.stringify({
-                lang,
-                memories,
-              }),
-            },
-          ],
-        }),
+        body: requestBody,
       });
       const payload = await response.json().catch(() => null) as QwenChatCompletionPayload | null;
+      const durationMs = Date.now() - requestStartedAt;
+      this.logger.log(JSON.stringify({
+        event: 'memory_analysis_qwen_completed',
+        durationMs,
+        httpStatus: response.status,
+        model: payload?.model ?? this.config.analysis.qwenModel,
+        memoryCount: memories.length,
+        systemPromptChars: MEMORY_SIGNAL_SYSTEM_PROMPT.length,
+        userPromptChars: userContent.length,
+        requestBodyChars: requestBody.length,
+        promptTokens: payload?.usage?.prompt_tokens ?? payload?.usage?.promptTokens ?? null,
+        completionTokens: payload?.usage?.completion_tokens ?? payload?.usage?.completionTokens ?? null,
+        totalTokens: payload?.usage?.total_tokens ?? payload?.usage?.totalTokens ?? null,
+      }));
 
       if (!response.ok) {
         throw new AppError(payload?.error?.message ?? `Qwen request failed with status ${response.status}`, {
@@ -581,12 +499,13 @@ export class MemoryAnalysisService {
         continue;
       }
       const rawItem = item as Record<string, unknown>;
-      const memoryId = this.normalizeText(rawItem.memoryId, '');
+      const memoryId = this.normalizeText(rawItem.id ?? rawItem.memoryId, '');
       if (!validMemoryIds.has(memoryId)) {
         continue;
       }
 
       const candidates = this.normalizeCandidates(
+        memoryId,
         rawItem.candidates,
         contentByMemoryId.get(memoryId) ?? '',
       );
@@ -600,7 +519,11 @@ export class MemoryAnalysisService {
     }));
   }
 
-  private normalizeCandidates(value: unknown, memoryContent: string): MemorySignalCandidate[] {
+  private normalizeCandidates(
+    memoryId: string,
+    value: unknown,
+    memoryContent: string,
+  ): MemorySignalCandidate[] {
     if (!Array.isArray(value)) {
       return [];
     }
@@ -611,29 +534,44 @@ export class MemoryAnalysisService {
           return null;
         }
         const candidate = item as Record<string, unknown>;
-        const dimension = this.normalizeDimension(candidate.dimension);
+        const dimension = this.normalizeDimension(candidate.dim ?? candidate.dimension);
         if (!dimension) {
           return null;
         }
-        const evidenceQuote = this.normalizeText(candidate.evidenceQuote, '').slice(0, 280);
-        if (!this.isEvidenceInContent(evidenceQuote, memoryContent)) {
-          return null;
-        }
+        const evidenceQuote = this.buildEvidenceText(memoryContent);
+        const summary = this.normalizeSummary(candidate.summary, evidenceQuote);
 
         return {
+          evidenceId: this.buildEvidenceId(memoryId, dimension, evidenceQuote),
           dimension,
-          confidence: this.clampNumber(candidate.confidence, 0, 1, 0.5),
+          summary,
           evidenceQuote,
-          topicKey: this.normalizeTopicKey(candidate.topicKey),
-          topic: this.normalizeText(candidate.topic, dimension).slice(0, 80),
-          state: this.normalizeText(candidate.state, 'observed').slice(0, 80),
-          intensity: Math.round(this.clampNumber(candidate.intensity, 1, 5, 3)),
-          tags: this.normalizeTags(candidate.tags),
         };
       })
       .filter((item): item is MemorySignalCandidate => item !== null)
-      .sort((a, b) => b.confidence - a.confidence)
       .slice(0, MAX_CANDIDATES_PER_MEMORY);
+  }
+
+  private buildEvidenceId(
+    memoryId: string,
+    dimension: MemorySignalDimension,
+    evidenceQuote: string,
+  ): string {
+    let hash = 2166136261;
+    const source = `${memoryId}|${dimension}|${evidenceQuote}`;
+    for (let index = 0; index < source.length; index += 1) {
+      hash ^= source.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return `ev_${(hash >>> 0).toString(36)}`;
+  }
+
+  private normalizeSummary(value: unknown, evidenceQuote: string): string {
+    const summary = this.normalizeText(value, '').slice(0, 40);
+    if (summary.length > 0) {
+      return summary;
+    }
+    return evidenceQuote.slice(0, 20);
   }
 
   private normalizeDimension(value: unknown): MemorySignalDimension | null {
@@ -664,7 +602,7 @@ export class MemoryAnalysisService {
         Math.min(MAX_CONTENT_CHARS, remainingContentChars),
       );
       promptMemories.push(promptMemory);
-      remainingContentChars -= promptMemory.content.length;
+      remainingContentChars -= promptMemory.text.length;
     }
 
     return promptMemories;
@@ -677,13 +615,7 @@ export class MemoryAnalysisService {
     const trimmed = this.trimForSignalExtraction(memory.content, maxContentChars);
     return {
       id: memory.id,
-      content: trimmed.content,
-      createdAt: memory.createdAt,
-      memoryType: memory.memoryType,
-      tags: memory.tags ?? [],
-      metadata: this.pickRelevantMetadata(memory.metadata),
-      contentTruncated: trimmed.truncated || undefined,
-      truncationStrategy: trimmed.truncated ? 'head_tail' : undefined,
+      text: trimmed.content,
     };
   }
 
@@ -705,70 +637,12 @@ export class MemoryAnalysisService {
     };
   }
 
-  private pickRelevantMetadata(metadata: Record<string, unknown> | null | undefined): Record<string, unknown> {
-    if (!metadata) {
-      return {};
-    }
-
-    const result: Record<string, unknown> = {};
-    for (const key of ['role', 'source', 'session_id', 'content_type']) {
-      const value = metadata[key];
-      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-        result[key] = value;
-      }
-    }
-
-    return result;
-  }
-
-  private clampNumber(value: unknown, min: number, max: number, fallback: number): number {
-    const numeric = typeof value === 'number' ? value : Number(value);
-    if (!Number.isFinite(numeric)) {
-      return fallback;
-    }
-    return Math.min(max, Math.max(min, numeric));
+  private buildEvidenceText(memoryContent: string): string {
+    return memoryContent.slice(0, 280);
   }
 
   private normalizeText(value: unknown, fallback: string): string {
     return typeof value === 'string' ? value.trim().slice(0, 1000) : fallback;
   }
 
-  private normalizeTags(value: unknown): string[] {
-    if (!Array.isArray(value)) {
-      return [];
-    }
-
-    return this.unique(
-      value
-        .map((item) => this.normalizeText(item, '').slice(0, 32))
-        .filter((item) => item.length > 0),
-    ).slice(0, 5);
-  }
-
-  private normalizeTopicKey(value: unknown): string {
-    if (typeof value !== 'string') {
-      return '';
-    }
-
-    return value
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9_]+/g, '_')
-      .replace(/^_+|_+$/g, '')
-      .slice(0, 80);
-  }
-
-  private isEvidenceInContent(evidenceQuote: string, content: string): boolean {
-    if (evidenceQuote.length === 0 || content.length === 0) {
-      return false;
-    }
-
-    const normalizedEvidence = this.normalizeWhitespace(evidenceQuote);
-    const normalizedContent = this.normalizeWhitespace(content);
-    return normalizedEvidence.length > 0 && normalizedContent.includes(normalizedEvidence);
-  }
-
-  private normalizeWhitespace(value: string): string {
-    return value.replace(/\s+/g, ' ').trim();
-  }
 }
