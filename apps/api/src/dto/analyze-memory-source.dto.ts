@@ -2,14 +2,17 @@ import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import { IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 
+const DEFAULT_MEMORY_ANALYSIS_LIMIT = 100;
+const MAX_MEMORY_ANALYSIS_LIMIT = 200;
+
 export class AnalyzeMemorySourceDto {
-  @ApiPropertyOptional({ default: 10, maximum: 10 })
+  @ApiPropertyOptional({ default: DEFAULT_MEMORY_ANALYSIS_LIMIT, maximum: MAX_MEMORY_ANALYSIS_LIMIT })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  @Max(10)
-  public limit = 10;
+  @Max(MAX_MEMORY_ANALYSIS_LIMIT)
+  public limit = DEFAULT_MEMORY_ANALYSIS_LIMIT;
 
   @ApiPropertyOptional({ default: 0 })
   @IsOptional()

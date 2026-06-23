@@ -18,10 +18,16 @@ export interface MemorySignalCandidate {
   dimension: MemorySignalDimension;
   confidence: number;
   evidenceQuote: string;
+  topicKey: string;
+  topic: string;
+  state: string;
+  intensity: number;
+  tags: string[];
 }
 
 export interface MemorySignalItem {
   memoryId: string;
+  createdAt?: string;
   candidates: MemorySignalCandidate[];
 }
 
@@ -31,6 +37,56 @@ export interface AnalyzeMemorySourceResponse {
   offset: number;
   model: string;
   items: MemorySignalItem[];
+}
+
+export interface MemoryAnalysisEvidence {
+  memoryId: string;
+  createdAt?: string;
+  quote: string;
+  confidence: number;
+}
+
+export interface MemoryAnalysisTimelinePoint {
+  at?: string;
+  state: string;
+  intensity: number;
+  transitionFromPrevious?: {
+    type: 'initial' | 'strengthened' | 'weakened' | 'persisted';
+    fromState?: string;
+    fromIntensity?: number;
+    toState: string;
+    toIntensity: number;
+  };
+  evidenceMemoryIds: string[];
+}
+
+export interface MemoryAnalysisChangeDetail {
+  timeline: MemoryAnalysisTimelinePoint[];
+  evidence: MemoryAnalysisEvidence[];
+}
+
+export interface MemoryAnalysisTopicChange {
+  id: string;
+  dimension: MemorySignalDimension;
+  topicKey: string;
+  topic: string;
+  currentState: string;
+  currentIntensity: number;
+  changeType: 'single' | 'strengthened' | 'weakened' | 'persisted';
+  status: 'high' | 'needs_confirm' | 'low_confidence';
+  confidence: number;
+  relatedMemoryCount: number;
+  tags: string[];
+  detail: MemoryAnalysisChangeDetail;
+}
+
+export interface MemoryAnalysisDimensionGroup {
+  dimension: MemorySignalDimension;
+  topics: MemoryAnalysisTopicChange[];
+}
+
+export interface AnalyzeMemorySourceChangesResponse extends AnalyzeMemorySourceResponse {
+  dimensions: MemoryAnalysisDimensionGroup[];
 }
 
 interface QwenChatCompletionPayload {
@@ -61,6 +117,16 @@ interface PromptMemory {
   truncationStrategy?: 'head_tail';
 }
 
+interface SignalObservation {
+  dimension: MemorySignalDimension;
+  topic: string;
+  topicKey: string;
+  state: string;
+  intensity: number;
+  tags: string[];
+  evidence: MemoryAnalysisEvidence;
+}
+
 const MAX_CONTENT_CHARS = 12000;
 const MAX_BATCH_CONTENT_CHARS = 60000;
 const MAX_CANDIDATES_PER_MEMORY = 3;
@@ -86,8 +152,14 @@ const MEMORY_SIGNAL_SYSTEM_PROMPT = [
   '- If there is no direct evidence, return an empty candidates array for that memory.',
   '- Return at most 3 candidates per memory, keeping the strongest evidence.',
   '- Every candidate must include a short evidenceQuote copied from the input memory.',
+  '- Every candidate must include topicKey, topic, state, intensity, and tags.',
+  '- topicKey must be stable snake_case English. Use the same topicKey for the same underlying topic across memories in this request.',
+  '- topic must be a concise noun phrase derived from the evidence, not a broad dimension name.',
+  '- state must describe the current observed stage or condition in a concise phrase.',
+  '- intensity is an integer from 1 to 5. It is a dimension-local strength score, not a medical or universal severity score.',
+  '- tags are short structured descriptors derived from the evidence. Keep 1 to 5 short tags.',
   '- If contentTruncated is true, only judge from the retained input text.',
-  '- Do not output labels or categories beyond dimension.',
+  '- topic/state/tags are structured metadata. Do not use them to suppress an evidence-backed candidate.',
   '- Do not drop a candidate just because it does not fit a predefined label.',
   '- Do not make medical diagnoses.',
   '- Return JSON only. No markdown.',
@@ -118,7 +190,7 @@ const MEMORY_SIGNAL_SYSTEM_PROMPT = [
   '- “我很焦虑 / 压力很大 / 真的好累” is emotion.',
   '',
   'Output JSON schema:',
-  '{"items":[{"memoryId":"string","candidates":[{"dimension":"long_term_goal | focus_area | emotion | preference_signal | growth_signal","confidence":0.0,"evidenceQuote":"string"}]}]}',
+  '{"items":[{"memoryId":"string","candidates":[{"dimension":"long_term_goal | focus_area | emotion | preference_signal | growth_signal","confidence":0.0,"evidenceQuote":"string","topicKey":"stable_snake_case","topic":"string","state":"string","intensity":1,"tags":["string"]}]}]}',
 ].join('\n');
 
 @Injectable()
@@ -136,6 +208,7 @@ export class MemoryAnalysisService {
   ): Promise<AnalyzeMemorySourceResponse> {
     const page = await this.source.fetchMemories(apiKey, dto.limit, dto.offset);
     const allMemoryIds = page.memories.map((memory) => memory.id);
+    const createdAtByMemoryId = new Map(page.memories.map((memory) => [memory.id, memory.createdAt]));
     const memories = this.buildPromptMemories(page.memories);
     if (memories.length === 0) {
       return {
@@ -145,6 +218,7 @@ export class MemoryAnalysisService {
         model: this.config.analysis.qwenModel ?? '',
         items: allMemoryIds.map((memoryId) => ({
           memoryId,
+          createdAt: createdAtByMemoryId.get(memoryId),
           candidates: [],
         })),
       };
@@ -158,6 +232,7 @@ export class MemoryAnalysisService {
       parsed,
       new Set(allMemoryIds),
       new Map(memories.map((memory) => [memory.id, memory.content])),
+      createdAtByMemoryId,
     );
 
     return {
@@ -167,6 +242,212 @@ export class MemoryAnalysisService {
       model: this.config.analysis.qwenModel!,
       items,
     };
+  }
+
+  public async analyzeSourceChanges(
+    apiKey: string,
+    dto: AnalyzeMemorySourceDto,
+  ): Promise<AnalyzeMemorySourceChangesResponse> {
+    const firstPass = await this.analyzeSource(apiKey, dto);
+    return {
+      ...firstPass,
+      dimensions: this.buildChangeDimensions(firstPass.items),
+    };
+  }
+
+  private buildChangeDimensions(items: MemorySignalItem[]): MemoryAnalysisDimensionGroup[] {
+    const observations = this.buildSignalObservations(items);
+    const byDimension = this.groupBy(observations, (item) => item.dimension);
+
+    return [...DIMENSIONS]
+      .map((dimension) => {
+        const dimensionObservations = byDimension.get(dimension) ?? [];
+        const topicGroups = this.groupBy(dimensionObservations, (item) => item.topicKey);
+        const topics = [...topicGroups.values()]
+          .map((group) => this.buildTopicChange(dimension, group))
+          .sort((left, right) => {
+            const leftAt = left.detail.timeline[0]?.at ?? '';
+            const rightAt = right.detail.timeline[0]?.at ?? '';
+            return leftAt.localeCompare(rightAt);
+          });
+
+        return {
+          dimension,
+          topics,
+        };
+      })
+      .filter((group) => group.topics.length > 0);
+  }
+
+  private buildSignalObservations(items: MemorySignalItem[]): SignalObservation[] {
+    const observations: SignalObservation[] = [];
+
+    for (const item of items) {
+      for (const candidate of item.candidates) {
+        const topic = candidate.topic || this.defaultTopic(candidate.dimension);
+        observations.push({
+          dimension: candidate.dimension,
+          topic,
+          topicKey: candidate.topicKey || this.slugify(topic),
+          state: candidate.state || 'observed',
+          intensity: candidate.intensity,
+          tags: candidate.tags,
+          evidence: {
+            memoryId: item.memoryId,
+            createdAt: item.createdAt,
+            quote: candidate.evidenceQuote,
+            confidence: candidate.confidence,
+          },
+        });
+      }
+    }
+
+    return observations.sort((left, right) => (left.evidence.createdAt ?? '').localeCompare(right.evidence.createdAt ?? ''));
+  }
+
+  private buildTopicChange(
+    dimension: MemorySignalDimension,
+    observations: SignalObservation[],
+  ): MemoryAnalysisTopicChange {
+    const sorted = [...observations].sort((left, right) => (left.evidence.createdAt ?? '').localeCompare(right.evidence.createdAt ?? ''));
+    const first = sorted[0]!;
+    const last = sorted[sorted.length - 1]!;
+    const confidence = this.roundConfidence(Math.max(...sorted.map((item) => item.evidence.confidence)));
+    const tags = this.unique(sorted.flatMap((item) => item.tags)).slice(0, 5);
+
+    return {
+      id: `${dimension}-${first.topicKey}`,
+      dimension,
+      topicKey: first.topicKey,
+      topic: first.topic,
+      currentState: last.state,
+      currentIntensity: last.intensity,
+      changeType: this.topicChangeType(first, last, sorted.length),
+      status: this.topicStatus(sorted.length, confidence),
+      confidence,
+      relatedMemoryCount: this.unique(sorted.map((item) => item.evidence.memoryId)).length,
+      tags,
+      detail: {
+        timeline: this.buildTimeline(sorted),
+        evidence: sorted.map((item) => item.evidence),
+      },
+    };
+  }
+
+  private buildTimeline(observations: SignalObservation[]): MemoryAnalysisTimelinePoint[] {
+    return observations.map((item, index) => {
+      const previous = index > 0 ? observations[index - 1] : undefined;
+      return {
+        at: item.evidence.createdAt,
+        state: item.state,
+        intensity: item.intensity,
+        transitionFromPrevious: this.buildTransition(previous, item),
+        evidenceMemoryIds: [item.evidence.memoryId],
+      };
+    });
+  }
+
+  private topicChangeType(
+    first: SignalObservation,
+    last: SignalObservation,
+    count: number,
+  ): MemoryAnalysisTopicChange['changeType'] {
+    if (count === 1) {
+      return 'single';
+    }
+
+    if (last.intensity > first.intensity) {
+      return 'strengthened';
+    }
+    if (last.intensity < first.intensity) {
+      return 'weakened';
+    }
+    return 'persisted';
+  }
+
+  private buildTransition(
+    previous: SignalObservation | undefined,
+    current: SignalObservation,
+  ): MemoryAnalysisTimelinePoint['transitionFromPrevious'] {
+    if (!previous) {
+      return {
+        type: 'initial',
+        toState: current.state,
+        toIntensity: current.intensity,
+      };
+    }
+
+    if (current.intensity > previous.intensity) {
+      return {
+        type: 'strengthened',
+        fromState: previous.state,
+        fromIntensity: previous.intensity,
+        toState: current.state,
+        toIntensity: current.intensity,
+      };
+    }
+
+    if (current.intensity < previous.intensity) {
+      return {
+        type: 'weakened',
+        fromState: previous.state,
+        fromIntensity: previous.intensity,
+        toState: current.state,
+        toIntensity: current.intensity,
+      };
+    }
+
+    return {
+      type: 'persisted',
+      fromState: previous.state,
+      fromIntensity: previous.intensity,
+      toState: current.state,
+      toIntensity: current.intensity,
+    };
+  }
+
+  private topicStatus(count: number, confidence: number): MemoryAnalysisTopicChange['status'] {
+    if (count >= 2 && confidence >= 0.85) {
+      return 'high';
+    }
+    if (confidence < 0.7) {
+      return 'low_confidence';
+    }
+    return 'needs_confirm';
+  }
+
+  private defaultTopic(dimension: MemorySignalDimension): string {
+    return dimension;
+  }
+
+  private slugify(value: string): string {
+    return value
+      .toLowerCase()
+      .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 48) || 'unknown';
+  }
+
+  private unique<T>(values: T[]): T[] {
+    return [...new Set(values)];
+  }
+
+  private roundConfidence(value: number): number {
+    return Math.round(value * 100) / 100;
+  }
+
+  private groupBy<T>(items: T[], keyOf: (item: T) => string): Map<string, T[]> {
+    const groups = new Map<string, T[]>();
+    for (const item of items) {
+      const key = keyOf(item);
+      const group = groups.get(key);
+      if (group) {
+        group.push(item);
+      } else {
+        groups.set(key, [item]);
+      }
+    }
+    return groups;
   }
 
   private ensureQwenConfigured(): void {
@@ -284,10 +565,12 @@ export class MemoryAnalysisService {
     raw: RawMemorySignalResult,
     validMemoryIds: Set<string>,
     contentByMemoryId: Map<string, string>,
+    createdAtByMemoryId: Map<string, string | undefined>,
   ): MemorySignalItem[] {
     if (!Array.isArray(raw.items)) {
       return [...validMemoryIds].map((memoryId) => ({
         memoryId,
+        createdAt: createdAtByMemoryId.get(memoryId),
         candidates: [],
       }));
     }
@@ -312,6 +595,7 @@ export class MemoryAnalysisService {
 
     return [...validMemoryIds].map((memoryId) => ({
       memoryId,
+      createdAt: createdAtByMemoryId.get(memoryId),
       candidates: byMemoryId.get(memoryId) ?? [],
     }));
   }
@@ -340,6 +624,11 @@ export class MemoryAnalysisService {
           dimension,
           confidence: this.clampNumber(candidate.confidence, 0, 1, 0.5),
           evidenceQuote,
+          topicKey: this.normalizeTopicKey(candidate.topicKey),
+          topic: this.normalizeText(candidate.topic, dimension).slice(0, 80),
+          state: this.normalizeText(candidate.state, 'observed').slice(0, 80),
+          intensity: Math.round(this.clampNumber(candidate.intensity, 1, 5, 3)),
+          tags: this.normalizeTags(candidate.tags),
         };
       })
       .filter((item): item is MemorySignalCandidate => item !== null)
@@ -442,6 +731,31 @@ export class MemoryAnalysisService {
 
   private normalizeText(value: unknown, fallback: string): string {
     return typeof value === 'string' ? value.trim().slice(0, 1000) : fallback;
+  }
+
+  private normalizeTags(value: unknown): string[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return this.unique(
+      value
+        .map((item) => this.normalizeText(item, '').slice(0, 32))
+        .filter((item) => item.length > 0),
+    ).slice(0, 5);
+  }
+
+  private normalizeTopicKey(value: unknown): string {
+    if (typeof value !== 'string') {
+      return '';
+    }
+
+    return value
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 80);
   }
 
   private isEvidenceInContent(evidenceQuote: string, content: string): boolean {

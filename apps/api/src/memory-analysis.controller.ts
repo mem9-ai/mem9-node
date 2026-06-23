@@ -27,4 +27,13 @@ export class MemoryAnalysisController {
   ) {
     return this.service.analyzeSource(context.rawApiKey, dto);
   }
+
+  @Post('analyze-source-changes')
+  @ApiOperation({ summary: 'Extract memory analysis candidates and build local change groups' })
+  public analyzeSourceChanges(
+    @CurrentContext() context: Mem9RequestContext,
+    @Body() dto: AnalyzeMemorySourceDto,
+  ) {
+    return this.service.analyzeSourceChanges(context.rawApiKey, dto);
+  }
 }
