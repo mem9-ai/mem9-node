@@ -71,6 +71,7 @@ const STALE_DUPLICATE_CLEANUP_MS = 30 * 60 * 1000;
 interface DeepAnalysisReportRecordLike {
   id: string;
   status: string;
+  reportContent: string | null;
   reportObjectKey: string | null;
   sourceSnapshotObjectKey: string;
   previewJson?: unknown;
@@ -144,6 +145,17 @@ function collectDuplicateMemoryIds(
   )].filter((memoryId) => !deletedIds.has(memoryId));
 }
 
+function parseReportContent(reportContent: string | null): DeepAnalysisReportDocument {
+  if (!reportContent) {
+    throw new AppError('Deep analysis report is not ready yet', {
+      statusCode: 409,
+      code: 'DEEP_ANALYSIS_REPORT_NOT_READY',
+    });
+  }
+
+  return JSON.parse(reportContent) as DeepAnalysisReportDocument;
+}
+
 @Injectable()
 export class DeepAnalysisDuplicateOpsService {
   private readonly logger = new Logger(DeepAnalysisDuplicateOpsService.name);
@@ -164,15 +176,7 @@ export class DeepAnalysisDuplicateOpsService {
       context.apiKeyFingerprint,
     );
 
-    if (!report.reportObjectKey) {
-      throw new AppError('Deep analysis report is not ready yet', {
-        statusCode: 409,
-        code: 'DEEP_ANALYSIS_REPORT_NOT_READY',
-      });
-    }
-
-    const reportPayload = await this.storage.getObjectBuffer(report.reportObjectKey);
-    const document = JSON.parse(reportPayload.toString('utf8')) as DeepAnalysisReportDocument;
+    const document = parseReportContent(report.reportContent);
     const existingCleanup = getDuplicateCleanupStatus(report);
 
     if (isDuplicateCleanupActive(existingCleanup) && !isDuplicateCleanupStale(existingCleanup)) {
@@ -280,18 +284,8 @@ export class DeepAnalysisDuplicateOpsService {
       context.apiKeyFingerprint,
     );
 
-    if (!report.reportObjectKey) {
-      throw new AppError('Deep analysis report is not ready yet', {
-        statusCode: 409,
-        code: 'DEEP_ANALYSIS_REPORT_NOT_READY',
-      });
-    }
-
-    const [reportPayload, sourcePayload] = await Promise.all([
-      this.storage.getObjectBuffer(report.reportObjectKey),
-      this.storage.getObjectBuffer(report.sourceSnapshotObjectKey),
-    ]);
-    const document = JSON.parse(reportPayload.toString('utf8')) as DeepAnalysisReportDocument;
+    const document = parseReportContent(report.reportContent);
+    const sourcePayload = await this.storage.getObjectBuffer(report.sourceSnapshotObjectKey);
     const sourceSnapshot = gunzipJson<SourceSnapshotPayload>(sourcePayload);
     const memoryPreviewById = new Map(
       sourceSnapshot.memories.map((memory) => [memory.id, sentencePreview(memory.content)]),

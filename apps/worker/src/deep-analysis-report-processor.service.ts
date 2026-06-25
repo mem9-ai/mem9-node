@@ -1879,8 +1879,7 @@ export class DeepAnalysisReportProcessorService {
         );
       }
 
-      const reportObjectKey = `deep-analysis/reports/${reportRecord.id}/report.json`;
-      await this.storage.putJson(reportObjectKey, report);
+      const reportContent = JSON.stringify(report);
       currentStage = DeepAnalysisReportStage.COMPLETE;
       appendInternalEvent(internalComment, 'info', currentStage, 'deep_analysis_report_completed', {
         reportId: reportRecord.id,
@@ -1894,7 +1893,7 @@ export class DeepAnalysisReportProcessorService {
         stage: DeepAnalysisReportStage.COMPLETE,
         progressPercent: 100,
         completedAt: new Date(),
-        reportObjectKey,
+        reportContent,
         previewJson: buildPreview(report) as unknown as Prisma.InputJsonValue,
         internalComment: JSON.stringify(internalComment),
       });

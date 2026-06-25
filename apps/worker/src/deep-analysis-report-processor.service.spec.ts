@@ -310,39 +310,40 @@ describe('deep analysis report processor service', () => {
       traceId: 'trace_1',
     });
 
-    expect(storage.putJson).toHaveBeenCalledTimes(1);
-    const [, report] = storage.putJson.mock.calls[0] as unknown as [
+    expect(storage.putJson).not.toHaveBeenCalled();
+    const [, completedUpdate] = repository.updateDeepAnalysisReport.mock.lastCall as unknown as [
       string,
-      {
-        overview: {
-          memoryCount: number;
-          deduplicatedMemoryCount: number;
-        };
-        persona: {
-          summary: string;
-          workingStyle: string[];
-          notableRoutines: string[];
-          contradictionsOrTensions: string[];
-          evidenceHighlights: Array<{ memoryIds: string[] }>;
-        };
-        themeLandscape: {
-          highlights: Array<{ name: string }>;
-        };
-        entities: {
-          people: Array<{ label: string }>;
-          teams: Array<{ label: string }>;
-        };
-        discoveries: Array<{ title: string; kind: string }>;
-        quality: {
-          duplicateRatio: number;
-          duplicateMemoryCount: number;
-          duplicateClusters: Array<{
-            canonicalMemoryId: string;
-            duplicateMemoryIds: string[];
-          }>;
-        };
-      },
+      { reportContent: string },
     ];
+    const report = JSON.parse(completedUpdate.reportContent) as {
+      overview: {
+        memoryCount: number;
+        deduplicatedMemoryCount: number;
+      };
+      persona: {
+        summary: string;
+        workingStyle: string[];
+        notableRoutines: string[];
+        contradictionsOrTensions: string[];
+        evidenceHighlights: Array<{ memoryIds: string[] }>;
+      };
+      themeLandscape: {
+        highlights: Array<{ name: string }>;
+      };
+      entities: {
+        people: Array<{ label: string }>;
+        teams: Array<{ label: string }>;
+      };
+      discoveries: Array<{ title: string; kind: string }>;
+      quality: {
+        duplicateRatio: number;
+        duplicateMemoryCount: number;
+        duplicateClusters: Array<{
+          canonicalMemoryId: string;
+          duplicateMemoryIds: string[];
+        }>;
+      };
+    };
 
     expect(report).toMatchObject({
       overview: {
@@ -448,7 +449,7 @@ describe('deep analysis report processor service', () => {
         status: 'COMPLETED',
         stage: 'COMPLETE',
         progressPercent: 100,
-        reportObjectKey: 'deep-analysis/reports/dar_1/report.json',
+        reportContent: expect.any(String),
         internalComment: expect.any(String),
         previewJson: expect.objectContaining({
           summary: expect.any(String),
@@ -1270,21 +1271,22 @@ describe('deep analysis report processor service', () => {
       }),
     );
 
-    expect(storage.putJson).toHaveBeenCalledTimes(1);
-    const [, storedReport] = storage.putJson.mock.calls[0] as unknown as [
+    expect(storage.putJson).not.toHaveBeenCalled();
+    const [, completedUpdate] = repository.updateDeepAnalysisReport.mock.lastCall as unknown as [
       string,
-      {
-        persona: { summary: string };
-        themeLandscape: {
-          highlights: Array<{ name: string; description: string }>;
-        };
-        entities: {
-          people: Array<{ label: string; evidenceMemoryIds: string[] }>;
-          projects: Array<{ label: string; evidenceMemoryIds: string[] }>;
-        };
-        discoveries: Array<{ title: string; evidenceMemoryIds: string[] }>;
-      },
+      { reportContent: string },
     ];
+    const storedReport = JSON.parse(completedUpdate.reportContent) as {
+      persona: { summary: string };
+      themeLandscape: {
+        highlights: Array<{ name: string; description: string }>;
+      };
+      entities: {
+        people: Array<{ label: string; evidenceMemoryIds: string[] }>;
+        projects: Array<{ label: string; evidenceMemoryIds: string[] }>;
+      };
+      discoveries: Array<{ title: string; evidenceMemoryIds: string[] }>;
+    };
 
     expect(storedReport.persona.summary).toBe(
       invalidSynthesisReport.persona.summary,

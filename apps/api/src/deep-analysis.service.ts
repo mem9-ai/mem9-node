@@ -8,7 +8,7 @@ import type {
   DeepAnalysisReportPreview,
   ListDeepAnalysisReportsResponse,
 } from '@mem9/contracts';
-import { AnalysisRepository, S3PayloadStorageService, createPrefixedId } from '@mem9/shared';
+import { AnalysisRepository, createPrefixedId } from '@mem9/shared';
 import { Inject, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 
@@ -26,10 +26,6 @@ function toPreview(value: unknown): DeepAnalysisReportPreview | null {
   }
 
   return value as DeepAnalysisReportPreview;
-}
-
-function parseReportDocument(payload: Buffer): DeepAnalysisReportDocument {
-  return JSON.parse(payload.toString('utf8')) as DeepAnalysisReportDocument;
 }
 
 function toListItem(report: {
@@ -69,7 +65,6 @@ export class DeepAnalysisService {
   public constructor(
     private readonly repository: AnalysisRepository,
     private readonly source: Mem9SourceService,
-    private readonly storage: S3PayloadStorageService,
     private readonly sourcePreparation: DeepAnalysisSourcePreparationService,
     private readonly duplicateOps: DeepAnalysisDuplicateOpsService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
@@ -187,9 +182,8 @@ export class DeepAnalysisService {
     );
     let document: DeepAnalysisReportDocument | null = null;
 
-    if (report.reportObjectKey) {
-      const payload = await this.storage.getObjectBuffer(report.reportObjectKey);
-      document = parseReportDocument(payload);
+    if (report.reportContent) {
+      document = JSON.parse(report.reportContent) as DeepAnalysisReportDocument;
     }
 
     return {

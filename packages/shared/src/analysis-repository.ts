@@ -482,12 +482,7 @@ export class AnalysisRepository {
     reportId: string,
     fingerprint: Buffer,
   ): Promise<DeepAnalysisReport> {
-    const report = await this.prisma.deepAnalysisReport.findFirst({
-      where: {
-        id: reportId,
-        apiKeyFingerprint: toPrismaBytes(fingerprint),
-      },
-    });
+    const report = await this.findOwnedDeepAnalysisReport(reportId, fingerprint);
 
     if (report === null) {
       throw new AppError('Deep analysis report not found', {
@@ -497,6 +492,18 @@ export class AnalysisRepository {
     }
 
     return report;
+  }
+
+  public async findOwnedDeepAnalysisReport(
+    reportId: string,
+    fingerprint: Buffer,
+  ): Promise<DeepAnalysisReport | null> {
+    return this.prisma.deepAnalysisReport.findFirst({
+      where: {
+        id: reportId,
+        apiKeyFingerprint: toPrismaBytes(fingerprint),
+      },
+    });
   }
 
   public async getDeepAnalysisReport(reportId: string): Promise<DeepAnalysisReport> {

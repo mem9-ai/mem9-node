@@ -191,7 +191,6 @@ function createService(overrides?: {
     service: new DeepAnalysisService(
       repository as never,
       source as never,
-      storage as never,
       sourcePreparation as never,
       duplicateOps as never,
       config,
@@ -505,7 +504,7 @@ describe('deep analysis service', () => {
     );
   });
 
-  it('lists reports and loads report details from storage', async () => {
+  it('lists reports and loads report details from report content', async () => {
     const document = {
       overview: {
         memoryCount: 1001,
@@ -559,14 +558,10 @@ describe('deep analysis service', () => {
           errorCode: null,
           errorMessage: null,
           previewJson: null,
-          reportObjectKey: 'deep-analysis/reports/dar_1/report.json',
+          reportContent: JSON.stringify(document),
+          reportObjectKey: null,
           sourceSnapshotObjectKey: 'deep-analysis/reports/dar_1/source.json.gz',
         })),
-      },
-      storage: {
-        getObjectBuffer: jest.fn(async () =>
-          Buffer.from(JSON.stringify(document)),
-        ),
       },
     });
 

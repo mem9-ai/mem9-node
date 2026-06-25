@@ -186,6 +186,7 @@ model DeepAnalysisReport {
   errorCode             String?                  @db.VarChar(64)
   errorMessage          String?                  @db.VarChar(512)
   previewJson           Json?
+  reportContent         String?                  @map("report_content") @db.LongText
   reportObjectKey       String?                  @db.VarChar(255)
   sourceSnapshotObjectKey String                 @db.VarChar(255)
   internalComment       String?                  @map("internal_comment") @db.LongText

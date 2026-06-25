@@ -1,4 +1,4 @@
-import { Controller, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Post, Param,  Query, UseGuards } from '@nestjs/common';
 import { ApiHeader, ApiOperation, ApiTags } from '@nestjs/swagger';
 
 import { ApiKeyGuard } from '../common/api-key.guard';
@@ -27,5 +27,14 @@ export class MemoryAnalysisController {
     @Query() query: AnalyzeMemorySourceDto,
   ) {
     return this.service.analyzeSource(context, query);
+  }
+
+  @Get('report/:report_id')
+  @ApiOperation({ summary: 'Get one memory analysis report if it exists' })
+  public getReport(
+    @CurrentContext() context: Mem9RequestContext,
+    @Param('report_id') reportId: string,
+  ) {
+    return this.service.getReport(context, reportId);
   }
 }

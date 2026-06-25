@@ -13,11 +13,22 @@ function createContext() {
 
 describe('deep analysis duplicate ops service', () => {
   it('exports duplicate cleanup CSV without including canonical ids as deletions', async () => {
+    const reportContent = JSON.stringify({
+      quality: {
+        duplicateClusters: [
+          {
+            canonicalMemoryId: 'mem_1',
+            duplicateMemoryIds: ['mem_2', 'mem_3'],
+          },
+        ],
+      },
+    });
     const service = new DeepAnalysisDuplicateOpsService(
       {
         getOwnedDeepAnalysisReport: jest.fn(async () => ({
           id: 'dar_1',
           status: 'COMPLETED',
+          reportContent,
           reportObjectKey: 'deep-analysis/reports/dar_1/report.json',
           sourceSnapshotObjectKey: 'deep-analysis/reports/dar_1/source.json.gz',
         })),
@@ -26,19 +37,8 @@ describe('deep analysis duplicate ops service', () => {
         deleteMemories: jest.fn(),
       } as never,
       {
-        getObjectBuffer: jest
-          .fn()
-          .mockResolvedValueOnce(Buffer.from(JSON.stringify({
-            quality: {
-              duplicateClusters: [
-                {
-                  canonicalMemoryId: 'mem_1',
-                  duplicateMemoryIds: ['mem_2', 'mem_3'],
-                },
-              ],
-            },
-          })))
-          .mockResolvedValueOnce(gzipJson({
+        getObjectBuffer: jest.fn(async () =>
+          gzipJson({
             fetchedAt: '2026-03-28T00:00:00Z',
             memoryCount: 3,
             memories: [
@@ -60,6 +60,16 @@ describe('deep analysis duplicate ops service', () => {
   });
 
   it('delegates duplicate deletion to the mem9 source client', async () => {
+    const reportContent = JSON.stringify({
+      quality: {
+        duplicateClusters: [
+          {
+            canonicalMemoryId: 'mem_1',
+            duplicateMemoryIds: ['mem_2', 'mem_3'],
+          },
+        ],
+      },
+    });
     const source = {
       deleteMemories: jest.fn(async () => ({
         deletedMemoryIds: ['mem_2'],
@@ -71,6 +81,7 @@ describe('deep analysis duplicate ops service', () => {
         getOwnedDeepAnalysisReport: jest.fn(async () => ({
           id: 'dar_1',
           status: 'COMPLETED',
+          reportContent,
           reportObjectKey: 'deep-analysis/reports/dar_1/report.json',
           sourceSnapshotObjectKey: 'deep-analysis/reports/dar_1/source.json.gz',
           requestedAt: new Date('2026-03-28T00:00:00Z'),
@@ -85,6 +96,7 @@ describe('deep analysis duplicate ops service', () => {
         getDeepAnalysisReport: jest.fn(async () => ({
           id: 'dar_1',
           status: 'COMPLETED',
+          reportContent,
           reportObjectKey: 'deep-analysis/reports/dar_1/report.json',
           sourceSnapshotObjectKey: 'deep-analysis/reports/dar_1/source.json.gz',
           requestedAt: new Date('2026-03-28T00:00:00Z'),
@@ -100,16 +112,7 @@ describe('deep analysis duplicate ops service', () => {
       } as never,
       source as never,
       {
-        getObjectBuffer: jest.fn(async () => Buffer.from(JSON.stringify({
-          quality: {
-            duplicateClusters: [
-              {
-                canonicalMemoryId: 'mem_1',
-                duplicateMemoryIds: ['mem_2', 'mem_3'],
-              },
-            ],
-          },
-        }))),
+        getObjectBuffer: jest.fn(),
       } as never,
     );
 
