@@ -5,33 +5,33 @@ export type MemorySignalDimension =
   | 'preference_signal'
   | 'growth_signal';
 
-export interface MemoryAnalysisInsightEvidence {
-  evidenceId?: string;
-  time?: string;
-  quote: string;
-}
-
-export interface MemoryAnalysisInsightTime {
-  firstSeenAt?: string;
-  lastSeenAt?: string;
-}
-
-export interface MemoryAnalysisInsight {
-  summary: string;
-  time: MemoryAnalysisInsightTime;
-  evidence: MemoryAnalysisInsightEvidence[];
-}
-
-export interface MemoryAnalysisDimensionGroup {
-  dimension: MemorySignalDimension;
-  insights: MemoryAnalysisInsight[];
-}
-
 export interface AnalyzeMemorySourceChangesResponse {
   total: number;
   memoryCount: number;
   model: string;
-  dimensions: MemoryAnalysisDimensionGroup[];
+  dimensions: MemoryAnalysisChangeDimensionGroup[];
+}
+
+export interface MemoryAnalysisChangePeriod {
+  start: string;
+  end: string;
+}
+
+export interface MemoryAnalysisChangeEvidence {
+  evidenceId: string;
+  quote: string;
+}
+
+export interface MemoryAnalysisChange {
+  title: string;
+  summary: string;
+  period: MemoryAnalysisChangePeriod;
+  evidence: MemoryAnalysisChangeEvidence[];
+}
+
+export interface MemoryAnalysisChangeDimensionGroup {
+  dimension: MemorySignalDimension;
+  changes: MemoryAnalysisChange[];
 }
 
 export interface MemoryAnalysisPeriodSummary {
@@ -43,6 +43,7 @@ export interface MemoryAnalysisPeriodSummary {
 }
 
 export interface MemoryAnalysisPeriodInsight {
+  title: string;
   summary: string;
   evidence: MemoryAnalysisPeriodInsightEvidence[];
 }

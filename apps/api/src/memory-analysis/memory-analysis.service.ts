@@ -18,9 +18,9 @@ import {
 import type {
   AnalyzeMemorySourceChangesResponse,
   AnalyzeMemorySourcePeriodSummaryResponse,
-  MemoryAnalysisDimensionGroup,
-  MemoryAnalysisInsight,
-  MemoryAnalysisInsightEvidence,
+  MemoryAnalysisChange,
+  MemoryAnalysisChangeDimensionGroup,
+  MemoryAnalysisChangeEvidence,
   MemoryAnalysisPeriodDimensionGroup,
   MemoryAnalysisPeriodInsight,
   MemoryAnalysisPeriodInsightEvidence,
@@ -62,7 +62,6 @@ const MAX_INSIGHTS_PER_DIMENSION_PER_PERIOD = 1;
 const MAX_EVIDENCE_PER_INSIGHT = 1;
 const QWEN_PERIOD_SUMMARY_CONCURRENCY = 3;
 const DEBUG_FIRST_PASS_OUTPUT_PATH = '/Users/ericzhang/Downloads/memory-analysis-first-pass.json';
-
 @Injectable()
 export class MemoryAnalysisService {
   private readonly logger = new Logger(MemoryAnalysisService.name);
@@ -95,6 +94,7 @@ export class MemoryAnalysisService {
       total: firstPass.total,
       periodCount: firstPass.periods.length,
       insightCount: this.countPeriodInsights(firstPass.periods.flatMap((period) => period.dimensions)),
+      changeCount: this.countChanges(dimensions),
       dimensionCount: dimensions.length,
     }));
 
@@ -209,130 +209,66 @@ export class MemoryAnalysisService {
     );
   }
 
-  private buildChangeDimensions(periods: MemoryAnalysisPeriodSummary[]): MemoryAnalysisDimensionGroup[] {
-    const dimensionGroups = periods.flatMap((period) => (
-      period.dimensions.map((group) => this.toFinalDimensionGroup(period, group))
+  private buildChangeDimensions(periods: MemoryAnalysisPeriodSummary[]): MemoryAnalysisChangeDimensionGroup[] {
+    const changesByDimension = new Map<MemorySignalDimension, MemoryAnalysisChange[]>();
+    const sortedPeriods = [...periods].sort((left, right) => (
+      left.period.start.localeCompare(right.period.start)
+      || left.period.end.localeCompare(right.period.end)
     ));
-    const byDimension = this.groupBy(dimensionGroups, (item) => item.dimension);
 
-    return [...MEMORY_ANALYSIS_DIMENSIONS]
-      .map((dimension) => this.buildDimensionGroup(dimension, byDimension.get(dimension) ?? []))
-      .filter((group): group is MemoryAnalysisDimensionGroup => group !== null);
-  }
+    for (const period of sortedPeriods) {
+      for (const group of period.dimensions) {
+        const changes = changesByDimension.get(group.dimension) ?? [];
+        for (const insight of group.insights) {
+          const evidence = this.toChangeEvidence(insight.evidence);
+          if (evidence.length === 0) {
+            continue;
+          }
 
-  private toFinalDimensionGroup(
-    period: MemoryAnalysisPeriodSummary,
-    group: MemoryAnalysisPeriodDimensionGroup,
-  ): MemoryAnalysisDimensionGroup {
-    return {
-      dimension: group.dimension,
-      insights: group.insights.map((insight) => this.toFinalInsight(period, insight)),
-    };
-  }
-
-  private toFinalInsight(
-    period: MemoryAnalysisPeriodSummary,
-    insight: MemoryAnalysisPeriodInsight,
-  ): MemoryAnalysisInsight {
-    return {
-      summary: insight.summary,
-      time: {
-        firstSeenAt: period.period.start,
-        lastSeenAt: period.period.end,
-      },
-      evidence: insight.evidence.map((item) => ({
-        evidenceId: item.evidenceId,
-        quote: item.quote,
-      })),
-    };
-  }
-
-  private buildDimensionGroup(
-    dimension: MemorySignalDimension,
-    groups: MemoryAnalysisDimensionGroup[],
-  ): MemoryAnalysisDimensionGroup | null {
-    if (groups.length === 0) {
-      return null;
+          changes.push({
+            title: insight.title,
+            summary: insight.summary,
+            period: {
+              start: period.period.start,
+              end: period.period.end,
+            },
+            evidence,
+          });
+        }
+        changesByDimension.set(group.dimension, changes);
+      }
     }
 
-    const insights = this.mergePeriodInsights(groups.flatMap((group) => group.insights));
+    return [...MEMORY_ANALYSIS_DIMENSIONS]
+      .map((dimension): MemoryAnalysisChangeDimensionGroup | null => {
+        const changes = (changesByDimension.get(dimension) ?? []).sort((left, right) => (
+          left.period.start.localeCompare(right.period.start)
+          || left.period.end.localeCompare(right.period.end)
+        ));
 
-    return {
-      dimension,
-      insights,
-    };
+        return changes.length > 0
+          ? { dimension, changes }
+          : null;
+      })
+      .filter((group): group is MemoryAnalysisChangeDimensionGroup => group !== null);
   }
 
-  private mergePeriodInsights(insights: MemoryAnalysisInsight[]): MemoryAnalysisInsight[] {
-    const bySummary = this.groupBy(insights, (item) => item.summary);
-
-    return [...bySummary.values()]
-      .map((items) => this.mergeInsightGroup(items))
-      .sort((left, right) => (right.time.lastSeenAt ?? '').localeCompare(left.time.lastSeenAt ?? ''));
-  }
-
-  private mergeInsightGroup(insights: MemoryAnalysisInsight[]): MemoryAnalysisInsight {
-    const sorted = [...insights].sort((left, right) => (left.time.firstSeenAt ?? '').localeCompare(right.time.firstSeenAt ?? ''));
-    const firstSeenAt = sorted.find((item) => item.time.firstSeenAt)?.time.firstSeenAt;
-    const lastSeenAt = [...sorted].reverse().find((item) => item.time.lastSeenAt)?.time.lastSeenAt;
-
-    return {
-      summary: sorted[0]?.summary ?? '',
-      time: {
-        firstSeenAt,
-        lastSeenAt,
-      },
-      evidence: this.pickInsightEvidence(sorted.flatMap((item) => item.evidence)),
-    };
-  }
-
-  private pickInsightEvidence(evidence: MemoryAnalysisInsightEvidence[]): MemoryAnalysisInsightEvidence[] {
-    const uniqueEvidence: MemoryAnalysisInsightEvidence[] = [];
-    const seenQuotes = new Set<string>();
+  private toChangeEvidence(evidence: MemoryAnalysisPeriodInsightEvidence[]): MemoryAnalysisChangeEvidence[] {
+    const uniqueEvidence: MemoryAnalysisChangeEvidence[] = [];
+    const seenIds = new Set<string>();
 
     for (const item of evidence) {
-      const quote = item.quote;
-      if (seenQuotes.has(quote)) {
+      if (seenIds.has(item.evidenceId)) {
         continue;
       }
-      seenQuotes.add(quote);
+      seenIds.add(item.evidenceId);
       uniqueEvidence.push({
         evidenceId: item.evidenceId,
-        time: item.time,
-        quote,
+        quote: item.quote,
       });
     }
 
-    if (uniqueEvidence.length <= MAX_EVIDENCE_PER_INSIGHT) {
-      return uniqueEvidence;
-    }
-
-    const first = uniqueEvidence[0];
-    const middle = uniqueEvidence[Math.floor(uniqueEvidence.length / 2)];
-    const last = uniqueEvidence[uniqueEvidence.length - 1];
-    const samples = [first, middle, last].filter((item): item is MemoryAnalysisInsightEvidence => item !== undefined);
-
-    return samples.filter((item, index, items) => (
-      items.findIndex((candidate) => (
-        candidate.quote === item.quote
-        && candidate.time === item.time
-        && candidate.evidenceId === item.evidenceId
-      )) === index
-    ));
-  }
-
-  private groupBy<T>(items: T[], keyOf: (item: T) => string): Map<string, T[]> {
-    const groups = new Map<string, T[]>();
-    for (const item of items) {
-      const key = keyOf(item);
-      const group = groups.get(key);
-      if (group) {
-        group.push(item);
-      } else {
-        groups.set(key, [item]);
-      }
-    }
-    return groups;
+    return uniqueEvidence;
   }
 
   private async mapWithConcurrency<TItem, TResult>(
@@ -606,11 +542,13 @@ export class MemoryAnalysisService {
         const rawInsight = item as Record<string, unknown>;
         const evidence = this.normalizeCachedEvidence(rawInsight.evidence);
         const summary = this.normalizeSummary(rawInsight.summary, evidence[0]?.quote ?? '');
+        const title = this.normalizeTitle(rawInsight.title, summary);
         if (summary.length === 0) {
           return null;
         }
 
         return {
+          title,
           summary,
           evidence,
         };
@@ -700,11 +638,13 @@ export class MemoryAnalysisService {
         const rawInsight = item as Record<string, unknown>;
         const evidence = this.normalizeEvidence(rawInsight.evidence, period);
         const summary = this.normalizeSummary(rawInsight.summary, evidence[0]?.quote ?? '');
+        const title = this.normalizeTitle(rawInsight.title, summary);
         if (summary.length === 0) {
           return null;
         }
 
         return {
+          title,
           summary,
           evidence,
         };
@@ -770,6 +710,15 @@ export class MemoryAnalysisService {
   private normalizeSummary(value: unknown, fallback: string): string {
     const summary = this.normalizeText(value, '').slice(0, 80);
     return summary.length > 0 ? summary : fallback.slice(0, 20);
+  }
+
+  private normalizeTitle(value: unknown, fallback: string): string {
+    const title = this.normalizeText(value, '').replace(/[。.!！?？]+$/u, '').slice(0, 24);
+    if (title.length > 0) {
+      return title;
+    }
+
+    return fallback.replace(/[。.!！?？]+$/u, '').slice(0, 12);
   }
 
   private normalizeDimension(value: unknown): MemorySignalDimension | null {
@@ -861,8 +810,8 @@ export class MemoryAnalysisService {
     };
   }
 
-  private countInsights(groups: MemoryAnalysisDimensionGroup[]): number {
-    return groups.reduce((count, group) => count + group.insights.length, 0);
+  private countChanges(groups: MemoryAnalysisChangeDimensionGroup[]): number {
+    return groups.reduce((count, group) => count + group.changes.length, 0);
   }
 
   private countPeriodInsights(groups: MemoryAnalysisPeriodDimensionGroup[]): number {

@@ -1,4 +1,4 @@
-export const MEMORY_PERIOD_SUMMARY_PROMPT_VERSION = 'v1';
+export const MEMORY_PERIOD_SUMMARY_PROMPT_VERSION = 'v3';
 
 export const MEMORY_PERIOD_SUMMARY_SYSTEM_PROMPT = [
   'You summarize memories by period.',
@@ -25,11 +25,17 @@ export const MEMORY_PERIOD_SUMMARY_SYSTEM_PROMPT = [
   '- Keep evidence quotes in the original language.',
   '- Return only dimensions with direct evidence.',
   '- At most 1 insight per dimension.',
-  '- Each insight has summary and evidence.',
+  '- Each insight has title, summary, and evidence.',
+  '- title is a compact UI label for the concrete topic, entity, or action.',
+  '- title must not repeat the dimension name.',
+  '- title should be shorter than summary and should not be a full sentence.',
+  '- If the memory contains specific names, events, exams, products, or plans, preserve those concrete terms in title.',
+  '- If two concrete topics are equally important, join them with /.',
+  '- Avoid generic title words when concrete terms are available.',
   '- evidence is exactly 1 object with evidenceId and quote.',
   '- evidenceId must be the id of the input memory that contains the quote.',
   '- No counts, confidence, diagnoses, or extra fields.',
   '',
   'Output shape:',
-  '{"periods":[{"periodKey":"same as input","dimensions":[{"dimension":"emotion","insights":[{"summary":"string","evidence":[{"evidenceId":"input memory id","quote":"short quote"}]}]}]}]}',
+  '{"periods":[{"periodKey":"same as input","dimensions":[{"dimension":"emotion","insights":[{"title":"string","summary":"string","evidence":[{"evidenceId":"input memory id","quote":"short quote"}]}]}]}]}',
 ].join('\n');
