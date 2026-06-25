@@ -18,6 +18,7 @@ import type {
   MemoryAnalysisInsightEvidence,
   MemoryAnalysisPeriodDimensionGroup,
   MemoryAnalysisPeriodInsight,
+  MemoryAnalysisPeriodInsightEvidence,
   MemoryAnalysisPeriodSummary,
   MemorySignalDimension,
   PromptMemory,
@@ -204,7 +205,10 @@ export class MemoryAnalysisService {
         firstSeenAt: period.period.start,
         lastSeenAt: period.period.end,
       },
-      evidence: insight.evidence.map((quote) => ({ quote })),
+      evidence: insight.evidence.map((item) => ({
+        evidenceId: item.evidenceId,
+        quote: item.quote,
+      })),
     };
   }
 
@@ -258,6 +262,7 @@ export class MemoryAnalysisService {
       }
       seenQuotes.add(quote);
       uniqueEvidence.push({
+        evidenceId: item.evidenceId,
         time: item.time,
         quote,
       });
@@ -273,7 +278,11 @@ export class MemoryAnalysisService {
     const samples = [first, middle, last].filter((item): item is MemoryAnalysisInsightEvidence => item !== undefined);
 
     return samples.filter((item, index, items) => (
-      items.findIndex((candidate) => candidate.quote === item.quote && candidate.time === item.time) === index
+      items.findIndex((candidate) => (
+        candidate.quote === item.quote
+        && candidate.time === item.time
+        && candidate.evidenceId === item.evidenceId
+      )) === index
     ));
   }
 
@@ -462,7 +471,7 @@ export class MemoryAnalysisService {
 
       byPeriodKey.set(
         periodKey,
-        this.normalizeDimensionGroups(rawPeriod.dimensions),
+        this.normalizeDimensionGroups(rawPeriod.dimensions, promptPeriod),
       );
     }
 
@@ -485,7 +494,10 @@ export class MemoryAnalysisService {
     };
   }
 
-  private normalizeDimensionGroups(value: unknown): MemoryAnalysisPeriodDimensionGroup[] {
+  private normalizeDimensionGroups(
+    value: unknown,
+    period: PromptPeriod,
+  ): MemoryAnalysisPeriodDimensionGroup[] {
     if (!Array.isArray(value)) {
       return [];
     }
@@ -503,7 +515,7 @@ export class MemoryAnalysisService {
 
         return {
           dimension,
-          insights: this.normalizeInsights(rawGroup.insights),
+          insights: this.normalizeInsights(rawGroup.insights, period),
         };
       })
       .filter((item): item is MemoryAnalysisPeriodDimensionGroup => item !== null && item.insights.length > 0);
@@ -511,6 +523,7 @@ export class MemoryAnalysisService {
 
   private normalizeInsights(
     value: unknown,
+    period: PromptPeriod,
   ): MemoryAnalysisPeriodInsight[] {
     if (!Array.isArray(value)) {
       return [];
@@ -523,8 +536,8 @@ export class MemoryAnalysisService {
         }
 
         const rawInsight = item as Record<string, unknown>;
-        const evidence = this.normalizeEvidence(rawInsight.evidence);
-        const summary = this.normalizeSummary(rawInsight.summary, evidence[0] ?? '');
+        const evidence = this.normalizeEvidence(rawInsight.evidence, period);
+        const summary = this.normalizeSummary(rawInsight.summary, evidence[0]?.quote ?? '');
         if (summary.length === 0) {
           return null;
         }
@@ -538,16 +551,20 @@ export class MemoryAnalysisService {
       .slice(0, MAX_INSIGHTS_PER_DIMENSION_PER_PERIOD);
   }
 
-  private normalizeEvidence(value: unknown): string[] {
+  private normalizeEvidence(
+    value: unknown,
+    period: PromptPeriod,
+  ): MemoryAnalysisPeriodInsightEvidence[] {
     if (!Array.isArray(value)) {
       return [];
     }
 
     return value
-      .map((item): string | null => {
+      .map((item): MemoryAnalysisPeriodInsightEvidence | null => {
         if (typeof item === 'string') {
           const quote = this.normalizeText(item, '').slice(0, 280);
-          return quote.length > 0 ? quote : null;
+          const evidenceId = this.findEvidenceIdByQuote(quote, period);
+          return quote.length > 0 && evidenceId ? { evidenceId, quote } : null;
         }
         if (item === null || typeof item !== 'object') {
           return null;
@@ -557,10 +574,35 @@ export class MemoryAnalysisService {
         if (quote.length === 0) {
           return null;
         }
-        return quote;
+        const evidenceId = this.normalizeEvidenceId(rawEvidence, quote, period);
+        return evidenceId ? { evidenceId, quote } : null;
       })
-      .filter((item): item is string => item !== null)
+      .filter((item): item is MemoryAnalysisPeriodInsightEvidence => item !== null)
       .slice(0, MAX_EVIDENCE_PER_INSIGHT);
+  }
+
+  private normalizeEvidenceId(
+    rawEvidence: Record<string, unknown>,
+    quote: string,
+    period: PromptPeriod,
+  ): string | null {
+    const rawId = this.normalizeText(
+      rawEvidence.evidenceId ?? rawEvidence.id ?? rawEvidence.memoryId,
+      '',
+    );
+    if (period.memories.some((memory) => memory.id === rawId)) {
+      return rawId;
+    }
+
+    return this.findEvidenceIdByQuote(quote, period);
+  }
+
+  private findEvidenceIdByQuote(quote: string, period: PromptPeriod): string | null {
+    if (quote.length === 0) {
+      return null;
+    }
+
+    return period.memories.find((memory) => memory.text.includes(quote) || quote.includes(memory.text))?.id ?? null;
   }
 
   private normalizeSummary(value: unknown, fallback: string): string {

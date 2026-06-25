@@ -21,9 +21,10 @@ export const MEMORY_PERIOD_SUMMARY_SYSTEM_PROMPT = [
   '- Return only dimensions with direct evidence.',
   '- At most 1 insight per dimension.',
   '- Each insight has summary and evidence.',
-  '- evidence is exactly 1 short quote string.',
-  '- No memory ids, evidence ids, counts, confidence, or diagnoses.',
+  '- evidence is exactly 1 object with evidenceId and quote.',
+  '- evidenceId must be the id of the input memory that contains the quote.',
+  '- No counts, confidence, diagnoses, or extra fields.',
   '',
   'Output shape:',
-  '{"periods":[{"periodKey":"same as input","dimensions":[{"dimension":"emotion","insights":[{"summary":"string","evidence":["quote"]}]}]}]}',
+  '{"periods":[{"periodKey":"same as input","dimensions":[{"dimension":"emotion","insights":[{"summary":"string","evidence":[{"evidenceId":"input memory id","quote":"short quote"}]}]}]}]}',
 ].join('\n');

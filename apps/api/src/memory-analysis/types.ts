@@ -6,6 +6,7 @@ export type MemorySignalDimension =
   | 'growth_signal';
 
 export interface MemoryAnalysisInsightEvidence {
+  evidenceId?: string;
   time?: string;
   quote: string;
 }
@@ -44,7 +45,12 @@ export interface MemoryAnalysisPeriodSummary {
 
 export interface MemoryAnalysisPeriodInsight {
   summary: string;
-  evidence: string[];
+  evidence: MemoryAnalysisPeriodInsightEvidence[];
+}
+
+export interface MemoryAnalysisPeriodInsightEvidence {
+  evidenceId: string;
+  quote: string;
 }
 
 export interface MemoryAnalysisPeriodDimensionGroup {
