@@ -1,11 +1,12 @@
-import { Body, Controller, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiHeader, ApiOperation, ApiTags } from '@nestjs/swagger';
 
-import { ApiKeyGuard } from './common/api-key.guard';
-import { RateLimitGuard } from './common/rate-limit.guard';
-import { CurrentContext } from './common/request-context';
-import type { Mem9RequestContext } from './common/request-context';
-import { AnalyzeMemorySourceDto } from './dto/analyze-memory-source.dto';
+import { ApiKeyGuard } from '../common/api-key.guard';
+import { RateLimitGuard } from '../common/rate-limit.guard';
+import { CurrentContext } from '../common/request-context';
+import type { Mem9RequestContext } from '../common/request-context';
+import { AnalyzeMemorySourceDto } from '../dto/analyze-memory-source.dto';
+
 import { MemoryAnalysisService } from './memory-analysis.service';
 
 @ApiTags('memory-analysis')
@@ -24,7 +25,11 @@ export class MemoryAnalysisController {
   public analyzeSource(
     @CurrentContext() context: Mem9RequestContext,
     @Body() dto: AnalyzeMemorySourceDto,
+    @Query() query: AnalyzeMemorySourceDto,
   ) {
-    return this.service.analyzeSource(context.rawApiKey, dto);
+    return this.service.analyzeSource(context.rawApiKey, {
+      ...dto,
+      ...query,
+    });
   }
 }

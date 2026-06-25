@@ -27,8 +27,8 @@ import { DeepAnalysisController } from './deep-analysis.controller';
 import { DeepAnalysisService } from './deep-analysis.service';
 import { HealthController } from './health.controller';
 import { Mem9SourceService } from './mem9-source.service';
-import { MemoryAnalysisController } from './memory-analysis.controller';
-import { MemoryAnalysisService } from './memory-analysis.service';
+import { MemoryAnalysisController } from './memory-analysis/memory-analysis.controller';
+import { MemoryAnalysisService } from './memory-analysis/memory-analysis.service';
 
 const appConfig = loadConfig();
 
