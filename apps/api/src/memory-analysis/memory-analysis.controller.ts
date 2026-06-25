@@ -7,6 +7,9 @@ import { CurrentContext } from '../common/request-context';
 import type { Mem9RequestContext } from '../common/request-context';
 import { AnalyzeMemorySourceDto } from '../dto/analyze-memory-source.dto';
 
+
+import { CreateMemoryAnalysisReportDto } from './dto/create-memory-analysis-report.dto';
+import { ListMemoryAnalysisReportsDto } from './dto/list-memory-analysis-reports.dto';
 import { MemoryAnalysisService } from './memory-analysis.service';
 
 @ApiTags('memory-analysis')
@@ -29,12 +32,21 @@ export class MemoryAnalysisController {
     return this.service.analyzeSource(context, query);
   }
 
+  @Post('report')
+  @ApiOperation({ summary: 'Create a memory analysis report' })
+  public createReport(@Body() dto: CreateMemoryAnalysisReportDto) {
+    return this.service.createReport(dto);
+  }
+
+  @Get('report/list')
+  @ApiOperation({ summary: 'List memory analysis reports by type' })
+  public listReports(@Query() query: ListMemoryAnalysisReportsDto) {
+    return this.service.listReports(query);
+  }
+
   @Get('report/:report_id')
   @ApiOperation({ summary: 'Get one memory analysis report if it exists' })
-  public getReport(
-    @CurrentContext() context: Mem9RequestContext,
-    @Param('report_id') reportId: string,
-  ) {
-    return this.service.getReport(context, reportId);
+  public getReport(@Param('report_id') reportId: string) {
+    return this.service.getReport(reportId);
   }
 }

@@ -4,8 +4,9 @@ import type { DeepAnalysisMemorySnapshot } from '@mem9/contracts';
 import { AnalysisRepository, AppError } from '@mem9/shared';
 import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
 
-import type { Mem9RequestContext } from './common/request-context';
 import type { AnalyzeMemorySourceDto } from './dto/analyze-memory-source.dto';
+import type { CreateMemoryAnalysisReportDto } from './dto/create-memory-analysis-report.dto';
+import type { ListMemoryAnalysisReportsDto } from './dto/list-memory-analysis-reports.dto';
 import { Mem9SourceService } from './mem9-source.service';
 
 export type MemorySignalDimension =
@@ -68,12 +69,16 @@ export interface AnalyzeMemorySourceChangesResponse extends AnalyzeMemorySourceR
 }
 
 export interface MemoryAnalysisReportResponse {
-  report_id: string;
+  report_id: number;
   template_id: string;
   report_content: string;
   generated_at: string;
   render_status: 'fail' | 'success';
   fail_reason: string;
+}
+
+export interface ListMemoryAnalysisReportsResponse {
+  reports: MemoryAnalysisReportResponse[];
 }
 
 interface QwenChatCompletionPayload {
@@ -109,6 +114,24 @@ interface PromptMemory {
 interface SignalObservation {
   dimension: MemorySignalDimension;
   evidence: MemoryAnalysisEvidence;
+}
+
+function toReportResponse(report: {
+  reportId: number;
+  templateId: string;
+  reportContent: string;
+  generatedAt: Date;
+  renderStatus: string;
+  failReason: string;
+}): MemoryAnalysisReportResponse {
+  return {
+    report_id: report.reportId,
+    template_id: report.templateId,
+    report_content: report.reportContent,
+    generated_at: report.generatedAt.toISOString(),
+    render_status: report.renderStatus === 'fail' ? 'fail' : 'success',
+    fail_reason: report.failReason,
+  };
 }
 
 const MAX_CONTENT_CHARS = 12000;
@@ -206,26 +229,38 @@ export class MemoryAnalysisService {
     };
   }
 
-  public async getReport(
-    context: Mem9RequestContext,
-    reportId: string,
-  ): Promise<MemoryAnalysisReportResponse | null> {
-    const report = await this.repository.findOwnedDeepAnalysisReport(
-      reportId,
-      context.apiKeyFingerprint,
-    );
+  public async createReport(
+    dto: CreateMemoryAnalysisReportDto,
+  ): Promise<MemoryAnalysisReportResponse> {
+    const report = await this.repository.createReport({
+      templateId: dto.template_id,
+      reportContent: dto.report_content,
+      renderStatus: dto.render_status,
+      failReason: dto.fail_reason ?? '',
+    });
 
-    if (report === null) {
+    return toReportResponse(report);
+  }
+
+  public async getReport(reportId: string): Promise<MemoryAnalysisReportResponse | null> {
+    const numericReportId = Number(reportId);
+
+    if (!Number.isInteger(numericReportId) || numericReportId <= 0) {
       return null;
     }
 
+    const report = await this.repository.findReport(numericReportId);
+
+    return report ? toReportResponse(report) : null;
+  }
+
+  public async listReports(
+    query: ListMemoryAnalysisReportsDto,
+  ): Promise<ListMemoryAnalysisReportsResponse> {
+    const reports = await this.repository.listReportsByTemplateId(query.type);
+
     return {
-      report_id: report.id,
-      template_id: '',
-      report_content: report.reportContent ?? '',
-      generated_at: (report.completedAt ?? report.requestedAt).toISOString(),
-      render_status: report.status === 'FAILED' ? 'fail' : 'success',
-      fail_reason: report.errorMessage ?? '',
+      reports: reports.map((report) => toReportResponse(report)),
     };
   }
 

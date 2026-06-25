@@ -7,6 +7,7 @@ import type {
   MemoryAnalysisPeriodCache,
   Prisma,
   RateLimitPolicy,
+  Report,
   TaxonomyRule,
 } from '@prisma/client';
 import {
@@ -39,6 +40,30 @@ function toPrismaBytes(value: Buffer): Uint8Array<ArrayBuffer> {
 @Injectable()
 export class AnalysisRepository {
   public constructor(private readonly prisma: PrismaService) {}
+
+  public async createReport(data: {
+    templateId: string;
+    reportContent: string;
+    renderStatus: 'fail' | 'success';
+    failReason: string;
+  }): Promise<Report> {
+    return this.prisma.report.create({
+      data,
+    });
+  }
+
+  public async findReport(reportId: number): Promise<Report | null> {
+    return this.prisma.report.findUnique({
+      where: { reportId },
+    });
+  }
+
+  public async listReportsByTemplateId(templateId: string): Promise<Report[]> {
+    return this.prisma.report.findMany({
+      where: { templateId },
+      orderBy: { generatedAt: 'desc' },
+    });
+  }
 
   public async ensureApiKeySubject(fingerprint: Buffer): Promise<ApiKeySubject> {
     const existing = await this.prisma.apiKeySubject.findUnique({
