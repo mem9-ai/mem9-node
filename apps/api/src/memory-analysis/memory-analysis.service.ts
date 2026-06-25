@@ -3,13 +3,18 @@ import { writeFile } from 'node:fs/promises';
 import type { AppConfig } from '@mem9/config';
 import { APP_CONFIG } from '@mem9/config';
 import type { DeepAnalysisMemorySnapshot } from '@mem9/contracts';
-import { AppError } from '@mem9/shared';
+import { AnalysisRepository, AppError } from '@mem9/shared';
 import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 
+import type { Mem9RequestContext } from '../common/request-context';
 import type { AnalyzeMemorySourceDto } from '../dto/analyze-memory-source.dto';
 import { Mem9SourceService } from '../mem9-source.service';
 
-import { MEMORY_PERIOD_SUMMARY_SYSTEM_PROMPT } from './prompts';
+import {
+  MEMORY_PERIOD_SUMMARY_PROMPT_VERSION,
+  MEMORY_PERIOD_SUMMARY_SYSTEM_PROMPT,
+} from './prompts';
 import type {
   AnalyzeMemorySourceChangesResponse,
   AnalyzeMemorySourcePeriodSummaryResponse,
@@ -65,14 +70,16 @@ export class MemoryAnalysisService {
   public constructor(
     @Inject(APP_CONFIG) private readonly config: AppConfig,
     private readonly source: Mem9SourceService,
+    private readonly repository: AnalysisRepository,
   ) {}
 
   public async analyzeSource(
-    apiKey: string,
+    context: Mem9RequestContext,
     dto: AnalyzeMemorySourceDto,
   ): Promise<AnalyzeMemorySourceChangesResponse | AnalyzeMemorySourcePeriodSummaryResponse> {
     const startedAt = Date.now();
-    const firstPass = await this.summarizeSourcePeriods(apiKey, dto);
+    this.validateDateRange(dto);
+    const firstPass = await this.summarizeSourcePeriods(context, dto);
     if (dto.debugFirstPass) {
       await writeFile(DEBUG_FIRST_PASS_OUTPUT_PATH, JSON.stringify(firstPass, null, 2));
       return firstPass;
@@ -93,22 +100,24 @@ export class MemoryAnalysisService {
 
     return {
       total: firstPass.total,
-      limit: firstPass.limit,
-      offset: firstPass.offset,
+      memoryCount: firstPass.memoryCount,
       model: firstPass.model,
       dimensions,
     };
   }
 
   private async summarizeSourcePeriods(
-    apiKey: string,
+    context: Mem9RequestContext,
     dto: AnalyzeMemorySourceDto,
   ): Promise<AnalyzeMemorySourcePeriodSummaryResponse> {
     const fetchStartedAt = Date.now();
-    const page = await this.source.fetchMemories(apiKey, dto.limit, dto.offset);
+    const memories = await this.source.fetchSessionMemories(context.rawApiKey, {
+      createdAfter: dto.createdAfter,
+      createdBefore: dto.createdBefore,
+    });
     const fetchDurationMs = Date.now() - fetchStartedAt;
     const promptStartedAt = Date.now();
-    const periods = this.buildPromptPeriods(page.memories);
+    const periods = this.buildPromptPeriods(memories);
     const promptDurationMs = Date.now() - promptStartedAt;
     const promptMemories = periods.flatMap((period) => period.memories);
     const promptContentChars = promptMemories.reduce((count, memory) => count + memory.text.length, 0);
@@ -116,8 +125,8 @@ export class MemoryAnalysisService {
       event: 'memory_analysis_source_prepared',
       fetchDurationMs,
       promptDurationMs,
-      total: page.total,
-      returnedMemories: page.memories.length,
+      total: memories.length,
+      returnedMemories: memories.length,
       promptPeriods: periods.length,
       promptMemories: promptMemories.length,
       promptContentChars,
@@ -126,9 +135,8 @@ export class MemoryAnalysisService {
 
     if (periods.length === 0) {
       return {
-        total: page.total,
-        limit: page.limit,
-        offset: page.offset,
+        total: memories.length,
+        memoryCount: memories.length,
         model: this.config.analysis.qwenModel ?? '',
         periods: [],
       };
@@ -137,38 +145,65 @@ export class MemoryAnalysisService {
     this.ensureQwenConfigured();
 
     const qwenStartedAt = Date.now();
-    const periodResults = await this.summarizePromptPeriods(periods, dto.lang ?? 'zh-CN');
+    const periodResults = await this.summarizePromptPeriods(context.apiKeyFingerprint, periods);
     const normalizedPeriods = periodResults.flatMap((result) => result.periods);
     this.logger.log(JSON.stringify({
       event: 'memory_analysis_periods_normalized',
       qwenDurationMs: Date.now() - qwenStartedAt,
       responseChars: periodResults.reduce((count, result) => count + result.responseChars, 0),
+      cacheHits: periodResults.filter((result) => result.cacheHit).length,
+      cacheMisses: periodResults.filter((result) => !result.cacheHit).length,
       periodCount: normalizedPeriods.length,
       insightCount: this.countPeriodInsights(normalizedPeriods.flatMap((period) => period.dimensions)),
     }));
 
     return {
-      total: page.total,
-      limit: page.limit,
-      offset: page.offset,
+      total: memories.length,
+      memoryCount: memories.length,
       model: this.config.analysis.qwenModel!,
       periods: normalizedPeriods,
     };
   }
 
   private async summarizePromptPeriods(
+    apiKeyFingerprint: Buffer,
     periods: PromptPeriod[],
-    lang: string,
-  ): Promise<{ periods: MemoryAnalysisPeriodSummary[]; responseChars: number }[]> {
+  ): Promise<{ periods: MemoryAnalysisPeriodSummary[]; responseChars: number; cacheHit: boolean }[]> {
     return this.mapWithConcurrency(
       periods,
       QWEN_PERIOD_SUMMARY_CONCURRENCY,
       async (period) => {
-        const content = await this.callQwenForPeriodSummaries([period], lang);
+        const model = this.config.analysis.qwenModel!;
+        const cached = await this.repository.findMemoryAnalysisPeriodCache({
+          fingerprint: apiKeyFingerprint,
+          periodKey: period.periodKey,
+          model,
+          promptVersion: MEMORY_PERIOD_SUMMARY_PROMPT_VERSION,
+        });
+
+        if (cached) {
+          return {
+            periods: [this.normalizeCachedPeriodSummary(cached.resultJson, period)],
+            responseChars: 0,
+            cacheHit: true,
+          };
+        }
+
+        const content = await this.callQwenForPeriodSummaries([period]);
         const parsed = this.parseJsonObject(content);
+        const normalizedPeriods = this.normalizePeriodSummaryResult(parsed, [period]);
+        await this.repository.upsertMemoryAnalysisPeriodCache({
+          fingerprint: apiKeyFingerprint,
+          periodKey: period.periodKey,
+          model,
+          promptVersion: MEMORY_PERIOD_SUMMARY_PROMPT_VERSION,
+          resultJson: normalizedPeriods[0] as unknown as Prisma.InputJsonValue,
+        });
+
         return {
-          periods: this.normalizePeriodSummaryResult(parsed, [period]),
+          periods: normalizedPeriods,
           responseChars: content.length,
+          cacheHit: false,
         };
       },
     );
@@ -320,6 +355,38 @@ export class MemoryAnalysisService {
     return results;
   }
 
+  private validateDateRange(dto: AnalyzeMemorySourceDto): void {
+    const createdAfter = dto.createdAfter?.trim();
+    const createdBefore = dto.createdBefore?.trim();
+
+    if (!createdAfter || !createdBefore) {
+      throw new AppError('createdAfter and createdBefore are required', {
+        statusCode: HttpStatus.UNPROCESSABLE_ENTITY,
+        code: 'MEMORY_ANALYSIS_DATE_RANGE_REQUIRED',
+      });
+    }
+
+    const start = new Date(createdAfter);
+    const end = new Date(createdBefore);
+
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+      throw new AppError('createdAfter and createdBefore must be valid ISO 8601 timestamps', {
+        statusCode: HttpStatus.UNPROCESSABLE_ENTITY,
+        code: 'MEMORY_ANALYSIS_INVALID_DATE_RANGE',
+      });
+    }
+
+    if (start >= end) {
+      throw new AppError('createdAfter must be before createdBefore', {
+        statusCode: HttpStatus.UNPROCESSABLE_ENTITY,
+        code: 'MEMORY_ANALYSIS_INVALID_DATE_RANGE',
+      });
+    }
+
+    dto.createdAfter = createdAfter;
+    dto.createdBefore = createdBefore;
+  }
+
   private ensureQwenConfigured(): void {
     if (!this.config.analysis.qwenApiKey) {
       throw new AppError('Qwen API key is not configured', {
@@ -338,7 +405,6 @@ export class MemoryAnalysisService {
 
   private async callQwenForPeriodSummaries(
     periods: PromptPeriod[],
-    lang: string,
   ): Promise<string> {
     const timeoutMs = this.config.analysis.qwenRequestTimeoutMs;
     const controller = new AbortController();
@@ -346,7 +412,6 @@ export class MemoryAnalysisService {
     timeout.unref?.();
     const requestStartedAt = Date.now();
     const userContent = JSON.stringify({
-      lang,
       periods,
     });
     const requestBody = JSON.stringify({
@@ -484,6 +549,103 @@ export class MemoryAnalysisService {
     }));
   }
 
+  private normalizeCachedPeriodSummary(
+    value: unknown,
+    promptPeriod: PromptPeriod,
+  ): MemoryAnalysisPeriodSummary {
+    if (value === null || typeof value !== 'object') {
+      return this.emptyPeriodSummary(promptPeriod);
+    }
+
+    const raw = value as Record<string, unknown>;
+
+    return {
+      period: {
+        start: this.normalizeText((raw.period as Record<string, unknown> | undefined)?.start, promptPeriod.start),
+        end: this.normalizeText((raw.period as Record<string, unknown> | undefined)?.end, promptPeriod.end),
+      },
+      dimensions: this.normalizeCachedDimensionGroups(raw.dimensions),
+    };
+  }
+
+  private normalizeCachedDimensionGroups(value: unknown): MemoryAnalysisPeriodDimensionGroup[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value
+      .map((item): MemoryAnalysisPeriodDimensionGroup | null => {
+        if (item === null || typeof item !== 'object') {
+          return null;
+        }
+        const rawGroup = item as Record<string, unknown>;
+        const dimension = this.normalizeDimension(rawGroup.dimension ?? rawGroup.dim);
+        if (!dimension) {
+          return null;
+        }
+
+        return {
+          dimension,
+          insights: this.normalizeCachedInsights(rawGroup.insights),
+        };
+      })
+      .filter((item): item is MemoryAnalysisPeriodDimensionGroup => item !== null && item.insights.length > 0);
+  }
+
+  private normalizeCachedInsights(value: unknown): MemoryAnalysisPeriodInsight[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value
+      .map((item): MemoryAnalysisPeriodInsight | null => {
+        if (item === null || typeof item !== 'object') {
+          return null;
+        }
+
+        const rawInsight = item as Record<string, unknown>;
+        const evidence = this.normalizeCachedEvidence(rawInsight.evidence);
+        const summary = this.normalizeSummary(rawInsight.summary, evidence[0]?.quote ?? '');
+        if (summary.length === 0) {
+          return null;
+        }
+
+        return {
+          summary,
+          evidence,
+        };
+      })
+      .filter((item): item is MemoryAnalysisPeriodInsight => item !== null && item.evidence.length > 0)
+      .slice(0, MAX_INSIGHTS_PER_DIMENSION_PER_PERIOD);
+  }
+
+  private normalizeCachedEvidence(value: unknown): MemoryAnalysisPeriodInsightEvidence[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value
+      .map((item): MemoryAnalysisPeriodInsightEvidence | null => {
+        if (item === null || typeof item !== 'object') {
+          return null;
+        }
+
+        const rawEvidence = item as Record<string, unknown>;
+        const evidenceId = this.normalizeText(rawEvidence.evidenceId, '');
+        const quote = this.normalizeText(rawEvidence.quote, '').slice(0, 280);
+        if (evidenceId.length === 0 || quote.length === 0) {
+          return null;
+        }
+
+        return {
+          evidenceId,
+          quote,
+        };
+      })
+      .filter((item): item is MemoryAnalysisPeriodInsightEvidence => item !== null)
+      .slice(0, MAX_EVIDENCE_PER_INSIGHT);
+  }
+
   private emptyPeriodSummary(period: PromptPeriod): MemoryAnalysisPeriodSummary {
     return {
       period: {
@@ -606,7 +768,7 @@ export class MemoryAnalysisService {
   }
 
   private normalizeSummary(value: unknown, fallback: string): string {
-    const summary = this.normalizeText(value, '').slice(0, 40);
+    const summary = this.normalizeText(value, '').slice(0, 80);
     return summary.length > 0 ? summary : fallback.slice(0, 20);
   }
 

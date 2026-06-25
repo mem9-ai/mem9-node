@@ -1,4 +1,4 @@
-import { Body, Controller, Post, Query, UseGuards } from '@nestjs/common';
+import { Controller, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiHeader, ApiOperation, ApiTags } from '@nestjs/swagger';
 
 import { ApiKeyGuard } from '../common/api-key.guard';
@@ -24,12 +24,8 @@ export class MemoryAnalysisController {
   @ApiOperation({ summary: 'Analyze source memories and build local change groups' })
   public analyzeSource(
     @CurrentContext() context: Mem9RequestContext,
-    @Body() dto: AnalyzeMemorySourceDto,
     @Query() query: AnalyzeMemorySourceDto,
   ) {
-    return this.service.analyzeSource(context.rawApiKey, {
-      ...dto,
-      ...query,
-    });
+    return this.service.analyzeSource(context, query);
   }
 }

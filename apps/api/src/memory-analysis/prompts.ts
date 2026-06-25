@@ -1,3 +1,5 @@
+export const MEMORY_PERIOD_SUMMARY_PROMPT_VERSION = 'v1';
+
 export const MEMORY_PERIOD_SUMMARY_SYSTEM_PROMPT = [
   'You summarize memories by period.',
   '',
@@ -18,6 +20,9 @@ export const MEMORY_PERIOD_SUMMARY_SYSTEM_PROMPT = [
   '- Return one output object for each input period.',
   '- Use the exact input periodKey. Do not merge periods.',
   '- Inside each period, merge repeated memories.',
+  '- Write summaries in the dominant language of this period.',
+  '- If the period has mixed languages, use the language used by most memories.',
+  '- Keep evidence quotes in the original language.',
   '- Return only dimensions with direct evidence.',
   '- At most 1 insight per dimension.',
   '- Each insight has summary and evidence.',

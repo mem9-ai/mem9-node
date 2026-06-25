@@ -29,8 +29,7 @@ export interface MemoryAnalysisDimensionGroup {
 
 export interface AnalyzeMemorySourceChangesResponse {
   total: number;
-  limit: number;
-  offset: number;
+  memoryCount: number;
   model: string;
   dimensions: MemoryAnalysisDimensionGroup[];
 }
@@ -60,8 +59,7 @@ export interface MemoryAnalysisPeriodDimensionGroup {
 
 export interface AnalyzeMemorySourcePeriodSummaryResponse {
   total: number;
-  limit: number;
-  offset: number;
+  memoryCount: number;
   model: string;
   periods: MemoryAnalysisPeriodSummary[];
 }

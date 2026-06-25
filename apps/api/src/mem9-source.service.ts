@@ -20,6 +20,8 @@ interface Mem9MemoryListResponse {
 }
 
 interface FetchPageOptions {
+  createdAfter?: string;
+  createdBefore?: string;
   memoryType?: string;
 }
 
@@ -28,6 +30,11 @@ export interface Mem9MemoryPage {
   total: number;
   limit: number;
   offset: number;
+}
+
+export interface FetchSessionMemoriesOptions {
+  createdAfter: string;
+  createdBefore: string;
 }
 
 @Injectable()
@@ -55,6 +62,36 @@ export class Mem9SourceService {
       limit: page.limit,
       offset: page.offset,
     };
+  }
+
+  public async fetchSessionMemories(
+    apiKey: string,
+    options: FetchSessionMemoriesOptions,
+  ): Promise<DeepAnalysisMemorySnapshot[]> {
+    const memories: DeepAnalysisMemorySnapshot[] = [];
+    const pageSize = this.config.analysis.mem9SourcePageSize;
+    let total = Number.POSITIVE_INFINITY;
+    let offset = 0;
+
+    while (offset < total) {
+      const page = await this.fetchPage(apiKey, pageSize, offset, {
+        createdAfter: options.createdAfter,
+        createdBefore: options.createdBefore,
+        memoryType: 'session',
+      });
+      total = page.total;
+      offset += page.limit;
+
+      for (const memory of page.memories) {
+        memories.push(this.toMemorySnapshot(memory));
+      }
+
+      if (page.memories.length === 0) {
+        break;
+      }
+    }
+
+    return memories;
   }
 
   public async fetchAllMemories(apiKey: string): Promise<DeepAnalysisMemorySnapshot[]> {
@@ -116,6 +153,12 @@ export class Mem9SourceService {
 
     if (options.memoryType) {
       query.set('memory_type', options.memoryType);
+    }
+    if (options.createdAfter) {
+      query.set('created_after', options.createdAfter);
+    }
+    if (options.createdBefore) {
+      query.set('created_before', options.createdBefore);
     }
 
     const response = await this.requestWithRetry({
