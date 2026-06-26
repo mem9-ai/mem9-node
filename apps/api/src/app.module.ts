@@ -29,6 +29,8 @@ import { HealthController } from './health.controller';
 import { Mem9SourceService } from './mem9-source.service';
 import { MemoryAnalysisController } from './memory-analysis/memory-analysis.controller';
 import { MemoryAnalysisService } from './memory-analysis/memory-analysis.service';
+import { UserProfileController } from './user-profile.controller';
+import { UserProfileService } from './user-profile.service';
 
 const appConfig = loadConfig();
 
@@ -59,6 +61,7 @@ const appConfig = loadConfig();
     AnalysisJobsController,
     DeepAnalysisController,
     MemoryAnalysisController,
+    UserProfileController,
     HealthController,
   ],
   providers: [
@@ -81,6 +84,7 @@ const appConfig = loadConfig();
     DeepAnalysisSourcePreparationService,
     Mem9SourceService,
     MemoryAnalysisService,
+    UserProfileService,
     ApiKeyGuard,
     RateLimitGuard,
     HealthService,

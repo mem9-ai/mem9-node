@@ -127,6 +127,7 @@ export interface DeleteSessionMessageEditResult {
   id: string;
   reverted: boolean;
 }
+const PROFILE_MEMORY_PAGE_SIZE = 50;
 
 @Injectable()
 export class Mem9SourceService {
@@ -212,6 +213,15 @@ export class Mem9SourceService {
     }
 
     return memories;
+  }
+
+  public async fetchProfileMemories(apiKey: string): Promise<DeepAnalysisMemorySnapshot[]> {
+    const pageSize = Math.min(PROFILE_MEMORY_PAGE_SIZE, this.config.analysis.mem9SourcePageSize);
+    const page = await this.fetchPage(apiKey, pageSize, 0, {
+      memoryType: 'fact,insight,pinned',
+    });
+
+    return page.memories.map((memory) => this.toMemorySnapshot(memory));
   }
 
   public async deleteMemories(apiKey: string, memoryIds: string[]): Promise<{
@@ -502,6 +512,10 @@ export class Mem9SourceService {
             code: 'DEEP_ANALYSIS_SOURCE_FETCH_FAILED',
             details: {
               reason: error instanceof Error ? error.message : String(error),
+              timeoutMs: error instanceof Error && error.name === 'AbortError'
+                ? this.config.analysis.mem9SourceRequestTimeoutMs
+                : undefined,
+              url: this.redactUrl(url),
             },
           });
         }
@@ -605,6 +619,18 @@ export class Mem9SourceService {
 
   private baseUrl(): string {
     return this.config.analysis.mem9SourceApiBaseUrl.replace(/\/+$/, '');
+  }
+
+  private redactUrl(url: string): string {
+    try {
+      const parsed = new URL(url);
+      if (parsed.searchParams.has('api_key')) {
+        parsed.searchParams.set('api_key', '[REDACTED]');
+      }
+      return parsed.toString();
+    } catch {
+      return url;
+    }
   }
 
   private toMemorySnapshot(memory: Mem9MemoryListResponse['memories'][number]): DeepAnalysisMemorySnapshot {
