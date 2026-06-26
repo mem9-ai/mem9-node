@@ -4,6 +4,7 @@ import type {
   AnalysisJobBatch,
   ApiKeySubject,
   DeepAnalysisReport,
+  MemoryReport,
   MemoryAnalysisPeriodCache,
   Prisma,
   RateLimitPolicy,
@@ -38,6 +39,8 @@ function toPrismaBytes(value: Buffer): Uint8Array<ArrayBuffer> {
 
 @Injectable()
 export class AnalysisRepository {
+  private memoryReportTableReady?: Promise<void>;
+
   public constructor(private readonly prisma: PrismaService) {}
 
   public async ensureApiKeySubject(fingerprint: Buffer): Promise<ApiKeySubject> {
@@ -592,5 +595,66 @@ export class AnalysisRepository {
     });
 
     return result.count;
+  }
+
+  public async createMemoryAnalysisReport(data: {
+    templateId: string;
+    reportContent: string;
+    renderStatus: string;
+    failReason?: string | null;
+    memoryCount: number;
+  }): Promise<MemoryReport> {
+    await this.ensureMemoryReportTable();
+
+    return this.prisma.memoryReport.create({
+      data: {
+        templateId: data.templateId,
+        reportContent: data.reportContent,
+        renderStatus: data.renderStatus,
+        failReason: data.failReason ?? null,
+        memoryCount: data.memoryCount,
+      },
+    });
+  }
+
+  public async listMemoryAnalysisReportsByTemplateId(templateId: string): Promise<MemoryReport[]> {
+    await this.ensureMemoryReportTable();
+
+    return this.prisma.memoryReport.findMany({
+      where: {
+        templateId,
+      },
+      orderBy: {
+        generatedAt: 'desc',
+      },
+    });
+  }
+
+  public async findMemoryAnalysisReport(reportId: number): Promise<MemoryReport | null> {
+    await this.ensureMemoryReportTable();
+
+    return this.prisma.memoryReport.findUnique({
+      where: {
+        reportId,
+      },
+    });
+  }
+
+  private async ensureMemoryReportTable(): Promise<void> {
+    this.memoryReportTableReady ??= this.prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS \`memory_report\` (
+        \`report_id\` INTEGER NOT NULL AUTO_INCREMENT,
+        \`template_id\` VARCHAR(255) NOT NULL,
+        \`report_content\` LONGTEXT NOT NULL,
+        \`generated_at\` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+        \`render_status\` VARCHAR(16) NOT NULL,
+        \`fail_reason\` LONGTEXT NULL,
+        \`memory_count\` INTEGER NOT NULL,
+        PRIMARY KEY (\`report_id\`),
+        INDEX \`memory_report_template_generated_idx\` (\`template_id\`, \`generated_at\`)
+      );
+    `).then(() => undefined);
+
+    return this.memoryReportTableReady;
   }
 }

@@ -6,9 +6,12 @@ import type { DeepAnalysisMemorySnapshot } from '@mem9/contracts';
 import { AnalysisRepository, AppError } from '@mem9/shared';
 import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import type { MemoryReport } from '@prisma/client';
 
 import type { Mem9RequestContext } from '../common/request-context';
 import type { AnalyzeMemorySourceDto } from '../dto/analyze-memory-source.dto';
+import type { CreateMemoryAnalysisReportDto } from '../dto/create-memory-analysis-report.dto';
+import type { ListMemoryAnalysisReportsDto } from '../dto/list-memory-analysis-reports.dto';
 import { Mem9SourceService } from '../mem9-source.service';
 
 import {
@@ -25,6 +28,7 @@ import type {
   MemoryAnalysisPeriodInsight,
   MemoryAnalysisPeriodInsightEvidence,
   MemoryAnalysisPeriodSummary,
+  MemoryAnalysisReportResponse,
   MemorySignalDimension,
   PromptMemory,
   PromptPeriod,
@@ -104,6 +108,41 @@ export class MemoryAnalysisService {
       model: firstPass.model,
       dimensions,
     };
+  }
+
+  public async createReport(
+    dto: CreateMemoryAnalysisReportDto,
+  ): Promise<MemoryAnalysisReportResponse> {
+    const report = await this.repository.createMemoryAnalysisReport({
+      templateId: dto.template_id,
+      reportContent: dto.report_content,
+      renderStatus: dto.render_status,
+      failReason: dto.fail_reason,
+      memoryCount: dto.memory_count,
+    });
+
+    return this.toReportResponse(report);
+  }
+
+  public async listReports(
+    dto: ListMemoryAnalysisReportsDto,
+  ): Promise<MemoryAnalysisReportResponse[]> {
+    const reports = await this.repository.listMemoryAnalysisReportsByTemplateId(dto.type);
+    return reports.map((report) => this.toReportResponse(report));
+  }
+
+  public async getReport(reportId: string): Promise<MemoryAnalysisReportResponse | null> {
+    if (!/^\d+$/.test(reportId)) {
+      return null;
+    }
+
+    const parsedReportId = Number(reportId);
+    if (!Number.isInteger(parsedReportId) || parsedReportId <= 0) {
+      return null;
+    }
+
+    const report = await this.repository.findMemoryAnalysisReport(parsedReportId);
+    return report === null ? null : this.toReportResponse(report);
   }
 
   private async summarizeSourcePeriods(
@@ -891,4 +930,15 @@ export class MemoryAnalysisService {
     return typeof value === 'string' ? value.trim().slice(0, 1000) : fallback;
   }
 
+  private toReportResponse(report: MemoryReport): MemoryAnalysisReportResponse {
+    return {
+      report_id: report.reportId,
+      template_id: report.templateId,
+      report_content: report.reportContent,
+      generated_at: report.generatedAt.toISOString(),
+      render_status: report.renderStatus === 'fail' ? 'fail' : 'success',
+      fail_reason: report.failReason,
+      memory_count: report.memoryCount,
+    };
+  }
 }

@@ -1,4 +1,4 @@
-import { Controller, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiHeader, ApiOperation, ApiTags } from '@nestjs/swagger';
 
 import { ApiKeyGuard } from '../common/api-key.guard';
@@ -6,6 +6,8 @@ import { RateLimitGuard } from '../common/rate-limit.guard';
 import { CurrentContext } from '../common/request-context';
 import type { Mem9RequestContext } from '../common/request-context';
 import { AnalyzeMemorySourceDto } from '../dto/analyze-memory-source.dto';
+import { CreateMemoryAnalysisReportDto } from '../dto/create-memory-analysis-report.dto';
+import { ListMemoryAnalysisReportsDto } from '../dto/list-memory-analysis-reports.dto';
 
 import { MemoryAnalysisService } from './memory-analysis.service';
 
@@ -27,5 +29,23 @@ export class MemoryAnalysisController {
     @Query() query: AnalyzeMemorySourceDto,
   ) {
     return this.service.analyzeSource(context, query);
+  }
+
+  @Post('report')
+  @ApiOperation({ summary: 'Create a memory analysis report' })
+  public createReport(@Body() dto: CreateMemoryAnalysisReportDto) {
+    return this.service.createReport(dto);
+  }
+
+  @Get('report/list')
+  @ApiOperation({ summary: 'List memory analysis reports by type' })
+  public listReports(@Query() query: ListMemoryAnalysisReportsDto) {
+    return this.service.listReports(query);
+  }
+
+  @Get('report/:report_id')
+  @ApiOperation({ summary: 'Get one memory analysis report' })
+  public getReport(@Param('report_id') reportId: string) {
+    return this.service.getReport(reportId);
   }
 }
