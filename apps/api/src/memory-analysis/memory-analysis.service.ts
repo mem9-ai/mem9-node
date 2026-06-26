@@ -1,5 +1,3 @@
-import { writeFile } from 'node:fs/promises';
-
 import type { AppConfig } from '@mem9/config';
 import { APP_CONFIG } from '@mem9/config';
 import type { DeepAnalysisMemorySnapshot } from '@mem9/contracts';
@@ -77,7 +75,6 @@ const MAX_EVIDENCE_PER_INSIGHT = 1;
 const MAX_EVIDENCE_PER_CHANGE = 3;
 const QWEN_PERIOD_SUMMARY_CONCURRENCY = 5;
 const MAX_ANALYSIS_RANGE_MS = 14 * 24 * 60 * 60 * 1000;
-const DEBUG_FIRST_PASS_OUTPUT_PATH = '/Users/ericzhang/Downloads/memory-analysis-first-pass.json';
 
 @Injectable()
 export class MemoryAnalysisService {
@@ -92,14 +89,10 @@ export class MemoryAnalysisService {
   public async analyzeSource(
     context: Mem9RequestContext,
     dto: AnalyzeMemorySourceDto,
-  ): Promise<AnalyzeMemorySourceChangesResponse | AnalyzeMemorySourcePeriodSummaryResponse> {
+  ): Promise<AnalyzeMemorySourceChangesResponse> {
     const startedAt = Date.now();
     this.validateDateRange(dto);
     const firstPass = await this.summarizeSourcePeriods(context, dto);
-    if (dto.debugFirstPass) {
-      await writeFile(DEBUG_FIRST_PASS_OUTPUT_PATH, JSON.stringify(firstPass, null, 2));
-      return firstPass;
-    }
 
     const aggregationStartedAt = Date.now();
     const dimensions = await this.aggregateChangeDimensions(firstPass.periods);
@@ -134,7 +127,7 @@ export class MemoryAnalysisService {
     });
     const fetchDurationMs = Date.now() - fetchStartedAt;
     const promptStartedAt = Date.now();
-    const periods = this.buildPromptPeriods(memories);
+    const periods = this.buildPromptPeriods(memories, dto);
     const promptDurationMs = Date.now() - promptStartedAt;
     const promptMemories = periods.flatMap((period) => period.memories);
     const promptContentChars = promptMemories.reduce((count, memory) => count + memory.text.length, 0);
@@ -191,12 +184,14 @@ export class MemoryAnalysisService {
       QWEN_PERIOD_SUMMARY_CONCURRENCY,
       async (period) => {
         const model = this.config.analysis.qwenModel!;
-        const cached = await this.repository.findMemoryAnalysisPeriodCache({
-          fingerprint: apiKeyFingerprint,
-          periodKey: period.periodKey,
-          model,
-          promptVersion: MEMORY_PERIOD_SUMMARY_PROMPT_VERSION,
-        });
+        const cached = period.cacheable
+          ? await this.repository.findMemoryAnalysisPeriodCache({
+            fingerprint: apiKeyFingerprint,
+            periodKey: period.periodKey,
+            model,
+            promptVersion: MEMORY_PERIOD_SUMMARY_PROMPT_VERSION,
+          })
+          : null;
 
         if (cached) {
           return {
@@ -209,13 +204,15 @@ export class MemoryAnalysisService {
         const content = await this.callQwenForPeriodSummaries([period]);
         const parsed = this.parseJsonObject(content);
         const normalizedPeriods = this.normalizePeriodSummaryResult(parsed, [period]);
-        await this.repository.upsertMemoryAnalysisPeriodCache({
-          fingerprint: apiKeyFingerprint,
-          periodKey: period.periodKey,
-          model,
-          promptVersion: MEMORY_PERIOD_SUMMARY_PROMPT_VERSION,
-          resultJson: normalizedPeriods[0] as unknown as Prisma.InputJsonValue,
-        });
+        if (period.cacheable) {
+          await this.repository.upsertMemoryAnalysisPeriodCache({
+            fingerprint: apiKeyFingerprint,
+            periodKey: period.periodKey,
+            model,
+            promptVersion: MEMORY_PERIOD_SUMMARY_PROMPT_VERSION,
+            resultJson: normalizedPeriods[0] as unknown as Prisma.InputJsonValue,
+          });
+        }
 
         return {
           periods: normalizedPeriods,
@@ -389,7 +386,12 @@ export class MemoryAnalysisService {
     periods: PromptPeriod[],
   ): Promise<string> {
     const userContent = JSON.stringify({
-      periods,
+      periods: periods.map((period) => ({
+        periodKey: period.periodKey,
+        start: period.start,
+        end: period.end,
+        memories: period.memories,
+      })),
     });
 
     return this.callQwenJsonCompletion({
@@ -1007,9 +1009,15 @@ export class MemoryAnalysisService {
       : null;
   }
 
-  private buildPromptPeriods(memories: DeepAnalysisMemorySnapshot[]): PromptPeriod[] {
+  private buildPromptPeriods(
+    memories: DeepAnalysisMemorySnapshot[],
+    dto: AnalyzeMemorySourceDto,
+  ): PromptPeriod[] {
     const promptMemoriesByDay = new Map<string, PromptMemory[]>();
     let remainingContentChars = MAX_BATCH_CONTENT_CHARS;
+    const requestedStart = new Date(dto.createdAfter);
+    const requestedEnd = new Date(dto.createdBefore);
+    const now = new Date();
 
     const sortedMemories = [...memories].sort((left, right) => (left.createdAt ?? '').localeCompare(right.createdAt ?? ''));
     for (const memory of sortedMemories) {
@@ -1041,9 +1049,30 @@ export class MemoryAnalysisService {
         periodKey: dayKey,
         start: boundaries.start,
         end: boundaries.end,
+        cacheable: this.isCacheablePromptPeriod(dayKey, boundaries, requestedStart, requestedEnd, now),
         memories: promptMemories,
       };
     });
+  }
+
+  private isCacheablePromptPeriod(
+    dayKey: string,
+    period: { start: string; end: string },
+    requestedStart: Date,
+    requestedEnd: Date,
+    now: Date,
+  ): boolean {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dayKey)) {
+      return false;
+    }
+
+    const periodStart = new Date(period.start);
+    const periodEnd = new Date(period.end);
+    return (
+      requestedStart.getTime() <= periodStart.getTime()
+      && requestedEnd.getTime() >= periodEnd.getTime()
+      && now.getTime() > periodEnd.getTime()
+    );
   }
 
   private toPromptMemory(

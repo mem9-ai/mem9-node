@@ -1,6 +1,5 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { Transform } from 'class-transformer';
-import { IsBoolean, IsOptional, IsString } from 'class-validator';
+import { ApiProperty } from '@nestjs/swagger';
+import { IsOptional, IsString } from 'class-validator';
 
 export class AnalyzeMemorySourceDto {
   @ApiProperty({ example: '2026-06-01T00:00:00Z' })
@@ -12,10 +11,4 @@ export class AnalyzeMemorySourceDto {
   @IsOptional()
   @IsString()
   public createdBefore!: string;
-
-  @ApiPropertyOptional({ default: false })
-  @IsOptional()
-  @Transform(({ value }) => value === true || value === 'true')
-  @IsBoolean()
-  public debugFirstPass = false;
 }

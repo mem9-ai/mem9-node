@@ -75,6 +75,7 @@ export interface PromptPeriod {
   periodKey: string;
   start: string;
   end: string;
+  cacheable: boolean;
   memories: PromptMemory[];
 }
 
