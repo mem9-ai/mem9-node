@@ -111,9 +111,11 @@ export class MemoryAnalysisService {
   }
 
   public async createReport(
+    context: Mem9RequestContext,
     dto: CreateMemoryAnalysisReportDto,
   ): Promise<MemoryAnalysisReportResponse> {
     const report = await this.repository.createMemoryAnalysisReport({
+      fingerprint: context.apiKeyFingerprint,
       templateId: dto.template_id,
       reportContent: dto.report_content,
       renderStatus: dto.render_status,
@@ -125,13 +127,20 @@ export class MemoryAnalysisService {
   }
 
   public async listReports(
+    context: Mem9RequestContext,
     dto: ListMemoryAnalysisReportsDto,
   ): Promise<MemoryAnalysisReportResponse[]> {
-    const reports = await this.repository.listMemoryAnalysisReportsByTemplateId(dto.type);
+    const reports = await this.repository.listMemoryAnalysisReportsByTemplateId(
+      context.apiKeyFingerprint,
+      dto.type,
+    );
     return reports.map((report) => this.toReportResponse(report));
   }
 
-  public async getReport(reportId: string): Promise<MemoryAnalysisReportResponse | null> {
+  public async getReport(
+    context: Mem9RequestContext,
+    reportId: string,
+  ): Promise<MemoryAnalysisReportResponse | null> {
     if (!/^\d+$/.test(reportId)) {
       return null;
     }
@@ -141,7 +150,10 @@ export class MemoryAnalysisService {
       return null;
     }
 
-    const report = await this.repository.findMemoryAnalysisReport(parsedReportId);
+    const report = await this.repository.findMemoryAnalysisReport(
+      context.apiKeyFingerprint,
+      parsedReportId,
+    );
     return report === null ? null : this.toReportResponse(report);
   }
 

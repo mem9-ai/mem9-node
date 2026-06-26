@@ -1,8 +1,14 @@
 import { MemoryAnalysisService } from './memory-analysis.service';
 
+const apiKeyFingerprint = Buffer.alloc(32, 1);
+const context = {
+  apiKeyFingerprint,
+} as never;
+
 function createReport(overrides: Record<string, unknown> = {}) {
   return {
     reportId: 1,
+    apiKeyFingerprint,
     templateId: 'focus_area',
     reportContent: '{"summary":"ok"}',
     generatedAt: new Date('2026-06-26T08:00:00.000Z'),
@@ -28,7 +34,7 @@ describe('memory analysis report service', () => {
     };
     const service = createService(repository);
 
-    const response = await service.createReport({
+    const response = await service.createReport(context, {
       template_id: 'focus_area',
       report_content: '{"summary":"ok"}',
       render_status: 'success',
@@ -37,6 +43,7 @@ describe('memory analysis report service', () => {
     });
 
     expect(repository.createMemoryAnalysisReport).toHaveBeenCalledWith({
+      fingerprint: apiKeyFingerprint,
       templateId: 'focus_area',
       reportContent: '{"summary":"ok"}',
       renderStatus: 'success',
@@ -62,9 +69,12 @@ describe('memory analysis report service', () => {
     };
     const service = createService(repository);
 
-    const response = await service.listReports({ type: 'emotion' });
+    const response = await service.listReports(context, { type: 'emotion' });
 
-    expect(repository.listMemoryAnalysisReportsByTemplateId).toHaveBeenCalledWith('emotion');
+    expect(repository.listMemoryAnalysisReportsByTemplateId).toHaveBeenCalledWith(
+      apiKeyFingerprint,
+      'emotion',
+    );
     expect(response).toEqual([
       {
         report_id: 2,
@@ -84,9 +94,9 @@ describe('memory analysis report service', () => {
     };
     const service = createService(repository);
 
-    const response = await service.getReport('3');
+    const response = await service.getReport(context, '3');
 
-    expect(repository.findMemoryAnalysisReport).toHaveBeenCalledWith(3);
+    expect(repository.findMemoryAnalysisReport).toHaveBeenCalledWith(apiKeyFingerprint, 3);
     expect(response?.report_id).toBe(3);
   });
 
@@ -96,8 +106,8 @@ describe('memory analysis report service', () => {
     };
     const service = createService(repository);
 
-    await expect(service.getReport('4')).resolves.toBeNull();
-    await expect(service.getReport('not-a-number')).resolves.toBeNull();
+    await expect(service.getReport(context, '4')).resolves.toBeNull();
+    await expect(service.getReport(context, 'not-a-number')).resolves.toBeNull();
     expect(repository.findMemoryAnalysisReport).toHaveBeenCalledTimes(1);
   });
 });

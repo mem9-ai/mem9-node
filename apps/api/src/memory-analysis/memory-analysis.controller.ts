@@ -33,19 +33,28 @@ export class MemoryAnalysisController {
 
   @Post('report')
   @ApiOperation({ summary: 'Create a memory analysis report' })
-  public createReport(@Body() dto: CreateMemoryAnalysisReportDto) {
-    return this.service.createReport(dto);
+  public createReport(
+    @CurrentContext() context: Mem9RequestContext,
+    @Body() dto: CreateMemoryAnalysisReportDto,
+  ) {
+    return this.service.createReport(context, dto);
   }
 
   @Get('report/list')
   @ApiOperation({ summary: 'List memory analysis reports by type' })
-  public listReports(@Query() query: ListMemoryAnalysisReportsDto) {
-    return this.service.listReports(query);
+  public listReports(
+    @CurrentContext() context: Mem9RequestContext,
+    @Query() query: ListMemoryAnalysisReportsDto,
+  ) {
+    return this.service.listReports(context, query);
   }
 
   @Get('report/:report_id')
   @ApiOperation({ summary: 'Get one memory analysis report' })
-  public getReport(@Param('report_id') reportId: string) {
-    return this.service.getReport(reportId);
+  public getReport(
+    @CurrentContext() context: Mem9RequestContext,
+    @Param('report_id') reportId: string,
+  ) {
+    return this.service.getReport(context, reportId);
   }
 }

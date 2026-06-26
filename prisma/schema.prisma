@@ -210,15 +210,17 @@ model MemoryAnalysisPeriodCache {
 }
 
 model MemoryReport {
-  reportId      Int      @id @default(autoincrement()) @map("report_id")
-  templateId    String   @map("template_id") @db.VarChar(255)
-  reportContent String   @map("report_content") @db.LongText
-  generatedAt   DateTime @default(now()) @map("generated_at") @db.DateTime(3)
-  renderStatus  String   @map("render_status") @db.VarChar(16)
-  failReason    String?  @map("fail_reason") @db.LongText
-  memoryCount   Int      @map("memory_count")
+  reportId          Int      @id @default(autoincrement()) @map("report_id")
+  apiKeyFingerprint Bytes    @map("api_key_fingerprint") @db.VarBinary(32)
+  templateId        String   @map("template_id") @db.VarChar(255)
+  reportContent     String   @map("report_content") @db.LongText
+  generatedAt       DateTime @default(now()) @map("generated_at") @db.DateTime(3)
+  renderStatus      String   @map("render_status") @db.VarChar(16)
+  failReason        String?  @map("fail_reason") @db.LongText
+  memoryCount       Int      @map("memory_count")
 
-  @@index([templateId, generatedAt], map: "memory_report_template_generated_idx")
+  @@index([apiKeyFingerprint, templateId, generatedAt], map: "memory_report_owner_template_generated_idx")
+  @@index([apiKeyFingerprint, reportId], map: "memory_report_owner_report_idx")
   @@map("memory_report")
 }
 
