@@ -65,6 +65,16 @@ export interface AnalyzeMemorySourcePeriodSummaryResponse {
   periods: MemoryAnalysisPeriodSummary[];
 }
 
+export interface MemoryAnalysisReportResponse {
+  report_id: number;
+  template_id: string;
+  report_content: string;
+  generated_at: string;
+  render_status: 'fail' | 'success';
+  fail_reason: string | null;
+  memory_count: number;
+}
+
 export interface PromptMemory {
   id: string;
   createdAt?: string;
