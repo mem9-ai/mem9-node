@@ -59,6 +59,7 @@ interface RawPeriodSummaryResult {
 
 interface RawChangeAggregationResult {
   dimensions?: unknown;
+  d?: unknown;
 }
 
 interface QwenJsonCompletionInput {
@@ -74,7 +75,8 @@ const MAX_BATCH_CONTENT_CHARS = 60000;
 const MAX_INSIGHTS_PER_DIMENSION_PER_PERIOD = 1;
 const MAX_EVIDENCE_PER_INSIGHT = 1;
 const MAX_EVIDENCE_PER_CHANGE = 3;
-const QWEN_PERIOD_SUMMARY_CONCURRENCY = 3;
+const QWEN_PERIOD_SUMMARY_CONCURRENCY = 5;
+const MAX_ANALYSIS_RANGE_MS = 14 * 24 * 60 * 60 * 1000;
 const DEBUG_FIRST_PASS_OUTPUT_PATH = '/Users/ericzhang/Downloads/memory-analysis-first-pass.json';
 
 @Injectable()
@@ -353,6 +355,16 @@ export class MemoryAnalysisService {
       });
     }
 
+    if (end.getTime() - start.getTime() > MAX_ANALYSIS_RANGE_MS) {
+      throw new AppError('Memory analysis date range supports at most 14 days', {
+        statusCode: HttpStatus.UNPROCESSABLE_ENTITY,
+        code: 'MEMORY_ANALYSIS_DATE_RANGE_TOO_LARGE',
+        details: {
+          maximumDays: 14,
+        },
+      });
+    }
+
     dto.createdAfter = createdAfter;
     dto.createdBefore = createdBefore;
   }
@@ -396,7 +408,7 @@ export class MemoryAnalysisService {
     periods: MemoryAnalysisPeriodSummary[],
   ): Promise<string> {
     const userContent = JSON.stringify({
-      periods,
+      p: this.toChangeAggregationPromptPeriods(periods),
     });
 
     return this.callQwenJsonCompletion({
@@ -546,24 +558,25 @@ export class MemoryAnalysisService {
     raw: RawChangeAggregationResult,
     periods: MemoryAnalysisPeriodSummary[],
   ): MemoryAnalysisChangeDimensionGroup[] {
-    if (!Array.isArray(raw.dimensions)) {
+    const rawDimensions = raw.dimensions ?? raw.d;
+    if (!Array.isArray(rawDimensions)) {
       return [];
     }
 
     const sourceEvidence = this.buildSourceEvidenceMap(periods);
 
-    return raw.dimensions
+    return rawDimensions
       .map((item): MemoryAnalysisChangeDimensionGroup | null => {
         if (item === null || typeof item !== 'object') {
           return null;
         }
         const rawGroup = item as Record<string, unknown>;
-        const dimension = this.normalizeDimension(rawGroup.dimension ?? rawGroup.dim);
+        const dimension = this.normalizeDimension(rawGroup.dimension ?? rawGroup.dim ?? rawGroup.k);
         if (!dimension) {
           return null;
         }
 
-        const changes = this.normalizeAggregatedChanges(rawGroup.changes, sourceEvidence);
+        const changes = this.normalizeAggregatedChanges(rawGroup.changes ?? rawGroup.c, sourceEvidence);
         return changes.length > 0
           ? { dimension, changes }
           : null;
@@ -587,10 +600,10 @@ export class MemoryAnalysisService {
         }
 
         const rawChange = item as Record<string, unknown>;
-        const evidence = this.normalizeAggregatedEvidence(rawChange.evidence, sourceEvidence);
-        const title = this.normalizeTitle(rawChange.title, evidence[0]?.quote ?? '');
-        const summary = this.normalizeSummary(rawChange.summary, title);
-        const period = this.normalizeChangePeriod(rawChange.period);
+        const evidence = this.normalizeAggregatedEvidence(rawChange.evidence ?? rawChange.e, sourceEvidence);
+        const title = this.normalizeTitle(rawChange.title ?? rawChange.t, evidence[0]?.quote ?? '');
+        const summary = this.normalizeSummary(rawChange.summary ?? rawChange.s, title);
+        const period = this.normalizeChangePeriod(rawChange.period ?? rawChange.p);
         if (title.length === 0 || !period || evidence.length === 0) {
           return null;
         }
@@ -621,11 +634,27 @@ export class MemoryAnalysisService {
     const evidence: MemoryAnalysisChangeEvidence[] = [];
     const seenIds = new Set<string>();
     for (const item of value) {
+      if (typeof item === 'string') {
+        const evidenceId = this.normalizeText(item, '');
+        if (seenIds.has(evidenceId)) {
+          continue;
+        }
+        const sourceItem = sourceEvidence.get(evidenceId);
+        if (!sourceItem) {
+          continue;
+        }
+        seenIds.add(evidenceId);
+        evidence.push(sourceItem);
+        if (evidence.length >= MAX_EVIDENCE_PER_CHANGE) {
+          break;
+        }
+        continue;
+      }
       if (item === null || typeof item !== 'object') {
         continue;
       }
       const rawEvidence = item as Record<string, unknown>;
-      const evidenceId = this.normalizeText(rawEvidence.evidenceId, '');
+      const evidenceId = this.normalizeText(rawEvidence.evidenceId ?? rawEvidence.id, '');
       if (seenIds.has(evidenceId)) {
         continue;
       }
@@ -649,11 +678,31 @@ export class MemoryAnalysisService {
     }
 
     const rawPeriod = value as Record<string, unknown>;
-    const start = this.normalizeText(rawPeriod.start, '');
-    const end = this.normalizeText(rawPeriod.end, '');
+    const start = this.normalizeText(rawPeriod.start ?? rawPeriod.s, '');
+    const end = this.normalizeText(rawPeriod.end ?? rawPeriod.e, '');
     return start.length > 0 && end.length > 0
       ? { start, end }
       : null;
+  }
+
+  private toChangeAggregationPromptPeriods(periods: MemoryAnalysisPeriodSummary[]): unknown[] {
+    return periods.map((period) => ({
+      r: {
+        s: period.period.start,
+        e: period.period.end,
+      },
+      d: period.dimensions.map((group) => ({
+        k: group.dimension,
+        i: group.insights.map((insight) => ({
+          t: insight.title,
+          s: insight.summary,
+          e: insight.evidence.map((evidence) => ({
+            id: evidence.evidenceId,
+            q: evidence.quote,
+          })),
+        })),
+      })),
+    }));
   }
 
   private buildSourceEvidenceMap(periods: MemoryAnalysisPeriodSummary[]): Map<string, MemoryAnalysisChangeEvidence> {
