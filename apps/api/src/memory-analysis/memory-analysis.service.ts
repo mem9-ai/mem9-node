@@ -12,6 +12,7 @@ import type { AnalyzeMemorySourceDto } from '../dto/analyze-memory-source.dto';
 import { Mem9SourceService } from '../mem9-source.service';
 
 import {
+  MEMORY_CHANGE_AGGREGATION_SYSTEM_PROMPT,
   MEMORY_PERIOD_SUMMARY_PROMPT_VERSION,
   MEMORY_PERIOD_SUMMARY_SYSTEM_PROMPT,
 } from './prompts';
@@ -56,12 +57,26 @@ interface RawPeriodSummaryResult {
   periods?: unknown;
 }
 
+interface RawChangeAggregationResult {
+  dimensions?: unknown;
+}
+
+interface QwenJsonCompletionInput {
+  event: string;
+  systemPrompt: string;
+  userContent: string;
+  logMetadata: Record<string, number | string | null>;
+  timeoutLogMessage: string;
+}
+
 const MAX_CONTENT_CHARS = 12000;
 const MAX_BATCH_CONTENT_CHARS = 60000;
 const MAX_INSIGHTS_PER_DIMENSION_PER_PERIOD = 1;
 const MAX_EVIDENCE_PER_INSIGHT = 1;
+const MAX_EVIDENCE_PER_CHANGE = 3;
 const QWEN_PERIOD_SUMMARY_CONCURRENCY = 3;
 const DEBUG_FIRST_PASS_OUTPUT_PATH = '/Users/ericzhang/Downloads/memory-analysis-first-pass.json';
+
 @Injectable()
 export class MemoryAnalysisService {
   private readonly logger = new Logger(MemoryAnalysisService.name);
@@ -85,7 +100,7 @@ export class MemoryAnalysisService {
     }
 
     const aggregationStartedAt = Date.now();
-    const dimensions = this.buildChangeDimensions(firstPass.periods);
+    const dimensions = await this.aggregateChangeDimensions(firstPass.periods);
     const aggregationDurationMs = Date.now() - aggregationStartedAt;
     this.logger.log(JSON.stringify({
       event: 'memory_analysis_completed',
@@ -207,6 +222,25 @@ export class MemoryAnalysisService {
         };
       },
     );
+  }
+
+  private async aggregateChangeDimensions(
+    periods: MemoryAnalysisPeriodSummary[],
+  ): Promise<MemoryAnalysisChangeDimensionGroup[]> {
+    if (periods.length === 0) {
+      return [];
+    }
+
+    const content = await this.callQwenForChangeAggregation(periods);
+    const parsed = this.parseChangeAggregationJsonObject(content);
+    const dimensions = this.normalizeChangeAggregationResult(parsed, periods);
+
+    if (dimensions.length === 0) {
+      this.logger.warn('Memory analysis change aggregation returned no dimensions; falling back to direct period mapping');
+      return this.buildChangeDimensions(periods);
+    }
+
+    return dimensions;
   }
 
   private buildChangeDimensions(periods: MemoryAnalysisPeriodSummary[]): MemoryAnalysisChangeDimensionGroup[] {
@@ -342,14 +376,53 @@ export class MemoryAnalysisService {
   private async callQwenForPeriodSummaries(
     periods: PromptPeriod[],
   ): Promise<string> {
+    const userContent = JSON.stringify({
+      periods,
+    });
+
+    return this.callQwenJsonCompletion({
+      event: 'memory_analysis_qwen_completed',
+      systemPrompt: MEMORY_PERIOD_SUMMARY_SYSTEM_PROMPT,
+      userContent,
+      logMetadata: {
+        periodCount: periods.length,
+        memoryCount: periods.reduce((count, period) => count + period.memories.length, 0),
+      },
+      timeoutLogMessage: 'Qwen memory period summary request timed out',
+    });
+  }
+
+  private async callQwenForChangeAggregation(
+    periods: MemoryAnalysisPeriodSummary[],
+  ): Promise<string> {
+    const userContent = JSON.stringify({
+      periods,
+    });
+
+    return this.callQwenJsonCompletion({
+      event: 'memory_analysis_change_aggregation_qwen_completed',
+      systemPrompt: MEMORY_CHANGE_AGGREGATION_SYSTEM_PROMPT,
+      userContent,
+      logMetadata: {
+        periodCount: periods.length,
+        insightCount: this.countPeriodInsights(periods.flatMap((period) => period.dimensions)),
+      },
+      timeoutLogMessage: 'Qwen memory change aggregation request timed out',
+    });
+  }
+
+  private async callQwenJsonCompletion({
+    event,
+    systemPrompt,
+    userContent,
+    logMetadata,
+    timeoutLogMessage,
+  }: QwenJsonCompletionInput): Promise<string> {
     const timeoutMs = this.config.analysis.qwenRequestTimeoutMs;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     timeout.unref?.();
     const requestStartedAt = Date.now();
-    const userContent = JSON.stringify({
-      periods,
-    });
     const requestBody = JSON.stringify({
       model: this.config.analysis.qwenModel,
       temperature: 0.1,
@@ -360,7 +433,7 @@ export class MemoryAnalysisService {
       messages: [
         {
           role: 'system',
-          content: MEMORY_PERIOD_SUMMARY_SYSTEM_PROMPT,
+          content: systemPrompt,
         },
         {
           role: 'user',
@@ -382,13 +455,12 @@ export class MemoryAnalysisService {
       const payload = await response.json().catch(() => null) as QwenChatCompletionPayload | null;
       const durationMs = Date.now() - requestStartedAt;
       this.logger.log(JSON.stringify({
-        event: 'memory_analysis_qwen_completed',
+        event,
         durationMs,
         httpStatus: response.status,
         model: payload?.model ?? this.config.analysis.qwenModel,
-        periodCount: periods.length,
-        memoryCount: periods.reduce((count, period) => count + period.memories.length, 0),
-        systemPromptChars: MEMORY_PERIOD_SUMMARY_SYSTEM_PROMPT.length,
+        ...logMetadata,
+        systemPromptChars: systemPrompt.length,
         userPromptChars: userContent.length,
         requestBodyChars: requestBody.length,
         promptTokens: payload?.usage?.prompt_tokens ?? payload?.usage?.promptTokens ?? null,
@@ -420,7 +492,7 @@ export class MemoryAnalysisService {
 
       const timedOut = controller.signal.aborted || (error instanceof Error && error.name === 'AbortError');
       const message = error instanceof Error ? error.message : 'unknown error';
-      this.logger.warn(timedOut ? `Qwen memory period summary request timed out after ${timeoutMs}ms` : message);
+      this.logger.warn(timedOut ? `${timeoutLogMessage} after ${timeoutMs}ms` : message);
       throw new AppError(timedOut ? `Qwen request timed out after ${timeoutMs}ms` : message, {
         statusCode: HttpStatus.BAD_GATEWAY,
         code: timedOut ? 'QWEN_REQUEST_TIMEOUT' : 'QWEN_REQUEST_FAILED',
@@ -448,6 +520,161 @@ export class MemoryAnalysisService {
       statusCode: HttpStatus.BAD_GATEWAY,
       code: 'QWEN_JSON_PARSE_FAILED',
     });
+  }
+
+  private parseChangeAggregationJsonObject(content: string): RawChangeAggregationResult {
+    try {
+      return JSON.parse(content) as RawChangeAggregationResult;
+    } catch {
+      const match = /\{[\s\S]*\}/.exec(content);
+      if (match) {
+        try {
+          return JSON.parse(match[0]) as RawChangeAggregationResult;
+        } catch {
+          // Fall through to the structured AppError below.
+        }
+      }
+    }
+
+    throw new AppError('Qwen response was not valid JSON', {
+      statusCode: HttpStatus.BAD_GATEWAY,
+      code: 'QWEN_JSON_PARSE_FAILED',
+    });
+  }
+
+  private normalizeChangeAggregationResult(
+    raw: RawChangeAggregationResult,
+    periods: MemoryAnalysisPeriodSummary[],
+  ): MemoryAnalysisChangeDimensionGroup[] {
+    if (!Array.isArray(raw.dimensions)) {
+      return [];
+    }
+
+    const sourceEvidence = this.buildSourceEvidenceMap(periods);
+
+    return raw.dimensions
+      .map((item): MemoryAnalysisChangeDimensionGroup | null => {
+        if (item === null || typeof item !== 'object') {
+          return null;
+        }
+        const rawGroup = item as Record<string, unknown>;
+        const dimension = this.normalizeDimension(rawGroup.dimension ?? rawGroup.dim);
+        if (!dimension) {
+          return null;
+        }
+
+        const changes = this.normalizeAggregatedChanges(rawGroup.changes, sourceEvidence);
+        return changes.length > 0
+          ? { dimension, changes }
+          : null;
+      })
+      .filter((item): item is MemoryAnalysisChangeDimensionGroup => item !== null)
+      .sort((left, right) => this.dimensionSortIndex(left.dimension) - this.dimensionSortIndex(right.dimension));
+  }
+
+  private normalizeAggregatedChanges(
+    value: unknown,
+    sourceEvidence: Map<string, MemoryAnalysisChangeEvidence>,
+  ): MemoryAnalysisChange[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value
+      .map((item): MemoryAnalysisChange | null => {
+        if (item === null || typeof item !== 'object') {
+          return null;
+        }
+
+        const rawChange = item as Record<string, unknown>;
+        const evidence = this.normalizeAggregatedEvidence(rawChange.evidence, sourceEvidence);
+        const title = this.normalizeTitle(rawChange.title, evidence[0]?.quote ?? '');
+        const summary = this.normalizeSummary(rawChange.summary, title);
+        const period = this.normalizeChangePeriod(rawChange.period);
+        if (title.length === 0 || !period || evidence.length === 0) {
+          return null;
+        }
+
+        return {
+          title,
+          summary,
+          period,
+          evidence,
+        };
+      })
+      .filter((item): item is MemoryAnalysisChange => item !== null)
+      .sort((left, right) => (
+        left.period.start.localeCompare(right.period.start)
+        || left.period.end.localeCompare(right.period.end)
+        || left.title.localeCompare(right.title)
+      ));
+  }
+
+  private normalizeAggregatedEvidence(
+    value: unknown,
+    sourceEvidence: Map<string, MemoryAnalysisChangeEvidence>,
+  ): MemoryAnalysisChangeEvidence[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    const evidence: MemoryAnalysisChangeEvidence[] = [];
+    const seenIds = new Set<string>();
+    for (const item of value) {
+      if (item === null || typeof item !== 'object') {
+        continue;
+      }
+      const rawEvidence = item as Record<string, unknown>;
+      const evidenceId = this.normalizeText(rawEvidence.evidenceId, '');
+      if (seenIds.has(evidenceId)) {
+        continue;
+      }
+      const sourceItem = sourceEvidence.get(evidenceId);
+      if (!sourceItem) {
+        continue;
+      }
+      seenIds.add(evidenceId);
+      evidence.push(sourceItem);
+      if (evidence.length >= MAX_EVIDENCE_PER_CHANGE) {
+        break;
+      }
+    }
+
+    return evidence;
+  }
+
+  private normalizeChangePeriod(value: unknown): { start: string; end: string } | null {
+    if (value === null || typeof value !== 'object') {
+      return null;
+    }
+
+    const rawPeriod = value as Record<string, unknown>;
+    const start = this.normalizeText(rawPeriod.start, '');
+    const end = this.normalizeText(rawPeriod.end, '');
+    return start.length > 0 && end.length > 0
+      ? { start, end }
+      : null;
+  }
+
+  private buildSourceEvidenceMap(periods: MemoryAnalysisPeriodSummary[]): Map<string, MemoryAnalysisChangeEvidence> {
+    const evidenceById = new Map<string, MemoryAnalysisChangeEvidence>();
+    for (const period of periods) {
+      for (const group of period.dimensions) {
+        for (const insight of group.insights) {
+          for (const evidence of insight.evidence) {
+            evidenceById.set(evidence.evidenceId, {
+              evidenceId: evidence.evidenceId,
+              quote: evidence.quote,
+            });
+          }
+        }
+      }
+    }
+    return evidenceById;
+  }
+
+  private dimensionSortIndex(dimension: MemorySignalDimension): number {
+    return [...MEMORY_ANALYSIS_DIMENSIONS].indexOf(dimension);
   }
 
   private normalizePeriodSummaryResult(
