@@ -1,6 +1,14 @@
 import type { AppConfig } from '@mem9/config';
 import { APP_CONFIG } from '@mem9/config';
 import type { DeepAnalysisMemorySnapshot } from '@mem9/contracts';
+import type {
+  DeleteSessionMessageEditResponse,
+  EditSessionMessageRequest,
+  EditSessionMessageResponse,
+  GetSessionMessageEditResponse,
+  MarkSessionMessageResponse,
+  SessionMessageCorrectness,
+} from '@mem9/contracts';
 import { AnalysisRepository, AppError } from '@mem9/shared';
 import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
@@ -74,7 +82,7 @@ interface QwenJsonCompletionInput {
 
 const MAX_CONTENT_CHARS = 12000;
 const MAX_BATCH_CONTENT_CHARS = 60000;
-const MAX_INSIGHTS_PER_DIMENSION_PER_PERIOD = 1;
+const MAX_INSIGHTS_PER_DIMENSION_PER_PERIOD = 3;
 const MAX_EVIDENCE_PER_INSIGHT = 1;
 const MAX_EVIDENCE_PER_CHANGE = 3;
 const QWEN_PERIOD_SUMMARY_CONCURRENCY = 5;
@@ -167,6 +175,73 @@ export class MemoryAnalysisService {
     return report === null ? null : this.toReportResponse(report);
   }
 
+  public async markSessionMessage(
+    context: Mem9RequestContext,
+    id: string,
+    correctness: string,
+  ): Promise<MarkSessionMessageResponse> {
+    if (correctness !== 'correct' && correctness !== 'incorrect') {
+      throw new AppError("Session message correctness must be 'correct' or 'incorrect'", {
+        statusCode: HttpStatus.BAD_REQUEST,
+        code: 'SESSION_MESSAGE_MARK_INVALID',
+      });
+    }
+
+    const memory = await this.source.fetchMemoryById(context.rawApiKey, id);
+    const result = await this.source.markSessionMessage(context.rawApiKey, id, correctness);
+    await this.invalidatePeriodCacheForTimestamp(context, memory.createdAt);
+
+    return result;
+  }
+
+  public async editSessionMessage(
+    context: Mem9RequestContext,
+    id: string,
+    input: EditSessionMessageRequest,
+  ): Promise<EditSessionMessageResponse> {
+    if (input.content.trim().length === 0) {
+      throw new AppError('Session message edit content is required', {
+        statusCode: HttpStatus.BAD_REQUEST,
+        code: 'SESSION_MESSAGE_EDIT_CONTENT_REQUIRED',
+      });
+    }
+
+    const result = await this.source.editSessionMessage(context.rawApiKey, id, input);
+    const invalidatedPeriodKey = await this.invalidatePeriodCacheForTimestamp(
+      context,
+      result.session.createdAt,
+    );
+
+    return {
+      ...result,
+      invalidatedPeriodKey,
+    };
+  }
+
+  public async getSessionMessageEdit(
+    context: Mem9RequestContext,
+    id: string,
+  ): Promise<GetSessionMessageEditResponse> {
+    return this.source.getSessionMessageEdit(context.rawApiKey, id);
+  }
+
+  public async deleteSessionMessageEdit(
+    context: Mem9RequestContext,
+    id: string,
+  ): Promise<DeleteSessionMessageEditResponse> {
+    const memory = await this.source.fetchMemoryById(context.rawApiKey, id);
+    const result = await this.source.deleteSessionMessageEdit(context.rawApiKey, id);
+    const invalidatedPeriodKey = await this.invalidatePeriodCacheForTimestamp(
+      context,
+      memory.createdAt,
+    );
+
+    return {
+      ...result,
+      invalidatedPeriodKey,
+    };
+  }
+
   private async summarizeSourcePeriods(
     context: Mem9RequestContext,
     dto: AnalyzeMemorySourceDto,
@@ -224,6 +299,34 @@ export class MemoryAnalysisService {
       model: this.config.analysis.qwenModel!,
       periods: normalizedPeriods,
     };
+  }
+
+  private async invalidatePeriodCacheForTimestamp(
+    context: Mem9RequestContext,
+    timestamp: string | undefined,
+  ): Promise<string | null> {
+    const periodKey = this.toDayKey(timestamp);
+    if (periodKey === 'unknown-date') {
+      return null;
+    }
+
+    try {
+      await this.repository.invalidateMemoryAnalysisPeriodCache({
+        fingerprint: context.apiKeyFingerprint,
+        periodKey,
+      });
+    } catch (error) {
+      throw new AppError('Failed to invalidate memory analysis cache', {
+        statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
+        code: 'MEMORY_ANALYSIS_CACHE_INVALIDATION_FAILED',
+        details: {
+          periodKey,
+        },
+        cause: error,
+      });
+    }
+
+    return periodKey;
   }
 
   private async summarizePromptPeriods(

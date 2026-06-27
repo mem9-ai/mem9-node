@@ -209,6 +209,65 @@ export interface DeepAnalysisMemorySnapshot {
   metadata?: Record<string, unknown> | null;
 }
 
+export type SessionMessageCorrectness = 'correct' | 'incorrect';
+
+export interface SessionMessageView {
+  id: string;
+  content: string;
+  createdAt?: string;
+  updatedAt?: string;
+  memoryType?: string;
+  tags?: string[];
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface SessionMessageEditView {
+  id: string;
+  version: number;
+  correctness?: SessionMessageCorrectness | null;
+  originalContent: string;
+  editedContent?: string | null;
+  tags?: string[] | null;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface MarkSessionMessageRequest {
+  correctness: SessionMessageCorrectness;
+}
+
+export interface MarkSessionMessageResponse {
+  id: string;
+  correctness: SessionMessageCorrectness;
+  version: number;
+}
+
+export interface EditSessionMessageRequest {
+  content: string;
+  tags?: string[];
+  reason?: string;
+}
+
+export interface EditSessionMessageResponse {
+  id: string;
+  editId: string;
+  version: number;
+  correctness?: SessionMessageCorrectness | null;
+  originalContent: string;
+  editedContent: string;
+  tags?: string[] | null;
+  session: SessionMessageView;
+  invalidatedPeriodKey: string | null;
+}
+
+export interface GetSessionMessageEditResponse extends SessionMessageEditView {}
+
+export interface DeleteSessionMessageEditResponse {
+  id: string;
+  reverted: boolean;
+  invalidatedPeriodKey: string | null;
+}
+
 export interface DeepAnalysisOverviewSection {
   memoryCount: number;
   deduplicatedMemoryCount: number;

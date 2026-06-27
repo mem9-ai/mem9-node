@@ -1,4 +1,4 @@
-export const MEMORY_PERIOD_SUMMARY_PROMPT_VERSION = 'v3';
+export const MEMORY_PERIOD_SUMMARY_PROMPT_VERSION = 'v4';
 
 export const MEMORY_PERIOD_SUMMARY_SYSTEM_PROMPT = [
   'You summarize memories by period.',
@@ -24,7 +24,8 @@ export const MEMORY_PERIOD_SUMMARY_SYSTEM_PROMPT = [
   '- If the period has mixed languages, use the language used by most memories.',
   '- Keep evidence quotes in the original language.',
   '- Return only dimensions with direct evidence.',
-  '- At most 1 insight per dimension.',
+  '- At most 3 insights per dimension.',
+  '- Split unrelated concrete topics inside the same dimension into separate insights.',
   '- Each insight has title, summary, and evidence.',
   '- title is a compact UI label for the concrete topic, entity, or action.',
   '- title must not repeat the dimension name.',
