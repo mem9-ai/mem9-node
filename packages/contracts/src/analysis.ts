@@ -433,6 +433,11 @@ export interface UserProfileSummarySection {
 export interface UserProfileRelationshipItem {
   name: string;
   relation?: string;
+  confidence: number;
+  occurrenceEstimate: number;
+  userRelation: string;
+  reason: string;
+  importanceScore: number;
   importance: number;
   evidenceCount: number;
   evidence: UserProfileEvidence[];

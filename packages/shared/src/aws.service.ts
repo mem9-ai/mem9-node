@@ -1,6 +1,7 @@
 import { Readable } from 'node:stream';
 
 import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import type { SQSClientConfig } from '@aws-sdk/client-sqs';
 import type { Message } from '@aws-sdk/client-sqs';
 import { ChangeMessageVisibilityCommand, DeleteMessageCommand, ReceiveMessageCommand, SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import type { AppConfig } from '@mem9/config';
@@ -37,8 +38,13 @@ export class AwsClientFactory {
       };
     }
 
+    const sqsOptions: SQSClientConfig = {
+      ...options,
+      md5: config.aws.endpointUrl === undefined ? undefined : false,
+    };
+
     this.s3Client = new S3Client(options);
-    this.sqsClient = new SQSClient(options);
+    this.sqsClient = new SQSClient(sqsOptions);
   }
 
   public get s3(): S3Client {

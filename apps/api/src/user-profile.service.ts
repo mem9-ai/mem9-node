@@ -50,7 +50,25 @@ const WORK_STYLE_SUMMARY_KEYWORDS = /(做事风格|工作风格|决策|习惯|�
 const TEMPORAL_PLAN_KEYWORDS = /(当前|现在|近期|明年|优先事项|优先处理|待办|备考|考试|换.*岗位|资格证|需要补上|priority|todo|exam)/iu;
 
 const RELATION_KEYWORDS =
-  /(父母|爸爸|妈妈|女儿|儿子|伴侣|朋友|同事|老师|导师|客户|老板|leader|manager|colleague|teammate|partner|daughter|son|parent|friend|teacher|mentor|customer|stakeholder)/iu;
+  /(家人|亲人|配偶|丈夫|妻子|老公|老婆|恋人|男友|女友|父母|爸爸|妈妈|父亲|母亲|孩子|女儿|儿子|兄弟|姐妹|哥哥|姐姐|弟弟|妹妹|好友|朋友|同事|老师|导师|客户|老板|直属领导|领导|合作伙伴|长期联系人|经常提及的人|family|spouse|husband|wife|partner|boyfriend|girlfriend|child|daughter|son|parent|father|mother|sibling|brother|sister|friend|close friend|leader|manager|boss|colleague|teammate|teacher|mentor|customer|stakeholder|contact)/iu;
+const RELATION_ROLE_NAME_PATTERN =
+  /^(家人|亲人|配偶|丈夫|妻子|老公|老婆|恋人|男友|女友|父母|爸爸|妈妈|父亲|母亲|孩子|女儿|儿子|兄弟|姐妹|哥哥|姐姐|弟弟|妹妹|好友|朋友|同事|老师|导师|客户|老板|直属领导|领导|合作伙伴|长期联系人|经常提及的人|family|spouse|husband|wife|partner|boyfriend|girlfriend|child|daughter|son|parent|father|mother|sibling|brother|sister|friend|close friend|leader|manager|boss|colleague|teammate|teacher|mentor|customer|stakeholder|contact)$/iu;
+const ZH_RELATION_ROLE_NAME_PATTERN =
+  /^(家人|亲人|配偶|丈夫|妻子|老公|老婆|恋人|男友|女友|父母|爸爸|妈妈|父亲|母亲|孩子|女儿|儿子|兄弟|姐妹|哥哥|姐姐|弟弟|妹妹|好友|朋友|同事|老师|导师|客户|老板|直属领导|领导|合作伙伴|长期联系人|经常提及的人)$/u;
+const NON_RELATIONSHIP_NAME_PATTERN =
+  /(提到|看五月天|五月天|演唱会|直接给结论|律师资格证|资格证|考试|科目|建议|说教|背景|长期兴趣|专业技能|长期目标|当前项目|工作习惯|沟通风格|偏好|目标是)/iu;
+const NON_RELATIONSHIP_RELATION_PATTERN =
+  /(提及|提到|兴趣|偏好|技能|目标|项目|沟通|风格|证书|考试|科目|娱乐|话题)/iu;
+const EXCLUDED_RELATIONSHIP_PATTERN =
+  /(新闻人物|新闻|名人|明星|歌手|演员|总统|临时客服|客服|文档作者|作者|示例人物|示例|样例|example|demo|alice|bob)/iu;
+const ENGLISH_FRAGMENT_PATTERN =
+  /\b(a|an|the|for|to|in|on|at|by|about|into|over|under|next|last|this|that|today|tomorrow|yesterday|week|month|year|morning|afternoon|evening|night|with|from|of|and|or|but|if|then|than|as|is|are|was|were|be|been|being|have|has|had|do|does|did|meal|meeting|call|chat|email|message|task|project|plan|goal|exam|test|document|article|report|ticket|support|service)\b/iu;
+const LOWERCASE_ENGLISH_PHRASE_PATTERN = /^[a-z][a-z' -]*$/u;
+const ENGLISH_PERSON_NAME_PATTERN =
+  /^[A-Z][a-z]+(?:[ '-][A-Z][a-z]+){0,2}$/u;
+const SHORT_ENGLISH_NICKNAME_PATTERN = /^[A-Za-z]{1,2}$/u;
+const REPAIRABLE_SHORT_NICKNAME_FRAGMENT_PATTERN =
+  /^([A-Za-z]{1,2})\s+(?:for|with|to|in|at|on)\b/iu;
 
 const ATTRIBUTE_KEYWORDS: Record<UserProfileAttributeKind, RegExp> = {
   long_term_interest: /(长期兴趣|兴趣|关注领域|关注方向|持续关注|interest|interested|focus area)/iu,
@@ -323,13 +341,20 @@ export class UserProfileService {
       }
       const relation = this.extractMetadataString(memory, ['relation', 'relationship', 'relationshipType']);
       const person = this.extractMetadataString(memory, ['person', 'name', 'target', 'entity']);
-      const inferred = person ? { name: person, relation: relation ?? undefined } : this.inferRelationship(memory.content);
+      const inferred = person
+        ? { name: person, relation: relation ?? undefined }
+        : this.inferRelationship(memory.content);
+      const normalized = inferred ? this.normalizeRelationshipCandidate(inferred) : null;
 
-      if (!inferred || !this.isRelationshipMemory(memory, inferred.relation)) {
+      if (
+        !normalized ||
+        !this.isRelationshipMemory(memory, normalized.relation) ||
+        !this.isValidRelationshipCandidate(normalized)
+      ) {
         continue;
       }
 
-      const key = this.normalizeKey(`${inferred.relation ?? ''}:${inferred.name}`);
+      const key = this.normalizeKey(`${normalized.relation ?? ''}:${normalized.name}`);
       const evidence = this.toEvidence(memory);
       const existing = candidates.get(key);
 
@@ -338,8 +363,8 @@ export class UserProfileService {
         existing.evidence.push(evidence);
       } else {
         candidates.set(key, {
-          name: inferred.name,
-          relation: inferred.relation ?? undefined,
+          name: normalized.name,
+          relation: normalized.relation ?? undefined,
           importance: this.memoryScore(memory),
           evidence: [evidence],
         });
@@ -347,15 +372,9 @@ export class UserProfileService {
     }
 
     return [...candidates.values()]
-      .sort((left, right) => right.importance - left.importance)
+      .sort((left, right) => this.relationshipImportanceScore(right) - this.relationshipImportanceScore(left))
       .slice(0, MAX_RELATIONSHIPS)
-      .map((candidate) => ({
-        name: candidate.name,
-        relation: candidate.relation,
-        importance: Math.round(candidate.importance),
-        evidenceCount: candidate.evidence.length,
-        evidence: candidate.evidence.slice(0, ITEM_EVIDENCE_LIMIT),
-      }));
+      .map((candidate) => this.toRelationshipItem(candidate));
   }
 
   private isProfileMemory(memory: DeepAnalysisMemorySnapshot): boolean {
@@ -415,7 +434,132 @@ export class UserProfileService {
   }
 
   private isRelationshipMemory(memory: DeepAnalysisMemorySnapshot, relation?: string): boolean {
-    return Boolean(relation) || this.hasAnyToken(memory, ['relationship', '关系', '人物关系']) || RELATION_KEYWORDS.test(memory.content);
+    return Boolean(relation) ||
+      this.hasAnyToken(memory, ['relationship', '关系', '人物关系']) ||
+      RELATION_KEYWORDS.test(memory.content);
+  }
+
+  private isValidRelationshipCandidate(value: { name: string; relation?: string }): boolean {
+    const name = this.cleanText(value.name);
+    const relation = value.relation ? this.cleanText(value.relation) : '';
+
+    if (
+      !name ||
+      NON_RELATIONSHIP_NAME_PATTERN.test(name) ||
+      NON_RELATIONSHIP_RELATION_PATTERN.test(relation) ||
+      EXCLUDED_RELATIONSHIP_PATTERN.test(name) ||
+      EXCLUDED_RELATIONSHIP_PATTERN.test(relation) ||
+      !this.looksLikeRelationshipName(name)
+    ) {
+      return false;
+    }
+
+    return RELATION_KEYWORDS.test(name) || RELATION_KEYWORDS.test(relation);
+  }
+
+  private normalizeRelationshipCandidate(value: { name: string; relation?: string }): {
+    name: string;
+    relation?: string;
+  } | null {
+    const name = this.cleanText(value.name);
+    const relation = value.relation ? this.cleanText(value.relation) : undefined;
+    const shortNickname = name.match(REPAIRABLE_SHORT_NICKNAME_FRAGMENT_PATTERN)?.[1];
+
+    if (
+      shortNickname &&
+      relation &&
+      RELATION_ROLE_NAME_PATTERN.test(relation) &&
+      !/^(a|i)$/iu.test(shortNickname)
+    ) {
+      return {
+        name: shortNickname,
+        relation,
+      };
+    }
+
+    return {
+      name,
+      relation,
+    };
+  }
+
+  private looksLikeRelationshipName(name: string): boolean {
+    if (ZH_RELATION_ROLE_NAME_PATTERN.test(name)) {
+      return true;
+    }
+
+    if (SHORT_ENGLISH_NICKNAME_PATTERN.test(name) && !/^(a|i)$/iu.test(name)) {
+      return true;
+    }
+
+    if (/^[A-Za-z][A-Za-z' -]{1,40}$/u.test(name)) {
+      return ENGLISH_PERSON_NAME_PATTERN.test(name) &&
+        !ENGLISH_FRAGMENT_PATTERN.test(name) &&
+        !LOWERCASE_ENGLISH_PHRASE_PATTERN.test(name);
+    }
+
+    if (/[\u4e00-\u9fff]/u.test(name)) {
+      return name.length <= 12 && !/[，。！？；,.;!?]/u.test(name);
+    }
+
+    return false;
+  }
+
+  private toRelationshipItem(candidate: RelationshipCandidate): UserProfileRelationshipItem {
+    const occurrenceEstimate = candidate.evidence.length;
+    const userRelation = candidate.relation ?? '经常提及的人';
+    const confidence = this.relationshipConfidence(candidate);
+    const importanceScore = this.relationshipImportanceScore(candidate);
+
+    return {
+      name: candidate.name,
+      relation: candidate.relation,
+      confidence,
+      occurrenceEstimate,
+      userRelation,
+      reason: this.relationshipReason(candidate.name, userRelation, occurrenceEstimate),
+      importanceScore,
+      importance: Math.round(importanceScore),
+      evidenceCount: occurrenceEstimate,
+      evidence: candidate.evidence.slice(0, ITEM_EVIDENCE_LIMIT),
+    };
+  }
+
+  private relationshipConfidence(candidate: RelationshipCandidate): number {
+    const hasExplicitRelation = Boolean(candidate.relation);
+    const base = hasExplicitRelation ? 0.82 : 0.68;
+    const evidenceBoost = Math.min(candidate.evidence.length * 0.04, 0.16);
+    return Math.min(0.98, Number((base + evidenceBoost).toFixed(2)));
+  }
+
+  private relationshipImportanceScore(candidate: RelationshipCandidate): number {
+    const relationWeight = this.relationshipWeight(candidate.relation ?? candidate.name);
+    const occurrenceWeight = Math.min(candidate.evidence.length, 5) * 8;
+    const confidenceWeight = this.relationshipConfidence(candidate) * 20;
+    return Number((relationWeight + occurrenceWeight + confidenceWeight).toFixed(2));
+  }
+
+  private relationshipWeight(value: string): number {
+    if (/(配偶|丈夫|妻子|老公|老婆|恋人|男友|女友|孩子|女儿|儿子|父母|爸爸|妈妈|父亲|母亲)/u.test(value)) {
+      return 60;
+    }
+    if (/(兄弟|姐妹|哥哥|姐姐|弟弟|妹妹|好友|长期联系人|经常提及的人)/u.test(value)) {
+      return 48;
+    }
+    if (/(老板|直属领导|领导|导师|合作伙伴|客户)/u.test(value)) {
+      return 44;
+    }
+    if (/(同事|老师|朋友)/u.test(value)) {
+      return 36;
+    }
+    return 24;
+  }
+
+  private relationshipReason(name: string, relation: string, occurrenceEstimate: number): string {
+    const occurrenceText = occurrenceEstimate > 1
+      ? `已在记忆中出现约 ${occurrenceEstimate} 次`
+      : '已在记忆中出现';
+    return `${name}是用户的${relation}，${occurrenceText}，可能影响用户的生活、工作或决策，值得长期记忆。`;
   }
 
   private inferRelationship(content: string): { name: string; relation?: string } | null {
@@ -426,8 +570,8 @@ export class UserProfileService {
 
     const relation = relationMatch[0];
     const namePatterns = [
-      new RegExp(`${this.escapeRegExp(relation)}(?:是|叫|为|:|：)?\\s*([\\p{Script=Han}A-Za-z0-9_\\- ]{1,24})`, 'iu'),
-      new RegExp(`([\\p{Script=Han}A-Za-z0-9_\\- ]{1,24})(?:是|为|作为|担任)?\\s*${this.escapeRegExp(relation)}`, 'iu'),
+      new RegExp(`${this.escapeRegExp(relation)}(?:是|叫|为|:|：)?\\s*([\\p{Script=Han}A-Za-z][\\p{Script=Han}A-Za-z0-9_\\- ]{0,23}?)(?:长期|经常|对|和|与|在|会|是|为|,|，|。|；|;|$)`, 'iu'),
+      new RegExp(`([\\p{Script=Han}A-Za-z][\\p{Script=Han}A-Za-z0-9_\\- ]{0,23}?)(?:是|为|作为|担任)?\\s*${this.escapeRegExp(relation)}`, 'iu'),
     ];
 
     for (const pattern of namePatterns) {
@@ -609,6 +753,9 @@ export class UserProfileService {
       .replace(/[，。,.!！?？；;].*$/u, '')
       .replace(/^(用户的?|我的?|其|他|她)\s*/u, '')
       .trim();
+    if (/(用户|user|重要|长期|经常|指导|影响|关系)/iu.test(name)) {
+      return null;
+    }
     return name.length > 0 ? name : null;
   }
 
