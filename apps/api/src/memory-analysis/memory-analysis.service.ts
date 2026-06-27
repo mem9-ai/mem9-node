@@ -452,6 +452,7 @@ export class MemoryAnalysisService {
       uniqueEvidence.push({
         evidenceId: item.evidenceId,
         quote: item.quote,
+        ...this.pickEvidenceReview(item),
       });
     }
 
@@ -870,6 +871,7 @@ export class MemoryAnalysisService {
             evidenceById.set(evidence.evidenceId, {
               evidenceId: evidence.evidenceId,
               quote: evidence.quote,
+              ...this.pickEvidenceReview(evidence),
             });
           }
         }
@@ -1010,6 +1012,7 @@ export class MemoryAnalysisService {
         return {
           evidenceId,
           quote,
+          ...this.extractEvidenceReview(rawEvidence),
         };
       })
       .filter((item): item is MemoryAnalysisPeriodInsightEvidence => item !== null)
@@ -1098,7 +1101,13 @@ export class MemoryAnalysisService {
         if (typeof item === 'string') {
           const quote = this.normalizeText(item, '').slice(0, 280);
           const evidenceId = this.findEvidenceIdByQuote(quote, period);
-          return quote.length > 0 && evidenceId ? { evidenceId, quote } : null;
+          return quote.length > 0 && evidenceId
+            ? {
+              evidenceId,
+              quote,
+              ...this.evidenceReviewForId(evidenceId, period),
+            }
+            : null;
         }
         if (item === null || typeof item !== 'object') {
           return null;
@@ -1109,7 +1118,13 @@ export class MemoryAnalysisService {
           return null;
         }
         const evidenceId = this.normalizeEvidenceId(rawEvidence, quote, period);
-        return evidenceId ? { evidenceId, quote } : null;
+        return evidenceId
+          ? {
+            evidenceId,
+            quote,
+            ...this.evidenceReviewForId(evidenceId, period),
+          }
+          : null;
       })
       .filter((item): item is MemoryAnalysisPeriodInsightEvidence => item !== null)
       .slice(0, MAX_EVIDENCE_PER_INSIGHT);
@@ -1137,6 +1152,53 @@ export class MemoryAnalysisService {
     }
 
     return period.memories.find((memory) => memory.text.includes(quote) || quote.includes(memory.text))?.id ?? null;
+  }
+
+  private evidenceReviewForId(
+    evidenceId: string,
+    period: PromptPeriod,
+  ): Partial<MemoryAnalysisPeriodInsightEvidence> {
+    const memory = period.memories.find((item) => item.id === evidenceId);
+    return memory ? this.pickEvidenceReview(memory) : {};
+  }
+
+  private pickEvidenceReview(
+    value: {
+      review?: MemoryAnalysisPeriodInsightEvidence['review'];
+    },
+  ): Partial<MemoryAnalysisPeriodInsightEvidence> {
+    return value.review ? { review: value.review } : {};
+  }
+
+  private extractEvidenceReview(value: Record<string, unknown>): Partial<MemoryAnalysisPeriodInsightEvidence> {
+    const review = this.normalizeEvidenceReview(value.review);
+    return review ? { review } : {};
+  }
+
+  private normalizeCorrectness(value: unknown): 'correct' | 'incorrect' | undefined {
+    return value === 'correct' || value === 'incorrect' ? value : undefined;
+  }
+
+  private normalizeEvidenceReview(value: unknown): MemoryAnalysisPeriodInsightEvidence['review'] | undefined {
+    if (value === null || typeof value !== 'object') {
+      return undefined;
+    }
+
+    const rawReview = value as Record<string, unknown>;
+    const correctness = this.normalizeCorrectness(rawReview.correctness);
+    const edited = typeof rawReview.edited === 'boolean' ? rawReview.edited : undefined;
+    const editVersion = typeof rawReview.editVersion === 'number' && Number.isFinite(rawReview.editVersion)
+      ? rawReview.editVersion
+      : undefined;
+    const editedAt = this.normalizeText(rawReview.editedAt, '');
+    const review = {
+      ...(correctness ? { correctness } : {}),
+      ...(edited !== undefined ? { edited } : {}),
+      ...(editVersion !== undefined ? { editVersion } : {}),
+      ...(editedAt ? { editedAt } : {}),
+    };
+
+    return Object.keys(review).length > 0 ? review : undefined;
   }
 
   private normalizeSummary(value: unknown, fallback: string): string {
@@ -1238,7 +1300,31 @@ export class MemoryAnalysisService {
       id: memory.id,
       createdAt: memory.createdAt,
       text: trimmed.content,
+      ...this.extractMemoryEvidenceReview(memory),
     };
+  }
+
+  private extractMemoryEvidenceReview(memory: DeepAnalysisMemorySnapshot): Partial<PromptMemory> {
+    const metadata = memory.metadata;
+    if (metadata === null || typeof metadata !== 'object') {
+      return {};
+    }
+
+    const correctness = this.normalizeCorrectness(metadata.correctness);
+    const edited = typeof metadata.edited === 'boolean' ? metadata.edited : undefined;
+    const editVersion = typeof metadata.edit_version === 'number' && Number.isFinite(metadata.edit_version)
+      ? metadata.edit_version
+      : undefined;
+    const editedAt = this.normalizeText(metadata.edited_at, '');
+
+    const review = {
+      ...(correctness ? { correctness } : {}),
+      ...(edited !== undefined ? { edited } : {}),
+      ...(editVersion !== undefined ? { editVersion } : {}),
+      ...(editedAt ? { editedAt } : {}),
+    };
+
+    return Object.keys(review).length > 0 ? { review } : {};
   }
 
   private toDayKey(value?: string): string {

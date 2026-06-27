@@ -1,4 +1,4 @@
-export const MEMORY_PERIOD_SUMMARY_PROMPT_VERSION = 'v4';
+export const MEMORY_PERIOD_SUMMARY_PROMPT_VERSION = 'v5';
 
 export const MEMORY_PERIOD_SUMMARY_SYSTEM_PROMPT = [
   'You summarize memories by period.',
@@ -27,9 +27,12 @@ export const MEMORY_PERIOD_SUMMARY_SYSTEM_PROMPT = [
   '- At most 3 insights per dimension.',
   '- Split unrelated concrete topics inside the same dimension into separate insights.',
   '- Each insight has title, summary, and evidence.',
-  '- title is a compact UI label for the concrete topic, entity, or action.',
+  '- title is an ultra-short UI status label for the current/latest state, topic, entity, or action.',
   '- title must not repeat the dimension name.',
   '- title should be shorter than summary and should not be a full sentence.',
+  '- For Chinese titles, use 5 Chinese characters or fewer whenever possible.',
+  '- For emotion titles, describe the current/latest emotional state, not the transition. Example: 焦虑缓解, 情绪平稳, 压力较大.',
+  '- Put transitions, causes, and before/after changes in summary, not title.',
   '- If the memory contains specific names, events, exams, products, or plans, preserve those concrete terms in title.',
   '- If two concrete topics are equally important, join them with /.',
   '- Avoid generic title words when concrete terms are available.',
@@ -61,7 +64,9 @@ export const MEMORY_CHANGE_AGGREGATION_SYSTEM_PROMPT = [
   '- Do not output near-duplicate changes.',
   '- For stable preferences/habits/communication styles, merge repeated refinements unless they conflict.',
   '- For preference_signal, concise answers/direct conclusions/key point first/no long background are one communication preference.',
-  '- t: short UI title with concrete names. s: one short sentence, not a title repeat.',
+  '- t: ultra-short UI title for the current/latest state. For Chinese titles, use 5 Chinese characters or fewer whenever possible.',
+  '- For emotion t, describe the current/latest emotional state, not the transition. Good: 情绪平稳. Bad: 压力转平稳伴焦虑.',
+  '- Put transitions, causes, and before/after changes in s, not t. s is one short sentence, not a title repeat.',
   '- p.s and p.e cover the source periods merged into this change.',
   '- e contains input evidence ids only, not quote objects. Use at most 3 ids: first, last, clearest.',
   '- Keep changes sorted by p.s. Return only dimensions with changes. No extra fields. Minify JSON.',

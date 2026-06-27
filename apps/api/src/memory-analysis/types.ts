@@ -20,6 +20,14 @@ export interface MemoryAnalysisChangePeriod {
 export interface MemoryAnalysisChangeEvidence {
   evidenceId: string;
   quote: string;
+  review?: MemoryAnalysisEvidenceReview;
+}
+
+export interface MemoryAnalysisEvidenceReview {
+  correctness?: 'correct' | 'incorrect';
+  edited?: boolean;
+  editVersion?: number;
+  editedAt?: string;
 }
 
 export interface MemoryAnalysisChange {
@@ -51,6 +59,7 @@ export interface MemoryAnalysisPeriodInsight {
 export interface MemoryAnalysisPeriodInsightEvidence {
   evidenceId: string;
   quote: string;
+  review?: MemoryAnalysisEvidenceReview;
 }
 
 export interface MemoryAnalysisPeriodDimensionGroup {
@@ -79,6 +88,7 @@ export interface PromptMemory {
   id: string;
   createdAt?: string;
   text: string;
+  review?: MemoryAnalysisEvidenceReview;
 }
 
 export interface PromptPeriod {
