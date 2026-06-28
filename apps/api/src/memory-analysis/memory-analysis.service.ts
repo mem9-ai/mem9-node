@@ -435,7 +435,7 @@ export class MemoryAnalysisService {
         ));
 
         return changes.length > 0
-          ? { dimension, changes }
+          ? { dimension, summary: this.summarizeDimensionChanges(changes), changes }
           : null;
       })
       .filter((group): group is MemoryAnalysisChangeDimensionGroup => group !== null);
@@ -734,9 +734,14 @@ export class MemoryAnalysisService {
           return null;
         }
 
-        const changes = this.normalizeAggregatedChanges(rawGroup.changes ?? rawGroup.c, sourceEvidence);
+        const changes = this.normalizeAggregatedChanges(rawGroup.changes ?? rawGroup.c, sourceEvidence, dimension);
+        const summary = this.normalizeSummary(rawGroup.summary ?? rawGroup.s, this.summarizeDimensionChanges(changes));
         return changes.length > 0
-          ? { dimension, changes }
+          ? {
+            dimension,
+            summary,
+            changes,
+          }
           : null;
       })
       .filter((item): item is MemoryAnalysisChangeDimensionGroup => item !== null)
@@ -746,6 +751,7 @@ export class MemoryAnalysisService {
   private normalizeAggregatedChanges(
     value: unknown,
     sourceEvidence: Map<string, MemoryAnalysisChangeEvidence>,
+    dimension: MemorySignalDimension,
   ): MemoryAnalysisChange[] {
     if (!Array.isArray(value)) {
       return [];
@@ -762,6 +768,7 @@ export class MemoryAnalysisService {
         const title = this.normalizeTitle(rawChange.title ?? rawChange.t, evidence[0]?.quote ?? '');
         const summary = this.normalizeSummary(rawChange.summary ?? rawChange.s, title);
         const period = this.normalizeChangePeriod(rawChange.period ?? rawChange.p);
+        const score = dimension === 'emotion' ? this.normalizeEmotionScore(rawChange.score) : undefined;
         if (title.length === 0 || !period || evidence.length === 0) {
           return null;
         }
@@ -769,6 +776,7 @@ export class MemoryAnalysisService {
         return {
           title,
           summary,
+          ...(score !== undefined ? { score } : {}),
           period,
           evidence,
         };
@@ -779,6 +787,30 @@ export class MemoryAnalysisService {
         || left.period.end.localeCompare(right.period.end)
         || left.title.localeCompare(right.title)
       ));
+  }
+
+  private summarizeDimensionChanges(changes: MemoryAnalysisChange[]): string {
+    const summaries = changes
+      .map((change) => change.summary)
+      .filter((summary) => summary.length > 0);
+    if (summaries.length === 0) {
+      return '';
+    }
+
+    return summaries.slice(0, 2).join('；').slice(0, 120);
+  }
+
+  private normalizeEmotionScore(value: unknown): number | undefined {
+    const score = typeof value === 'number'
+      ? value
+      : typeof value === 'string' && value.trim().length > 0
+        ? Number(value)
+        : NaN;
+    if (!Number.isFinite(score)) {
+      return undefined;
+    }
+
+    return Math.min(10, Math.max(1, Math.round(score)));
   }
 
   private normalizeAggregatedEvidence(

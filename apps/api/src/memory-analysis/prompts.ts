@@ -1,4 +1,4 @@
-export const MEMORY_PERIOD_SUMMARY_PROMPT_VERSION = 'v5';
+export const MEMORY_PERIOD_SUMMARY_PROMPT_VERSION = 'v6';
 
 export const MEMORY_PERIOD_SUMMARY_SYSTEM_PROMPT = [
   'You summarize memories by period.',
@@ -48,7 +48,7 @@ export const MEMORY_CHANGE_AGGREGATION_SYSTEM_PROMPT = [
   'Aggregate period memory summaries into UI-ready changes. Return compact JSON only.',
   '',
   'Input schema: {"p":[{"r":{"s":"start","e":"end"},"d":[{"k":"dimension","i":[{"t":"title","s":"summary","e":[{"id":"evidenceId","q":"quote"}]}]}]}]}',
-  'Output schema: {"d":[{"k":"dimension","c":[{"t":"title","s":"summary","p":{"s":"start","e":"end"},"e":["evidenceId"]}]}]}',
+  'Output schema: {"d":[{"k":"dimension","s":"dimension summary","c":[{"t":"title","s":"change summary","score":6,"p":{"s":"start","e":"end"},"e":["evidenceId"]}]}]}',
   '',
   'Dimensions: long_term_goal, focus_area, emotion, preference_signal, growth_signal.',
   '',
@@ -56,6 +56,10 @@ export const MEMORY_CHANGE_AGGREGATION_SYSTEM_PROMPT = [
   '- Scan every input period and every input dimension group.',
   '- For every input dimension that has insights, output that dimension with at least one change unless all its insights are invalid.',
   '- Do not drop dimensions to keep the response short.',
+  '- For each dimension, write s as a concise overall summary of the current state and important changes in that dimension.',
+  '- Dimension s should be one short sentence and should not just repeat change titles.',
+  '- Only for emotion changes, include score as an integer from 1 to 10 for emotional wellbeing in that change period: 1 very poor, 10 excellent.',
+  '- Do not include score for non-emotion changes.',
   '- A change is one stable stage, not just one topic.',
   '- Merge same topic only when stage/status/intent/intensity is also the same.',
   '- Split when a topic changes stage/status/intent/intensity/emotion/certainty/action.',

@@ -33,12 +33,14 @@ export interface MemoryAnalysisEvidenceReview {
 export interface MemoryAnalysisChange {
   title: string;
   summary: string;
+  score?: number;
   period: MemoryAnalysisChangePeriod;
   evidence: MemoryAnalysisChangeEvidence[];
 }
 
 export interface MemoryAnalysisChangeDimensionGroup {
   dimension: MemorySignalDimension;
+  summary: string;
   changes: MemoryAnalysisChange[];
 }
 

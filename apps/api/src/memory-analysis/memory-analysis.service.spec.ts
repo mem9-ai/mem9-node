@@ -328,6 +328,21 @@ describe('memory analysis session message operations', () => {
                 },
               ],
             },
+            {
+              dimension: 'emotion',
+              insights: [
+                {
+                  title: '情绪平稳',
+                  summary: '用户当前情绪整体平稳，但仍有轻微焦虑。',
+                  evidence: [
+                    {
+                      evidenceId: 'turn-edited',
+                      quote: '我打算半年内打上lol国服王者，然后取EDG试训',
+                    },
+                  ],
+                },
+              ],
+            },
           ],
         },
       ],
@@ -336,10 +351,25 @@ describe('memory analysis session message operations', () => {
       d: [
         {
           k: 'long_term_goal',
+          s: '用户当前围绕 LOL 段位和职业试训形成明确长期目标。',
           c: [
             {
               t: 'LOL 国服王者/EDG 试训',
               s: '用户计划在半年内达到 LOL 国服王者段位并尝试 EDG 试训。',
+              score: 9,
+              p: { s: '2026-06-22T00:00:00Z', e: '2026-06-22T23:59:59Z' },
+              e: ['turn-edited'],
+            },
+          ],
+        },
+        {
+          k: 'emotion',
+          s: '用户当前情绪整体平稳，但仍有轻微焦虑。',
+          c: [
+            {
+              t: '情绪平稳',
+              s: '用户当前情绪整体平稳，但仍有轻微焦虑。',
+              score: 6,
               p: { s: '2026-06-22T00:00:00Z', e: '2026-06-22T23:59:59Z' },
               e: ['turn-edited'],
             },
@@ -353,6 +383,11 @@ describe('memory analysis session message operations', () => {
       createdBefore: '2026-06-22T23:59:59Z',
     });
 
+    expect(result.dimensions[0]?.summary).toBe('用户当前围绕 LOL 段位和职业试训形成明确长期目标。');
+    expect(result.dimensions[0]?.changes[0]?.score).toBeUndefined();
+    expect(result.dimensions[1]?.dimension).toBe('emotion');
+    expect(result.dimensions[1]?.summary).toBe('用户当前情绪整体平稳，但仍有轻微焦虑。');
+    expect(result.dimensions[1]?.changes[0]?.score).toBe(6);
     expect(result.dimensions[0]?.changes[0]?.evidence[0]).toEqual({
       evidenceId: 'turn-edited',
       quote: '我打算半年内打上lol国服王者，然后取EDG试训',
