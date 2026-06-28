@@ -122,6 +122,56 @@ describe('mem9 source service', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('fetches only the first small page for profile memories', async () => {
+    const fetchMock = jest.fn().mockResolvedValue(
+      createResponse(200, {
+        memories: [
+          {
+            id: 'm1',
+            content: '长期目标：通过英语六级',
+            created_at: '2026-06-26T00:00:00.000Z',
+            memory_type: 'insight',
+          },
+        ],
+        total: 500,
+        limit: 50,
+        offset: 0,
+      }),
+    );
+    global.fetch = fetchMock as typeof fetch;
+    const service = new Mem9SourceService(createConfig({
+      mem9SourcePageSize: 200,
+    }));
+
+    await service.fetchProfileMemories('space-key');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('limit=50'),
+      expect.any(Object),
+    );
+  });
+
+  it('returns timeout diagnostics when source fetch is aborted', async () => {
+    const fetchMock = jest.fn().mockRejectedValue(
+      Object.assign(new Error('This operation was aborted'), { name: 'AbortError' }),
+    );
+    global.fetch = fetchMock as typeof fetch;
+    const service = new Mem9SourceService(createConfig({
+      mem9SourceFetchRetries: 0,
+      mem9SourceRequestTimeoutMs: 25,
+    }));
+
+    await expect(service.fetchProfileMemories('space-key')).rejects.toMatchObject({
+      code: 'DEEP_ANALYSIS_SOURCE_FETCH_FAILED',
+      details: {
+        reason: 'This operation was aborted',
+        timeoutMs: 25,
+        url: expect.stringContaining('/memories?'),
+      },
+    });
+  });
+
   it('limits delete concurrency', async () => {
     let inFlight = 0;
     let maxInFlight = 0;
