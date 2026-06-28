@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsIn, IsInt, IsOptional, IsString, Min } from 'class-validator';
+import { IsDateString, IsIn, IsInt, IsOptional, IsString, Min } from 'class-validator';
 
 export class CreateMemoryAnalysisReportDto {
   @ApiProperty({ example: 'focus_area' })
@@ -9,6 +9,14 @@ export class CreateMemoryAnalysisReportDto {
   @ApiProperty({ example: '{"summary":"focus changed"}' })
   @IsString()
   public report_content!: string;
+
+  @ApiProperty({ example: '2026-06-01T00:00:00.000Z' })
+  @IsDateString()
+  public startTime!: string;
+
+  @ApiProperty({ example: '2026-06-14T23:59:59.999Z' })
+  @IsDateString()
+  public endTime!: string;
 
   @ApiProperty({ enum: ['fail', 'success'] })
   @IsIn(['fail', 'success'])

@@ -21,6 +21,8 @@ function createReport(overrides: Record<string, unknown> = {}) {
     templateId: 'focus_area',
     reportContent: '{"summary":"ok"}',
     generatedAt: new Date('2026-06-26T08:00:00.000Z'),
+    startTime: new Date('2026-06-01T00:00:00.000Z'),
+    endTime: new Date('2026-06-14T23:59:59.999Z'),
     renderStatus: 'success',
     failReason: null,
     memoryCount: 12,
@@ -120,6 +122,8 @@ describe('memory analysis report service', () => {
     const response = await service.createReport(reportContext, {
       template_id: 'focus_area',
       report_content: '{"summary":"ok"}',
+      startTime: '2026-06-01T00:00:00.000Z',
+      endTime: '2026-06-14T23:59:59.999Z',
       render_status: 'success',
       fail_reason: '',
       memory_count: 12,
@@ -129,6 +133,8 @@ describe('memory analysis report service', () => {
       fingerprint: reportApiKeyFingerprint,
       templateId: 'focus_area',
       reportContent: '{"summary":"ok"}',
+      startTime: new Date('2026-06-01T00:00:00.000Z'),
+      endTime: new Date('2026-06-14T23:59:59.999Z'),
       renderStatus: 'success',
       failReason: '',
       memoryCount: 12,
@@ -138,6 +144,8 @@ describe('memory analysis report service', () => {
       template_id: 'focus_area',
       report_content: '{"summary":"ok"}',
       generated_at: '2026-06-26T08:00:00.000Z',
+      startTime: '2026-06-01T00:00:00.000Z',
+      endTime: '2026-06-14T23:59:59.999Z',
       render_status: 'success',
       fail_reason: null,
       memory_count: 12,
@@ -147,23 +155,25 @@ describe('memory analysis report service', () => {
   it('lists memory analysis reports by type', async () => {
     const repository = {
       listMemoryAnalysisReportsByTemplateId: jest.fn(async () => [
-        createReport({ reportId: 2, templateId: 'emotion', renderStatus: 'fail', failReason: 'bad json' }),
+        createReport({ reportId: 2, templateId: 'preference_signal', renderStatus: 'fail', failReason: 'bad json' }),
       ]),
     };
     const service = createReportService(repository);
 
-    const response = await service.listReports(reportContext, { type: 'emotion' });
+    const response = await service.listReports(reportContext, { type: 'preference_signal' });
 
     expect(repository.listMemoryAnalysisReportsByTemplateId).toHaveBeenCalledWith(
       reportApiKeyFingerprint,
-      'emotion',
+      'preference_signal',
     );
     expect(response).toEqual([
       {
         report_id: 2,
-        template_id: 'emotion',
+        template_id: 'preference_signal',
         report_content: '{"summary":"ok"}',
         generated_at: '2026-06-26T08:00:00.000Z',
+        startTime: '2026-06-01T00:00:00.000Z',
+        endTime: '2026-06-14T23:59:59.999Z',
         render_status: 'fail',
         fail_reason: 'bad json',
         memory_count: 12,

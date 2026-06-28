@@ -1,13 +1,12 @@
 import type { AppConfig } from '@mem9/config';
 import { APP_CONFIG } from '@mem9/config';
-import type { DeepAnalysisMemorySnapshot } from '@mem9/contracts';
 import type {
+  DeepAnalysisMemorySnapshot,
   DeleteSessionMessageEditResponse,
   EditSessionMessageRequest,
   EditSessionMessageResponse,
   GetSessionMessageEditResponse,
   MarkSessionMessageResponse,
-  SessionMessageCorrectness,
 } from '@mem9/contracts';
 import { AnalysisRepository, AppError } from '@mem9/shared';
 import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
@@ -136,6 +135,8 @@ export class MemoryAnalysisService {
       fingerprint: context.apiKeyFingerprint,
       templateId: dto.template_id,
       reportContent: dto.report_content,
+      startTime: new Date(dto.startTime),
+      endTime: new Date(dto.endTime),
       renderStatus: dto.render_status,
       failReason: dto.fail_reason,
       memoryCount: dto.memory_count,
@@ -1391,6 +1392,8 @@ export class MemoryAnalysisService {
       template_id: report.templateId,
       report_content: report.reportContent,
       generated_at: report.generatedAt.toISOString(),
+      startTime: report.startTime?.toISOString() ?? null,
+      endTime: report.endTime?.toISOString() ?? null,
       render_status: report.renderStatus === 'fail' ? 'fail' : 'success',
       fail_reason: report.failReason,
       memory_count: report.memoryCount,

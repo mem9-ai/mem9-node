@@ -79,6 +79,8 @@ export interface MemoryAnalysisReportResponse {
   template_id: string;
   report_content: string;
   generated_at: string;
+  startTime: string | null;
+  endTime: string | null;
   render_status: 'fail' | 'success';
   fail_reason: string | null;
   memory_count: number;

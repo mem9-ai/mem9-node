@@ -601,6 +601,8 @@ export class AnalysisRepository {
     fingerprint: Buffer;
     templateId: string;
     reportContent: string;
+    startTime: Date;
+    endTime: Date;
     renderStatus: string;
     failReason?: string | null;
     memoryCount: number;
@@ -612,6 +614,8 @@ export class AnalysisRepository {
         apiKeyFingerprint: toPrismaBytes(data.fingerprint),
         templateId: data.templateId,
         reportContent: data.reportContent,
+        startTime: data.startTime,
+        endTime: data.endTime,
         renderStatus: data.renderStatus,
         failReason: data.failReason ?? null,
         memoryCount: data.memoryCount,
@@ -663,6 +667,8 @@ export class AnalysisRepository {
         \`template_id\` VARCHAR(255) NOT NULL,
         \`report_content\` LONGTEXT NOT NULL,
         \`generated_at\` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+        \`start_time\` DATETIME(3) NULL,
+        \`end_time\` DATETIME(3) NULL,
         \`render_status\` VARCHAR(16) NOT NULL,
         \`fail_reason\` LONGTEXT NULL,
         \`memory_count\` INTEGER NOT NULL,
@@ -676,6 +682,20 @@ export class AnalysisRepository {
       await this.prisma.$executeRawUnsafe(`
         ALTER TABLE \`memory_report\`
         ADD COLUMN \`api_key_fingerprint\` VARBINARY(32) NULL AFTER \`report_id\`;
+      `);
+    }
+
+    if (!(await this.hasMemoryReportColumn('start_time'))) {
+      await this.prisma.$executeRawUnsafe(`
+        ALTER TABLE \`memory_report\`
+        ADD COLUMN \`start_time\` DATETIME(3) NULL AFTER \`generated_at\`;
+      `);
+    }
+
+    if (!(await this.hasMemoryReportColumn('end_time'))) {
+      await this.prisma.$executeRawUnsafe(`
+        ALTER TABLE \`memory_report\`
+        ADD COLUMN \`end_time\` DATETIME(3) NULL AFTER \`start_time\`;
       `);
     }
 
