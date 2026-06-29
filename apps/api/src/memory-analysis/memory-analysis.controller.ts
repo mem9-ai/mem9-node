@@ -56,9 +56,9 @@ export class MemoryAnalysisController {
   })
   public createReport(
     @CurrentContext() context: Mem9RequestContext,
-    @Body() dto: CreateMemoryAnalysisReportDto,
+    @Query() query: CreateMemoryAnalysisReportDto,
   ) {
-    return this.service.createReport(context, dto);
+    return this.service.createReport(context, query);
   }
 
   @Get('report/list')
