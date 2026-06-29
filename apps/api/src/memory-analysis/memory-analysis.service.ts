@@ -8,7 +8,7 @@ import type {
   GetSessionMessageEditResponse,
   MarkSessionMessageResponse,
 } from '@mem9/contracts';
-import { AnalysisRepository, AppError } from '@mem9/shared';
+import { AnalysisRepository, AppError, sha256Hex } from '@mem9/shared';
 import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import type { MemoryReport } from '@prisma/client';
@@ -20,6 +20,7 @@ import type { ListMemoryAnalysisReportsDto } from '../dto/list-memory-analysis-r
 import { Mem9SourceService } from '../mem9-source.service';
 
 import {
+  MEMORY_PERIOD_SUMMARY_CACHE_VERSION,
   MEMORY_CHANGE_AGGREGATION_SYSTEM_PROMPT,
   MEMORY_PERIOD_SUMMARY_PROMPT_VERSION,
   MEMORY_PERIOD_SUMMARY_SYSTEM_PROMPT,
@@ -93,6 +94,7 @@ const MAX_ANALYSIS_RANGE_MS = 14 * 24 * 60 * 60 * 1000;
 const MEMORY_ANALYSIS_REPORT_TEMPLATE_ID = 'memory_analysis';
 const MEMORY_ANALYSIS_REPORT_MAX_ATTEMPTS = 3;
 const MEMORY_ANALYSIS_REPORT_RETRY_BASE_MS = 1000;
+const MEMORY_PERIOD_SUMMARY_PROMPT_HASH = sha256Hex(MEMORY_PERIOD_SUMMARY_SYSTEM_PROMPT);
 
 @Injectable()
 export class MemoryAnalysisService {
@@ -541,6 +543,9 @@ export class MemoryAnalysisService {
       responseChars: periodResults.reduce((count, result) => count + result.responseChars, 0),
       cacheHits: periodResults.filter((result) => result.cacheHit).length,
       cacheMisses: periodResults.filter((result) => !result.cacheHit).length,
+      cacheVersion: MEMORY_PERIOD_SUMMARY_CACHE_VERSION,
+      promptVersion: MEMORY_PERIOD_SUMMARY_PROMPT_VERSION,
+      promptHash: MEMORY_PERIOD_SUMMARY_PROMPT_HASH,
       periodCount: normalizedPeriods.length,
       insightCount: this.countPeriodInsights(normalizedPeriods.flatMap((period) => period.dimensions)),
     }));
@@ -596,7 +601,7 @@ export class MemoryAnalysisService {
             fingerprint: apiKeyFingerprint,
             periodKey: period.periodKey,
             model,
-            promptVersion: MEMORY_PERIOD_SUMMARY_PROMPT_VERSION,
+            promptVersion: MEMORY_PERIOD_SUMMARY_CACHE_VERSION,
           })
           : null;
 
@@ -616,7 +621,7 @@ export class MemoryAnalysisService {
             fingerprint: apiKeyFingerprint,
             periodKey: period.periodKey,
             model,
-            promptVersion: MEMORY_PERIOD_SUMMARY_PROMPT_VERSION,
+            promptVersion: MEMORY_PERIOD_SUMMARY_CACHE_VERSION,
             resultJson: normalizedPeriods[0] as unknown as Prisma.InputJsonValue,
           });
         }
@@ -812,6 +817,9 @@ export class MemoryAnalysisService {
         ...logMeta,
         periodCount: periods.length,
         memoryCount: periods.reduce((count, period) => count + period.memories.length, 0),
+        cacheVersion: MEMORY_PERIOD_SUMMARY_CACHE_VERSION,
+        promptVersion: MEMORY_PERIOD_SUMMARY_PROMPT_VERSION,
+        promptHash: MEMORY_PERIOD_SUMMARY_PROMPT_HASH,
       },
       timeoutLogMessage: 'Qwen memory period summary request timed out',
     });

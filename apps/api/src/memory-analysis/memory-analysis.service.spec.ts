@@ -1,5 +1,6 @@
 import type { AppConfig } from '@mem9/config';
 
+import { MEMORY_PERIOD_SUMMARY_CACHE_VERSION } from './prompts';
 import { MemoryAnalysisService } from './memory-analysis.service';
 
 const reportApiKeyFingerprint = Buffer.alloc(32, 1);
@@ -546,5 +547,78 @@ describe('memory analysis session message operations', () => {
         editedAt: '2026-06-27T10:17:52Z',
       },
     });
+  });
+
+  it('uses the cache version for period summary cache lookups and writes', async () => {
+    const { service, repository } = createSessionService({
+      source: {
+        fetchSessionMemories: jest.fn(async () => [
+          {
+            id: 'turn-1',
+            content: '今天开始准备法考，晚上复盘学习计划。',
+            createdAt: '2026-06-22T08:05:03Z',
+            memoryType: 'session',
+            metadata: {},
+          },
+        ]),
+      },
+    });
+    const qwenService = service as unknown as {
+      callQwenForPeriodSummaries: () => Promise<string>;
+      callQwenForChangeAggregation: () => Promise<string>;
+    };
+    jest.spyOn(qwenService, 'callQwenForPeriodSummaries').mockResolvedValue(JSON.stringify({
+      periods: [
+        {
+          periodKey: '2026-06-22',
+          dimensions: [
+            {
+              dimension: 'long_term_goal',
+              insights: [
+                {
+                  title: '法考准备',
+                  summary: '用户开始准备法考并复盘学习计划。',
+                  evidence: [{ evidenceId: 'turn-1', quote: '开始准备法考' }],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    }));
+    jest.spyOn(qwenService, 'callQwenForChangeAggregation').mockResolvedValue(JSON.stringify({
+      d: [
+        {
+          k: 'long_term_goal',
+          s: '用户围绕法考形成学习计划。',
+          c: [
+            {
+              t: '法考准备',
+              s: '用户开始准备法考并复盘学习计划。',
+              p: { s: '2026-06-22T00:00:00Z', e: '2026-06-22T23:59:59Z' },
+              e: ['turn-1'],
+            },
+          ],
+        },
+      ],
+    }));
+
+    await service.analyzeSource(createSessionContext(), {
+      createdAfter: '2026-06-22T00:00:00Z',
+      createdBefore: '2026-06-22T23:59:59Z',
+    });
+
+    expect(repository.findMemoryAnalysisPeriodCache).toHaveBeenCalledWith({
+      fingerprint: createSessionContext().apiKeyFingerprint,
+      periodKey: '2026-06-22',
+      model: 'test-model',
+      promptVersion: MEMORY_PERIOD_SUMMARY_CACHE_VERSION,
+    });
+    expect(repository.upsertMemoryAnalysisPeriodCache).toHaveBeenCalledWith(expect.objectContaining({
+      fingerprint: createSessionContext().apiKeyFingerprint,
+      periodKey: '2026-06-22',
+      model: 'test-model',
+      promptVersion: MEMORY_PERIOD_SUMMARY_CACHE_VERSION,
+    }));
   });
 });
