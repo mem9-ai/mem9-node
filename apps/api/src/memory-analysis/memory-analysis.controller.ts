@@ -22,11 +22,11 @@ import { ApiKeyGuard } from '../common/api-key.guard';
 import { RateLimitGuard } from '../common/rate-limit.guard';
 import { CurrentContext } from '../common/request-context';
 import type { Mem9RequestContext } from '../common/request-context';
-import { AnalyzeMemorySourceDto } from '../dto/analyze-memory-source.dto';
 import { CreateMemoryAnalysisReportDto } from '../dto/create-memory-analysis-report.dto';
 import { EditSessionMessageDto } from '../dto/edit-session-message.dto';
 import { ListMemoryAnalysisReportsDto } from '../dto/list-memory-analysis-reports.dto';
 import { MarkSessionMessageDto } from '../dto/mark-session-message.dto';
+import { MemoryAnalysisReportResponseDto } from '../dto/memory-analysis-report-response.dto';
 import {
   ApiErrorResponseDto,
   DeleteSessionMessageEditResponseDto,
@@ -48,17 +48,12 @@ import { MemoryAnalysisService } from './memory-analysis.service';
 export class MemoryAnalysisController {
   public constructor(private readonly service: MemoryAnalysisService) {}
 
-  @Post('analyze-source')
-  @ApiOperation({ summary: 'Analyze source memories and build local change groups' })
-  public analyzeSource(
-    @CurrentContext() context: Mem9RequestContext,
-    @Query() query: AnalyzeMemorySourceDto,
-  ) {
-    return this.service.analyzeSource(context, query);
-  }
-
   @Post('report')
-  @ApiOperation({ summary: 'Create a memory analysis report' })
+  @ApiOperation({ summary: 'Create an async memory analysis report job' })
+  @ApiOkResponse({
+    description: 'Memory analysis report job was queued.',
+    type: MemoryAnalysisReportResponseDto,
+  })
   public createReport(
     @CurrentContext() context: Mem9RequestContext,
     @Body() dto: CreateMemoryAnalysisReportDto,
@@ -68,6 +63,11 @@ export class MemoryAnalysisController {
 
   @Get('report/list')
   @ApiOperation({ summary: 'List memory analysis reports by type' })
+  @ApiOkResponse({
+    description: 'Memory analysis reports owned by the current API key.',
+    type: MemoryAnalysisReportResponseDto,
+    isArray: true,
+  })
   public listReports(
     @CurrentContext() context: Mem9RequestContext,
     @Query() query: ListMemoryAnalysisReportsDto,
@@ -77,6 +77,10 @@ export class MemoryAnalysisController {
 
   @Get('report/:report_id')
   @ApiOperation({ summary: 'Get one memory analysis report' })
+  @ApiOkResponse({
+    description: 'Memory analysis report status and result when ready.',
+    type: MemoryAnalysisReportResponseDto,
+  })
   public getReport(
     @CurrentContext() context: Mem9RequestContext,
     @Param('report_id') reportId: string,

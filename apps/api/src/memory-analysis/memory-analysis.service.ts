@@ -75,8 +75,12 @@ interface QwenJsonCompletionInput {
   event: string;
   systemPrompt: string;
   userContent: string;
-  logMetadata: Record<string, number | string | null>;
+  logMetadata: Record<string, number | string | boolean | null | undefined>;
   timeoutLogMessage: string;
+}
+
+interface MemoryAnalysisReportLogMeta {
+  reportId?: number;
 }
 
 const MAX_CONTENT_CHARS = 12000;
@@ -86,6 +90,9 @@ const MAX_EVIDENCE_PER_INSIGHT = 1;
 const MAX_EVIDENCE_PER_CHANGE = 3;
 const QWEN_PERIOD_SUMMARY_CONCURRENCY = 5;
 const MAX_ANALYSIS_RANGE_MS = 14 * 24 * 60 * 60 * 1000;
+const MEMORY_ANALYSIS_REPORT_TEMPLATE_ID = 'memory_analysis';
+const MEMORY_ANALYSIS_REPORT_MAX_ATTEMPTS = 3;
+const MEMORY_ANALYSIS_REPORT_RETRY_BASE_MS = 1000;
 
 @Injectable()
 export class MemoryAnalysisService {
@@ -100,16 +107,18 @@ export class MemoryAnalysisService {
   public async analyzeSource(
     context: Mem9RequestContext,
     dto: AnalyzeMemorySourceDto,
+    logMeta: MemoryAnalysisReportLogMeta = {},
   ): Promise<AnalyzeMemorySourceChangesResponse> {
     const startedAt = Date.now();
     this.validateDateRange(dto);
-    const firstPass = await this.summarizeSourcePeriods(context, dto);
+    const firstPass = await this.summarizeSourcePeriods(context, dto, logMeta);
 
     const aggregationStartedAt = Date.now();
-    const dimensions = await this.aggregateChangeDimensions(firstPass.periods);
+    const dimensions = await this.aggregateChangeDimensions(firstPass.periods, logMeta);
     const aggregationDurationMs = Date.now() - aggregationStartedAt;
     this.logger.log(JSON.stringify({
       event: 'memory_analysis_completed',
+      ...logMeta,
       durationMs: Date.now() - startedAt,
       aggregationDurationMs,
       total: firstPass.total,
@@ -131,16 +140,40 @@ export class MemoryAnalysisService {
     context: Mem9RequestContext,
     dto: CreateMemoryAnalysisReportDto,
   ): Promise<MemoryAnalysisReportResponse> {
+    this.validateDateRange(dto);
+    const startTime = new Date(dto.createdAfter);
+    const endTime = new Date(dto.createdBefore);
+    const existingReport = await this.repository.findActiveMemoryAnalysisReportByWindow({
+      fingerprint: context.apiKeyFingerprint,
+      templateId: MEMORY_ANALYSIS_REPORT_TEMPLATE_ID,
+      startTime,
+      endTime,
+    });
+
+    if (existingReport !== null) {
+      this.logger.log(JSON.stringify({
+        event: 'memory_analysis_report_deduplicated',
+        reportId: existingReport.reportId,
+        renderStatus: existingReport.renderStatus,
+        reportStage: existingReport.reportStage,
+        apiKeyFingerprint: context.apiKeyFingerprintHex ?? null,
+        startTime: startTime.toISOString(),
+        endTime: endTime.toISOString(),
+      }));
+      return this.toReportResponse(existingReport);
+    }
+
     const report = await this.repository.createMemoryAnalysisReport({
       fingerprint: context.apiKeyFingerprint,
-      templateId: dto.template_id,
-      reportContent: dto.report_content,
-      startTime: new Date(dto.startTime),
-      endTime: new Date(dto.endTime),
-      renderStatus: dto.render_status,
-      failReason: dto.fail_reason,
-      memoryCount: dto.memory_count,
+      templateId: MEMORY_ANALYSIS_REPORT_TEMPLATE_ID,
+      startTime,
+      endTime,
+      renderStatus: 'queued',
+      reportStage: 'queued',
+      memoryCount: 0,
     });
+
+    this.scheduleReportGeneration(context, report.reportId, dto);
 
     return this.toReportResponse(report);
   }
@@ -151,7 +184,7 @@ export class MemoryAnalysisService {
   ): Promise<MemoryAnalysisReportResponse[]> {
     const reports = await this.repository.listMemoryAnalysisReportsByTemplateId(
       context.apiKeyFingerprint,
-      dto.type,
+      dto.type ?? MEMORY_ANALYSIS_REPORT_TEMPLATE_ID,
     );
     return reports.map((report) => this.toReportResponse(report));
   }
@@ -174,6 +207,221 @@ export class MemoryAnalysisService {
       parsedReportId,
     );
     return report === null ? null : this.toReportResponse(report);
+  }
+
+  private scheduleReportGeneration(
+    context: Mem9RequestContext,
+    reportId: number,
+    dto: AnalyzeMemorySourceDto,
+  ): void {
+    const schedule = typeof setImmediate === 'function'
+      ? setImmediate
+      : (callback: () => void) => setTimeout(callback, 0);
+
+    schedule(() => {
+      void this.generateReport(context, reportId, dto);
+    });
+  }
+
+  private async generateReport(
+    context: Mem9RequestContext,
+    reportId: number,
+    dto: AnalyzeMemorySourceDto,
+  ): Promise<void> {
+    const startedAt = Date.now();
+    try {
+      await this.repository.updateMemoryAnalysisReport(reportId, {
+        renderStatus: 'running',
+        reportStage: 'fetch_source',
+        startedAt: new Date(),
+        failCode: null,
+        failReason: null,
+      });
+      this.logReportEvent('memory_analysis_report_started', {
+        reportId,
+        stage: 'fetch_source',
+        attempt: 1,
+        apiKeyFingerprint: context.apiKeyFingerprintHex ?? null,
+      });
+
+      const result = await this.generateReportWithRetry(context, reportId, dto);
+
+      await this.repository.updateMemoryAnalysisReport(reportId, {
+        renderStatus: 'running',
+        reportStage: 'save_result',
+        memoryCount: result.memoryCount,
+      });
+      this.logReportEvent('memory_analysis_report_stage_changed', {
+        reportId,
+        stage: 'save_result',
+        memoryCount: result.memoryCount,
+      });
+
+      await this.repository.updateMemoryAnalysisReport(reportId, {
+        reportContent: JSON.stringify(result),
+        renderStatus: 'success',
+        reportStage: 'complete',
+        completedAt: new Date(),
+        failCode: null,
+        failReason: null,
+        memoryCount: result.memoryCount,
+      });
+      this.logReportEvent('memory_analysis_report_completed', {
+        reportId,
+        stage: 'complete',
+        durationMs: Date.now() - startedAt,
+        memoryCount: result.memoryCount,
+      });
+    } catch (error) {
+      const appError = error instanceof AppError ? error : null;
+      const failCode = appError?.code ?? 'MEMORY_ANALYSIS_GENERATION_FAILED';
+      const failReason = this.getReportFailReason(error);
+
+      this.logReportEvent('memory_analysis_report_failed', {
+        reportId,
+        stage: 'failed',
+        durationMs: Date.now() - startedAt,
+        failCode,
+        failReason,
+      }, 'error', error);
+
+      await this.repository.updateMemoryAnalysisReport(reportId, {
+        renderStatus: 'fail',
+        reportStage: 'failed',
+        completedAt: new Date(),
+        failCode,
+        failReason,
+      });
+    }
+  }
+
+  private async generateReportWithRetry(
+    context: Mem9RequestContext,
+    reportId: number,
+    dto: AnalyzeMemorySourceDto,
+  ): Promise<AnalyzeMemorySourceChangesResponse> {
+    let attempt = 1;
+    let lastError: unknown;
+
+    while (attempt <= MEMORY_ANALYSIS_REPORT_MAX_ATTEMPTS) {
+      try {
+        this.logReportEvent('memory_analysis_report_attempt_started', {
+          reportId,
+          stage: 'fetch_source',
+          attempt,
+        });
+        return await this.analyzeSource(context, dto, { reportId });
+      } catch (error) {
+        lastError = error;
+        const appError = error instanceof AppError ? error : null;
+        const retryable = this.isRetryableReportError(error);
+        const willRetry = retryable && attempt < MEMORY_ANALYSIS_REPORT_MAX_ATTEMPTS;
+
+        this.logReportEvent('memory_analysis_report_attempt_failed', {
+          reportId,
+          stage: 'failed',
+          attempt,
+          willRetry: willRetry ? 'true' : 'false',
+          failCode: appError?.code ?? 'MEMORY_ANALYSIS_GENERATION_FAILED',
+          failReason: this.getReportFailReason(error),
+        }, willRetry ? 'warn' : 'error', error);
+
+        if (!willRetry) {
+          break;
+        }
+
+        await this.sleep(MEMORY_ANALYSIS_REPORT_RETRY_BASE_MS * attempt);
+        attempt += 1;
+      }
+    }
+
+    throw lastError;
+  }
+
+  private isRetryableReportError(error: unknown): boolean {
+    if (!(error instanceof AppError)) {
+      return true;
+    }
+
+    if (
+      error.code === 'DEEP_ANALYSIS_SOURCE_FETCH_FAILED'
+      || error.code === 'QWEN_REQUEST_FAILED'
+      || error.code === 'QWEN_REQUEST_TIMEOUT'
+      || error.code === 'QWEN_EMPTY_RESPONSE'
+    ) {
+      return true;
+    }
+
+    if (error.code === 'QWEN_HTTP_ERROR') {
+      const httpStatus = Number(error.details?.httpStatus);
+      return httpStatus === 408 || httpStatus === 429 || httpStatus >= 500;
+    }
+
+    return false;
+  }
+
+  private getReportFailReason(error: unknown): string {
+    if (!(error instanceof AppError)) {
+      return 'Memory analysis failed because of an unexpected server error. Please retry later.';
+    }
+
+    if (error.code === 'DEEP_ANALYSIS_SOURCE_FETCH_FAILED') {
+      return 'Memory source API is unavailable or timed out. Please retry later.';
+    }
+
+    if (error.code === 'QWEN_REQUEST_TIMEOUT') {
+      return 'Qwen request timed out. Please retry later.';
+    }
+
+    if (error.code === 'QWEN_REQUEST_FAILED') {
+      return 'Qwen service is unavailable. Please retry later.';
+    }
+
+    if (error.code === 'QWEN_HTTP_ERROR') {
+      const httpStatus = Number(error.details?.httpStatus);
+      if (httpStatus === 401 || httpStatus === 403) {
+        return 'Qwen authentication failed. Please check the configured API key.';
+      }
+      if (httpStatus === 429) {
+        return 'Qwen rate limit was reached. Please retry later.';
+      }
+      if (httpStatus >= 500) {
+        return 'Qwen service returned a server error. Please retry later.';
+      }
+      return `Qwen request was rejected with HTTP ${Number.isFinite(httpStatus) ? httpStatus : 'error'}.`;
+    }
+
+    if (error.code === 'QWEN_NOT_CONFIGURED') {
+      return 'Qwen API key or model is not configured.';
+    }
+
+    if (error.code === 'QWEN_EMPTY_RESPONSE' || error.code === 'QWEN_JSON_PARSE_FAILED') {
+      return 'Qwen returned an invalid response. Please retry later.';
+    }
+
+    return 'Memory analysis generation failed. Please retry later.';
+  }
+
+  private logReportEvent(
+    event: string,
+    data: Record<string, number | string | boolean | null | undefined>,
+    level: 'log' | 'warn' | 'error' = 'log',
+    error?: unknown,
+  ): void {
+    const payload = JSON.stringify({ event, ...data });
+    if (level === 'error') {
+      this.logger.error(payload, error instanceof Error ? error.stack : undefined);
+      return;
+    }
+    if (level === 'warn') {
+      this.logger.warn(payload);
+      return;
+    }
+    this.logger.log(payload);
+  }
+
+  private async sleep(ms: number): Promise<void> {
+    await new Promise<void>((resolve) => setTimeout(resolve, ms));
   }
 
   public async markSessionMessage(
@@ -246,6 +494,7 @@ export class MemoryAnalysisService {
   private async summarizeSourcePeriods(
     context: Mem9RequestContext,
     dto: AnalyzeMemorySourceDto,
+    logMeta: MemoryAnalysisReportLogMeta = {},
   ): Promise<AnalyzeMemorySourcePeriodSummaryResponse> {
     const fetchStartedAt = Date.now();
     const memories = await this.source.fetchSessionMemories(context.rawApiKey, {
@@ -260,6 +509,7 @@ export class MemoryAnalysisService {
     const promptContentChars = promptMemories.reduce((count, memory) => count + memory.text.length, 0);
     this.logger.log(JSON.stringify({
       event: 'memory_analysis_source_prepared',
+      ...logMeta,
       fetchDurationMs,
       promptDurationMs,
       total: memories.length,
@@ -282,10 +532,11 @@ export class MemoryAnalysisService {
     this.ensureQwenConfigured();
 
     const qwenStartedAt = Date.now();
-    const periodResults = await this.summarizePromptPeriods(context.apiKeyFingerprint, periods);
+    const periodResults = await this.summarizePromptPeriods(context.apiKeyFingerprint, periods, logMeta);
     const normalizedPeriods = periodResults.flatMap((result) => result.periods);
     this.logger.log(JSON.stringify({
       event: 'memory_analysis_periods_normalized',
+      ...logMeta,
       qwenDurationMs: Date.now() - qwenStartedAt,
       responseChars: periodResults.reduce((count, result) => count + result.responseChars, 0),
       cacheHits: periodResults.filter((result) => result.cacheHit).length,
@@ -333,6 +584,7 @@ export class MemoryAnalysisService {
   private async summarizePromptPeriods(
     apiKeyFingerprint: Buffer,
     periods: PromptPeriod[],
+    logMeta: MemoryAnalysisReportLogMeta = {},
   ): Promise<{ periods: MemoryAnalysisPeriodSummary[]; responseChars: number; cacheHit: boolean }[]> {
     return this.mapWithConcurrency(
       periods,
@@ -356,7 +608,7 @@ export class MemoryAnalysisService {
           };
         }
 
-        const content = await this.callQwenForPeriodSummaries([period]);
+        const content = await this.callQwenForPeriodSummaries([period], logMeta);
         const parsed = this.parseJsonObject(content);
         const normalizedPeriods = this.normalizePeriodSummaryResult(parsed, [period]);
         if (period.cacheable) {
@@ -380,12 +632,13 @@ export class MemoryAnalysisService {
 
   private async aggregateChangeDimensions(
     periods: MemoryAnalysisPeriodSummary[],
+    logMeta: MemoryAnalysisReportLogMeta = {},
   ): Promise<MemoryAnalysisChangeDimensionGroup[]> {
     if (periods.length === 0) {
       return [];
     }
 
-    const content = await this.callQwenForChangeAggregation(periods);
+    const content = await this.callQwenForChangeAggregation(periods, logMeta);
     const parsed = this.parseChangeAggregationJsonObject(content);
     const dimensions = this.normalizeChangeAggregationResult(parsed, periods);
 
@@ -540,6 +793,7 @@ export class MemoryAnalysisService {
 
   private async callQwenForPeriodSummaries(
     periods: PromptPeriod[],
+    logMeta: MemoryAnalysisReportLogMeta = {},
   ): Promise<string> {
     const userContent = JSON.stringify({
       periods: periods.map((period) => ({
@@ -555,6 +809,7 @@ export class MemoryAnalysisService {
       systemPrompt: MEMORY_PERIOD_SUMMARY_SYSTEM_PROMPT,
       userContent,
       logMetadata: {
+        ...logMeta,
         periodCount: periods.length,
         memoryCount: periods.reduce((count, period) => count + period.memories.length, 0),
       },
@@ -564,6 +819,7 @@ export class MemoryAnalysisService {
 
   private async callQwenForChangeAggregation(
     periods: MemoryAnalysisPeriodSummary[],
+    logMeta: MemoryAnalysisReportLogMeta = {},
   ): Promise<string> {
     const userContent = JSON.stringify({
       p: this.toChangeAggregationPromptPeriods(periods),
@@ -574,6 +830,7 @@ export class MemoryAnalysisService {
       systemPrompt: MEMORY_CHANGE_AGGREGATION_SYSTEM_PROMPT,
       userContent,
       logMetadata: {
+        ...logMeta,
         periodCount: periods.length,
         insightCount: this.countPeriodInsights(periods.flatMap((period) => period.dimensions)),
       },
@@ -1419,16 +1676,46 @@ export class MemoryAnalysisService {
   }
 
   private toReportResponse(report: MemoryReport): MemoryAnalysisReportResponse {
+    const renderStatus = this.normalizeReportStatus(report.renderStatus);
+
     return {
       report_id: report.reportId,
       template_id: report.templateId,
-      report_content: report.reportContent,
+      report_content: renderStatus === 'success' ? report.reportContent : null,
       generated_at: report.generatedAt.toISOString(),
+      started_at: report.startedAt?.toISOString() ?? null,
+      completed_at: report.completedAt?.toISOString() ?? null,
       startTime: report.startTime?.toISOString() ?? null,
       endTime: report.endTime?.toISOString() ?? null,
-      render_status: report.renderStatus === 'fail' ? 'fail' : 'success',
+      render_status: renderStatus,
+      report_stage: this.normalizeReportStage(report.reportStage),
+      fail_code: report.failCode,
       fail_reason: report.failReason,
       memory_count: report.memoryCount,
     };
+  }
+
+  private normalizeReportStatus(value: string): MemoryAnalysisReportResponse['render_status'] {
+    if (value === 'queued' || value === 'running' || value === 'fail' || value === 'success') {
+      return value;
+    }
+
+    return value === 'failed' ? 'fail' : 'success';
+  }
+
+  private normalizeReportStage(value: string): MemoryAnalysisReportResponse['report_stage'] {
+    if (
+      value === 'queued'
+      || value === 'fetch_source'
+      || value === 'period_summary'
+      || value === 'aggregation'
+      || value === 'save_result'
+      || value === 'complete'
+      || value === 'failed'
+    ) {
+      return value;
+    }
+
+    return 'complete';
   }
 }

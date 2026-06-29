@@ -600,10 +600,14 @@ export class AnalysisRepository {
   public async createMemoryAnalysisReport(data: {
     fingerprint: Buffer;
     templateId: string;
-    reportContent: string;
+    reportContent?: string;
     startTime: Date;
     endTime: Date;
     renderStatus: string;
+    reportStage?: string;
+    startedAt?: Date | null;
+    completedAt?: Date | null;
+    failCode?: string | null;
     failReason?: string | null;
     memoryCount: number;
   }): Promise<MemoryReport> {
@@ -613,13 +617,31 @@ export class AnalysisRepository {
       data: {
         apiKeyFingerprint: toPrismaBytes(data.fingerprint),
         templateId: data.templateId,
-        reportContent: data.reportContent,
+        reportContent: data.reportContent ?? '',
         startTime: data.startTime,
         endTime: data.endTime,
         renderStatus: data.renderStatus,
+        reportStage: data.reportStage ?? 'queued',
+        startedAt: data.startedAt ?? null,
+        completedAt: data.completedAt ?? null,
+        failCode: data.failCode ?? null,
         failReason: data.failReason ?? null,
         memoryCount: data.memoryCount,
       },
+    });
+  }
+
+  public async updateMemoryAnalysisReport(
+    reportId: number,
+    data: Prisma.MemoryReportUncheckedUpdateInput,
+  ): Promise<MemoryReport> {
+    await this.ensureMemoryReportTable();
+
+    return this.prisma.memoryReport.update({
+      where: {
+        reportId,
+      },
+      data,
     });
   }
 
@@ -654,6 +676,30 @@ export class AnalysisRepository {
     });
   }
 
+  public async findActiveMemoryAnalysisReportByWindow(data: {
+    fingerprint: Buffer;
+    templateId: string;
+    startTime: Date;
+    endTime: Date;
+  }): Promise<MemoryReport | null> {
+    await this.ensureMemoryReportTable();
+
+    return this.prisma.memoryReport.findFirst({
+      where: {
+        apiKeyFingerprint: toPrismaBytes(data.fingerprint),
+        templateId: data.templateId,
+        startTime: data.startTime,
+        endTime: data.endTime,
+        renderStatus: {
+          in: ['queued', 'running'],
+        },
+      },
+      orderBy: {
+        generatedAt: 'desc',
+      },
+    });
+  }
+
   private async ensureMemoryReportTable(): Promise<void> {
     this.memoryReportTableReady ??= this.initializeMemoryReportTable();
     return this.memoryReportTableReady;
@@ -667,9 +713,13 @@ export class AnalysisRepository {
         \`template_id\` VARCHAR(255) NOT NULL,
         \`report_content\` LONGTEXT NOT NULL,
         \`generated_at\` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+        \`started_at\` DATETIME(3) NULL,
+        \`completed_at\` DATETIME(3) NULL,
         \`start_time\` DATETIME(3) NULL,
         \`end_time\` DATETIME(3) NULL,
         \`render_status\` VARCHAR(16) NOT NULL,
+        \`report_stage\` VARCHAR(32) NOT NULL DEFAULT 'queued',
+        \`fail_code\` VARCHAR(64) NULL,
         \`fail_reason\` LONGTEXT NULL,
         \`memory_count\` INTEGER NOT NULL,
         PRIMARY KEY (\`report_id\`),
@@ -692,10 +742,38 @@ export class AnalysisRepository {
       `);
     }
 
+    if (!(await this.hasMemoryReportColumn('started_at'))) {
+      await this.prisma.$executeRawUnsafe(`
+        ALTER TABLE \`memory_report\`
+        ADD COLUMN \`started_at\` DATETIME(3) NULL AFTER \`generated_at\`;
+      `);
+    }
+
+    if (!(await this.hasMemoryReportColumn('completed_at'))) {
+      await this.prisma.$executeRawUnsafe(`
+        ALTER TABLE \`memory_report\`
+        ADD COLUMN \`completed_at\` DATETIME(3) NULL AFTER \`started_at\`;
+      `);
+    }
+
     if (!(await this.hasMemoryReportColumn('end_time'))) {
       await this.prisma.$executeRawUnsafe(`
         ALTER TABLE \`memory_report\`
         ADD COLUMN \`end_time\` DATETIME(3) NULL AFTER \`start_time\`;
+      `);
+    }
+
+    if (!(await this.hasMemoryReportColumn('report_stage'))) {
+      await this.prisma.$executeRawUnsafe(`
+        ALTER TABLE \`memory_report\`
+        ADD COLUMN \`report_stage\` VARCHAR(32) NOT NULL DEFAULT 'queued' AFTER \`render_status\`;
+      `);
+    }
+
+    if (!(await this.hasMemoryReportColumn('fail_code'))) {
+      await this.prisma.$executeRawUnsafe(`
+        ALTER TABLE \`memory_report\`
+        ADD COLUMN \`fail_code\` VARCHAR(64) NULL AFTER \`report_stage\`;
       `);
     }
 

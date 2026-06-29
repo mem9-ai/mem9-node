@@ -21,9 +21,13 @@ function createReport(overrides: Record<string, unknown> = {}) {
     templateId: 'focus_area',
     reportContent: '{"summary":"ok"}',
     generatedAt: new Date('2026-06-26T08:00:00.000Z'),
+    startedAt: null,
+    completedAt: null,
     startTime: new Date('2026-06-01T00:00:00.000Z'),
     endTime: new Date('2026-06-14T23:59:59.999Z'),
     renderStatus: 'success',
+    reportStage: 'complete',
+    failCode: null,
     failReason: null,
     memoryCount: 12,
     ...overrides,
@@ -33,7 +37,9 @@ function createReport(overrides: Record<string, unknown> = {}) {
 function createReportService(repository: Record<string, jest.Mock>) {
   return new MemoryAnalysisService(
     { analysis: {} } as never,
-    {} as never,
+    {
+      fetchSessionMemories: jest.fn(async () => []),
+    } as never,
     repository as never,
   );
 }
@@ -113,49 +119,187 @@ function createSessionService(overrides?: {
 }
 
 describe('memory analysis report service', () => {
-  it('creates memory analysis reports in the memory_report table', async () => {
+  it('creates queued memory analysis report jobs', async () => {
     const repository = {
-      createMemoryAnalysisReport: jest.fn(async () => createReport()),
+      findActiveMemoryAnalysisReportByWindow: jest.fn(async () => null),
+      createMemoryAnalysisReport: jest.fn(async () => createReport({
+        templateId: 'memory_analysis',
+        reportContent: '',
+        renderStatus: 'queued',
+        reportStage: 'queued',
+        memoryCount: 0,
+      })),
+      updateMemoryAnalysisReport: jest.fn(async () => createReport()),
     };
     const service = createReportService(repository);
 
     const response = await service.createReport(reportContext, {
-      template_id: 'focus_area',
-      report_content: '{"summary":"ok"}',
-      startTime: '2026-06-01T00:00:00.000Z',
-      endTime: '2026-06-14T23:59:59.999Z',
-      render_status: 'success',
-      fail_reason: '',
-      memory_count: 12,
+      createdAfter: '2026-06-01T00:00:00.000Z',
+      createdBefore: '2026-06-14T23:59:59.999Z',
     });
 
     expect(repository.createMemoryAnalysisReport).toHaveBeenCalledWith({
       fingerprint: reportApiKeyFingerprint,
-      templateId: 'focus_area',
-      reportContent: '{"summary":"ok"}',
+      templateId: 'memory_analysis',
       startTime: new Date('2026-06-01T00:00:00.000Z'),
       endTime: new Date('2026-06-14T23:59:59.999Z'),
-      renderStatus: 'success',
-      failReason: '',
-      memoryCount: 12,
+      renderStatus: 'queued',
+      reportStage: 'queued',
+      memoryCount: 0,
+    });
+    expect(repository.findActiveMemoryAnalysisReportByWindow).toHaveBeenCalledWith({
+      fingerprint: reportApiKeyFingerprint,
+      templateId: 'memory_analysis',
+      startTime: new Date('2026-06-01T00:00:00.000Z'),
+      endTime: new Date('2026-06-14T23:59:59.999Z'),
     });
     expect(response).toEqual({
       report_id: 1,
-      template_id: 'focus_area',
-      report_content: '{"summary":"ok"}',
+      template_id: 'memory_analysis',
+      report_content: null,
       generated_at: '2026-06-26T08:00:00.000Z',
+      started_at: null,
+      completed_at: null,
       startTime: '2026-06-01T00:00:00.000Z',
       endTime: '2026-06-14T23:59:59.999Z',
-      render_status: 'success',
+      render_status: 'queued',
+      report_stage: 'queued',
+      fail_code: null,
       fail_reason: null,
-      memory_count: 12,
+      memory_count: 0,
     });
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(repository.updateMemoryAnalysisReport).toHaveBeenCalledWith(1, expect.objectContaining({
+      renderStatus: 'running',
+      reportStage: 'fetch_source',
+    }));
+    expect(repository.updateMemoryAnalysisReport).toHaveBeenLastCalledWith(1, expect.objectContaining({
+      renderStatus: 'success',
+      reportStage: 'complete',
+      reportContent: expect.any(String),
+    }));
+  });
+
+  it('returns an existing queued or running report for the same time window', async () => {
+    const repository = {
+      findActiveMemoryAnalysisReportByWindow: jest.fn(async () => createReport({
+        reportId: 9,
+        templateId: 'memory_analysis',
+        reportContent: '',
+        renderStatus: 'running',
+        reportStage: 'period_summary',
+        memoryCount: 0,
+      })),
+      createMemoryAnalysisReport: jest.fn(),
+      updateMemoryAnalysisReport: jest.fn(),
+    };
+    const service = createReportService(repository);
+
+    const response = await service.createReport(reportContext, {
+      createdAfter: '2026-06-01T00:00:00.000Z',
+      createdBefore: '2026-06-14T23:59:59.999Z',
+    });
+
+    expect(response.report_id).toBe(9);
+    expect(response.render_status).toBe('running');
+    expect(response.report_content).toBeNull();
+    expect(repository.createMemoryAnalysisReport).not.toHaveBeenCalled();
+    expect(repository.updateMemoryAnalysisReport).not.toHaveBeenCalled();
+  });
+
+  it('retries transient report generation failures before marking success', async () => {
+    const source = {
+      fetchSessionMemories: jest
+        .fn()
+        .mockRejectedValueOnce(new Error('temporary source failure'))
+        .mockResolvedValue([]),
+    };
+    const repository = {
+      findActiveMemoryAnalysisReportByWindow: jest.fn(async () => null),
+      createMemoryAnalysisReport: jest.fn(async () => createReport({
+        templateId: 'memory_analysis',
+        reportContent: '',
+        renderStatus: 'queued',
+        reportStage: 'queued',
+        memoryCount: 0,
+      })),
+      updateMemoryAnalysisReport: jest.fn(async () => createReport()),
+    };
+    const service = new MemoryAnalysisService(
+      { analysis: {} } as never,
+      source as never,
+      repository as never,
+    );
+
+    await service.createReport(reportContext, {
+      createdAfter: '2026-06-01T00:00:00.000Z',
+      createdBefore: '2026-06-14T23:59:59.999Z',
+    });
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 1200));
+    expect(source.fetchSessionMemories).toHaveBeenCalledTimes(2);
+    expect(repository.updateMemoryAnalysisReport).toHaveBeenLastCalledWith(1, expect.objectContaining({
+      renderStatus: 'success',
+      reportStage: 'complete',
+    }));
+  });
+
+  it('stores a specific failure reason when report generation cannot continue', async () => {
+    const source = {
+      fetchSessionMemories: jest.fn(async () => [
+        {
+          id: 'm1',
+          content: 'memory content',
+          createdAt: '2026-06-01T12:00:00.000Z',
+          memoryType: 'session',
+          tags: [],
+          metadata: null,
+        },
+      ]),
+    };
+    const repository = {
+      findActiveMemoryAnalysisReportByWindow: jest.fn(async () => null),
+      createMemoryAnalysisReport: jest.fn(async () => createReport({
+        templateId: 'memory_analysis',
+        reportContent: '',
+        renderStatus: 'queued',
+        reportStage: 'queued',
+        memoryCount: 0,
+      })),
+      updateMemoryAnalysisReport: jest.fn(async () => createReport()),
+    };
+    const service = new MemoryAnalysisService(
+      { analysis: {} } as never,
+      source as never,
+      repository as never,
+    );
+
+    await service.createReport(reportContext, {
+      createdAfter: '2026-06-01T00:00:00.000Z',
+      createdBefore: '2026-06-14T23:59:59.999Z',
+    });
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(repository.updateMemoryAnalysisReport).toHaveBeenLastCalledWith(1, expect.objectContaining({
+      renderStatus: 'fail',
+      reportStage: 'failed',
+      failCode: 'QWEN_NOT_CONFIGURED',
+      failReason: 'Qwen API key or model is not configured.',
+    }));
   });
 
   it('lists memory analysis reports by type', async () => {
     const repository = {
       listMemoryAnalysisReportsByTemplateId: jest.fn(async () => [
-        createReport({ reportId: 2, templateId: 'preference_signal', renderStatus: 'fail', failReason: 'bad json' }),
+        createReport({
+          reportId: 2,
+          templateId: 'preference_signal',
+          renderStatus: 'fail',
+          reportStage: 'failed',
+          failCode: 'MEMORY_ANALYSIS_GENERATION_FAILED',
+          failReason: 'bad json',
+        }),
       ]),
     };
     const service = createReportService(repository);
@@ -170,11 +314,15 @@ describe('memory analysis report service', () => {
       {
         report_id: 2,
         template_id: 'preference_signal',
-        report_content: '{"summary":"ok"}',
+        report_content: null,
         generated_at: '2026-06-26T08:00:00.000Z',
+        started_at: null,
+        completed_at: null,
         startTime: '2026-06-01T00:00:00.000Z',
         endTime: '2026-06-14T23:59:59.999Z',
         render_status: 'fail',
+        report_stage: 'failed',
+        fail_code: 'MEMORY_ANALYSIS_GENERATION_FAILED',
         fail_reason: 'bad json',
         memory_count: 12,
       },

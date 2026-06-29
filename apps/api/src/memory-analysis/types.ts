@@ -79,11 +79,15 @@ export interface AnalyzeMemorySourcePeriodSummaryResponse {
 export interface MemoryAnalysisReportResponse {
   report_id: number;
   template_id: string;
-  report_content: string;
+  report_content: string | null;
   generated_at: string;
+  started_at: string | null;
+  completed_at: string | null;
   startTime: string | null;
   endTime: string | null;
-  render_status: 'fail' | 'success';
+  render_status: 'queued' | 'running' | 'fail' | 'success';
+  report_stage: 'queued' | 'fetch_source' | 'period_summary' | 'aggregation' | 'save_result' | 'complete' | 'failed';
+  fail_code: string | null;
   fail_reason: string | null;
   memory_count: number;
 }
