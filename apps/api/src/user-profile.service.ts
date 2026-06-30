@@ -164,15 +164,15 @@ export class UserProfileService {
     const communicationStyle = byKind.get('communication_style');
 
     if (longTermGoal || currentProject) {
-      sentences.push(`用户目标导向较明确${longTermGoal ? `，长期目标是${this.toInlineClause(longTermGoal)}` : ''}${currentProject ? `，当前重心在${this.toInlineClause(currentProject)}` : ''}。`);
+      sentences.push(`你的目标导向较明确${longTermGoal ? `，长期目标是${this.toInlineClause(longTermGoal)}` : ''}${currentProject ? `，当前重心在${this.toInlineClause(currentProject)}` : ''}。`);
     }
 
     if (professionalSkill) {
-      sentences.push(`用户会主动关注或补充专业能力，当前涉及${this.toInlineClause(professionalSkill)}。`);
+      sentences.push(`你会主动关注或补充专业能力，当前涉及${this.toInlineClause(professionalSkill)}。`);
     }
 
     if (longTermInterest) {
-      sentences.push(`兴趣上，用户关注${this.toInlineClause(longTermInterest)}，整体投入方式较为理性。`);
+      sentences.push(`兴趣上，你关注${this.toInlineClause(longTermInterest)}，整体投入方式较为理性。`);
     }
 
     if (workHabit) {
@@ -187,7 +187,7 @@ export class UserProfileService {
       return sentences.join('');
     }
 
-    return `基于现有信息，用户目前体现出：${descriptions
+    return `基于现有信息，你目前体现出：${descriptions
       .map((description) => this.toInlineClause(description.value))
       .join('；')}`;
   }
@@ -252,7 +252,7 @@ export class UserProfileService {
     }
 
     return {
-      text: `基于现有信息，用户目前体现出：${candidates
+      text: `基于现有信息，你目前体现出：${candidates
         .map((memory) => this.extractSummaryClause(memory.content))
         .join('；')}`,
       memories: candidates,

@@ -22,7 +22,6 @@ import { ApiKeyGuard } from '../common/api-key.guard';
 import { RateLimitGuard } from '../common/rate-limit.guard';
 import { CurrentContext } from '../common/request-context';
 import type { Mem9RequestContext } from '../common/request-context';
-import { AnalyzeMemorySourceDto } from '../dto/analyze-memory-source.dto';
 import { CreateMemoryAnalysisReportDto } from '../dto/create-memory-analysis-report.dto';
 import { EditSessionMessageDto } from '../dto/edit-session-message.dto';
 import { ListMemoryAnalysisReportsDto } from '../dto/list-memory-analysis-reports.dto';
@@ -50,15 +49,16 @@ export class MemoryAnalysisController {
   public constructor(private readonly service: MemoryAnalysisService) {}
 
   @Post()
-  @ApiOperation({ summary: 'Analyze memory source changes synchronously' })
+  @ApiOperation({ summary: 'Create an async memory analysis report job' })
   @ApiOkResponse({
-    description: 'Memory source changes grouped by signal dimension.',
+    description: 'Memory analysis report job was queued.',
+    type: MemoryAnalysisReportResponseDto,
   })
   public analyze(
     @CurrentContext() context: Mem9RequestContext,
-    @Query() query: AnalyzeMemorySourceDto,
+    @Query() query: CreateMemoryAnalysisReportDto,
   ) {
-    return this.service.analyzeSource(context, query);
+    return this.service.createReport(context, query);
   }
 
   @Post('report')

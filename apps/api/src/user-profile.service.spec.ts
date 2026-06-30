@@ -327,7 +327,7 @@ describe('user profile service', () => {
 
     const result = await service.getProfile(createContext());
 
-    expect(result.summary.text).toBe('基于现有信息，用户目前体现出：KET 备考与健康管理');
+    expect(result.summary.text).toBe('基于现有信息，你目前体现出：KET 备考与健康管理');
     expect(result.summary.message).toBe('当前 facts、insights 和 pinned 中稳定画像信号较少，已根据现有信息生成初步总结，但画像可能不稳定。');
     expect(result.summary.evidence).toHaveLength(1);
   });
@@ -373,7 +373,7 @@ describe('user profile service', () => {
     const result = await service.getProfile(createContext());
 
     expect(result.summary.text).toBe(
-      '用户目标导向较明确，长期目标是今年下半年通过英语六级考试。用户会主动关注或补充专业能力，当前涉及目前只是先了解律师资格证考试科目。兴趣上，用户关注对五月天演唱会有点兴趣，但还没到非去不可的程度，整体投入方式较为理性。沟通偏效率型，更希望直接给结论，回答尽量简洁高效，不要绕太多背景。',
+      '你的目标导向较明确，长期目标是今年下半年通过英语六级考试。你会主动关注或补充专业能力，当前涉及目前只是先了解律师资格证考试科目。兴趣上，你关注对五月天演唱会有点兴趣，但还没到非去不可的程度，整体投入方式较为理性。沟通偏效率型，更希望直接给结论，回答尽量简洁高效，不要绕太多背景。',
     );
     expect(result.summary.text).not.toContain('长期兴趣：');
     expect(result.summary.text).not.toContain('专业技能：');
