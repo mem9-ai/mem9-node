@@ -123,6 +123,9 @@ describe('sqs consumer service', () => {
       {
         process: jest.fn(),
       } as never,
+      {
+        process: jest.fn(),
+      } as never,
       createConfig(),
     );
     const setIntervalSpy = jest.spyOn(global, 'setInterval');
@@ -197,6 +200,9 @@ describe('sqs consumer service', () => {
       {
         process: jest.fn(),
       } as never,
+      {
+        process: jest.fn(),
+      } as never,
       createConfig(),
     );
 
@@ -208,5 +214,65 @@ describe('sqs consumer service', () => {
     expect(queue.deleteMessage).toHaveBeenCalledWith('rh_2');
     expect(Sentry.captureException).toHaveBeenCalledTimes(1);
     expect(Sentry.captureException).toHaveBeenCalledWith(expect.any(Error));
+  });
+
+  it('dispatches memory analysis report llm messages', async () => {
+    let consumer: SqsConsumerService;
+    const queue = {
+      receiveBatchMessages: jest.fn(async () => []),
+      extendVisibility: jest.fn(async () => undefined),
+      deleteMessage: jest.fn(async () => undefined),
+      receiveLlmMessages: jest
+        .fn()
+        .mockResolvedValueOnce([
+          {
+            Body: JSON.stringify({
+              messageType: 'memory_analysis_report',
+              reportId: 12,
+              apiKeyFingerprintHex: Buffer.alloc(32, 4).toString('hex'),
+              rawApiKey: 'space-key',
+              createdAfter: '2026-06-01T00:00:00.000Z',
+              createdBefore: '2026-06-14T23:59:59.999Z',
+              traceId: 'trace_memory',
+            }),
+            ReceiptHandle: 'rh_memory',
+            Attributes: { ApproximateReceiveCount: '1' },
+          },
+        ])
+        .mockImplementationOnce(async () => {
+          consumer['running'] = false;
+          return [];
+        }),
+      extendLlmVisibility: jest.fn(async () => undefined),
+      deleteLlmMessage: jest.fn(async () => undefined),
+    };
+    const memoryAnalysisProcessor = {
+      process: jest.fn(async () => undefined),
+    };
+    consumer = new SqsConsumerService(
+      queue as never,
+      {
+        process: jest.fn(),
+      } as never,
+      {
+        process: jest.fn(),
+      } as never,
+      memoryAnalysisProcessor as never,
+      createConfig(),
+    );
+
+    consumer['running'] = true;
+    await consumer['consumeLlmLoop']();
+
+    expect(memoryAnalysisProcessor.process).toHaveBeenCalledWith({
+      messageType: 'memory_analysis_report',
+      reportId: 12,
+      apiKeyFingerprintHex: Buffer.alloc(32, 4).toString('hex'),
+      rawApiKey: 'space-key',
+      createdAfter: '2026-06-01T00:00:00.000Z',
+      createdBefore: '2026-06-14T23:59:59.999Z',
+      traceId: 'trace_memory',
+    });
+    expect(queue.deleteLlmMessage).toHaveBeenCalledWith('rh_memory');
   });
 });

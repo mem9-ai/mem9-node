@@ -17,6 +17,9 @@ import { SentryModule } from '@sentry/nestjs/setup';
 import { BatchProcessorService } from './batch-processor.service';
 import { DeepAnalysisReportProcessorService } from './deep-analysis-report-processor.service';
 import { LlmFallbackService } from './llm-fallback.service';
+import { Mem9SourceService } from './mem9-source.service';
+import { MemoryAnalysisReportProcessorService } from './memory-analysis-report-processor.service';
+import { MemoryAnalysisReportRunnerService } from './memory-analysis-report-runner.service';
 import { QwenDeepAnalysisService } from './qwen-deep-analysis.service';
 import { SqsConsumerService } from './sqs-consumer.service';
 import { WorkerHealthServer } from './worker-health.server';
@@ -46,8 +49,11 @@ const appConfig = loadConfig();
     TaxonomyCacheService,
     GoVerifyService,
     RateLimitWindowService,
+    Mem9SourceService,
+    MemoryAnalysisReportRunnerService,
     BatchProcessorService,
     DeepAnalysisReportProcessorService,
+    MemoryAnalysisReportProcessorService,
     SqsConsumerService,
     LlmFallbackService,
     QwenDeepAnalysisService,

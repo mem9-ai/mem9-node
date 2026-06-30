@@ -1,19 +1,12 @@
-import type { AppConfig } from '@mem9/config';
-
-import { MEMORY_PERIOD_SUMMARY_CACHE_VERSION } from './prompts';
 import { MemoryAnalysisService } from './memory-analysis.service';
 
 const reportApiKeyFingerprint = Buffer.alloc(32, 1);
 const reportContext = {
   apiKeyFingerprint: reportApiKeyFingerprint,
+  apiKeyFingerprintHex: reportApiKeyFingerprint.toString('hex'),
+  rawApiKey: 'space-key',
+  requestId: 'req_1',
 } as never;
-
-const TEST_CONFIG = {
-  analysis: {
-    qwenModel: 'test-model',
-    qwenApiKey: 'test-qwen-key',
-  },
-} as AppConfig;
 
 function createReport(overrides: Record<string, unknown> = {}) {
   return {
@@ -35,13 +28,13 @@ function createReport(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function createReportService(repository: Record<string, jest.Mock>) {
+function createReportService(repository: Record<string, jest.Mock>, queue?: Record<string, jest.Mock>) {
   return new MemoryAnalysisService(
-    { analysis: {} } as never,
     {
       fetchSessionMemories: jest.fn(async () => []),
     } as never,
     repository as never,
+    (queue ?? { enqueueLlmMessage: jest.fn(async () => undefined) }) as never,
   );
 }
 
@@ -112,9 +105,9 @@ function createSessionService(overrides?: {
     source,
     repository,
     service: new MemoryAnalysisService(
-      TEST_CONFIG,
       source as never,
       repository as never,
+      { enqueueLlmMessage: jest.fn(async () => undefined) } as never,
     ),
   };
 }
@@ -132,7 +125,10 @@ describe('memory analysis report service', () => {
       })),
       updateMemoryAnalysisReport: jest.fn(async () => createReport()),
     };
-    const service = createReportService(repository);
+    const queue = {
+      enqueueLlmMessage: jest.fn(async () => undefined),
+    };
+    const service = createReportService(repository, queue);
 
     const response = await service.createReport(reportContext, {
       createdAfter: '2026-06-01T00:00:00.000Z',
@@ -170,16 +166,16 @@ describe('memory analysis report service', () => {
       memory_count: 0,
     });
 
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(repository.updateMemoryAnalysisReport).toHaveBeenCalledWith(1, expect.objectContaining({
-      renderStatus: 'running',
-      reportStage: 'fetch_source',
-    }));
-    expect(repository.updateMemoryAnalysisReport).toHaveBeenLastCalledWith(1, expect.objectContaining({
-      renderStatus: 'success',
-      reportStage: 'complete',
-      reportContent: expect.any(String),
-    }));
+    expect(queue.enqueueLlmMessage).toHaveBeenCalledWith({
+      messageType: 'memory_analysis_report',
+      reportId: 1,
+      apiKeyFingerprintHex: reportApiKeyFingerprint.toString('hex'),
+      rawApiKey: 'space-key',
+      createdAfter: '2026-06-01T00:00:00.000Z',
+      createdBefore: '2026-06-14T23:59:59.999Z',
+      traceId: 'req_1',
+    });
+    expect(repository.updateMemoryAnalysisReport).not.toHaveBeenCalled();
   });
 
   it('returns an existing queued or running report for the same time window', async () => {
@@ -209,13 +205,7 @@ describe('memory analysis report service', () => {
     expect(repository.updateMemoryAnalysisReport).not.toHaveBeenCalled();
   });
 
-  it('retries transient report generation failures before marking success', async () => {
-    const source = {
-      fetchSessionMemories: jest
-        .fn()
-        .mockRejectedValueOnce(new Error('temporary source failure'))
-        .mockResolvedValue([]),
-    };
+  it('marks the report failed when queueing generation fails', async () => {
     const repository = {
       findActiveMemoryAnalysisReportByWindow: jest.fn(async () => null),
       createMemoryAnalysisReport: jest.fn(async () => createReport({
@@ -227,66 +217,23 @@ describe('memory analysis report service', () => {
       })),
       updateMemoryAnalysisReport: jest.fn(async () => createReport()),
     };
-    const service = new MemoryAnalysisService(
-      { analysis: {} } as never,
-      source as never,
-      repository as never,
-    );
-
-    await service.createReport(reportContext, {
-      createdAfter: '2026-06-01T00:00:00.000Z',
-      createdBefore: '2026-06-14T23:59:59.999Z',
+    const service = createReportService(repository, {
+      enqueueLlmMessage: jest.fn(async () => {
+        throw new Error('sqs down');
+      }),
     });
 
-    await new Promise<void>((resolve) => setTimeout(resolve, 1200));
-    expect(source.fetchSessionMemories).toHaveBeenCalledTimes(2);
-    expect(repository.updateMemoryAnalysisReport).toHaveBeenLastCalledWith(1, expect.objectContaining({
-      renderStatus: 'success',
-      reportStage: 'complete',
-    }));
-  });
-
-  it('stores a specific failure reason when report generation cannot continue', async () => {
-    const source = {
-      fetchSessionMemories: jest.fn(async () => [
-        {
-          id: 'm1',
-          content: 'memory content',
-          createdAt: '2026-06-01T12:00:00.000Z',
-          memoryType: 'session',
-          tags: [],
-          metadata: null,
-        },
-      ]),
-    };
-    const repository = {
-      findActiveMemoryAnalysisReportByWindow: jest.fn(async () => null),
-      createMemoryAnalysisReport: jest.fn(async () => createReport({
-        templateId: 'memory_analysis',
-        reportContent: '',
-        renderStatus: 'queued',
-        reportStage: 'queued',
-        memoryCount: 0,
-      })),
-      updateMemoryAnalysisReport: jest.fn(async () => createReport()),
-    };
-    const service = new MemoryAnalysisService(
-      { analysis: {} } as never,
-      source as never,
-      repository as never,
-    );
-
-    await service.createReport(reportContext, {
+    await expect(service.createReport(reportContext, {
       createdAfter: '2026-06-01T00:00:00.000Z',
       createdBefore: '2026-06-14T23:59:59.999Z',
+    })).rejects.toMatchObject({
+      code: 'MEMORY_ANALYSIS_QUEUE_ENQUEUE_FAILED',
     });
 
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(repository.updateMemoryAnalysisReport).toHaveBeenLastCalledWith(1, expect.objectContaining({
+    expect(repository.updateMemoryAnalysisReport).toHaveBeenCalledWith(1, expect.objectContaining({
       renderStatus: 'fail',
       reportStage: 'failed',
-      failCode: 'QWEN_NOT_CONFIGURED',
-      failReason: 'Qwen API key or model is not configured.',
+      failCode: 'MEMORY_ANALYSIS_QUEUE_ENQUEUE_FAILED',
     }));
   });
 
@@ -434,191 +381,4 @@ describe('memory analysis session message operations', () => {
     });
   });
 
-  it('includes session correction state on report evidence', async () => {
-    const { service } = createSessionService({
-      source: {
-        fetchSessionMemories: jest.fn(async () => [
-          {
-            id: 'turn-edited',
-            content: '我打算半年内打上lol国服王者，然后取EDG试训',
-            createdAt: '2026-06-22T08:05:03Z',
-            memoryType: 'session',
-            metadata: {
-              correctness: 'correct',
-              edited: true,
-              edit_version: 7,
-              edited_at: '2026-06-27T10:17:52Z',
-            },
-          },
-        ]),
-      },
-    });
-    const qwenService = service as unknown as {
-      callQwenForPeriodSummaries: () => Promise<string>;
-      callQwenForChangeAggregation: () => Promise<string>;
-    };
-    jest.spyOn(qwenService, 'callQwenForPeriodSummaries').mockResolvedValue(JSON.stringify({
-      periods: [
-        {
-          periodKey: '2026-06-22',
-          dimensions: [
-            {
-              dimension: 'long_term_goal',
-              insights: [
-                {
-                  title: 'LOL 国服王者/EDG 试训',
-                  summary: '用户计划在半年内达到 LOL 国服王者段位并尝试 EDG 试训。',
-                  evidence: [
-                    {
-                      evidenceId: 'turn-edited',
-                      quote: '我打算半年内打上lol国服王者，然后取EDG试训',
-                    },
-                  ],
-                },
-              ],
-            },
-            {
-              dimension: 'emotion',
-              insights: [
-                {
-                  title: '情绪平稳',
-                  summary: '用户当前情绪整体平稳，但仍有轻微焦虑。',
-                  evidence: [
-                    {
-                      evidenceId: 'turn-edited',
-                      quote: '我打算半年内打上lol国服王者，然后取EDG试训',
-                    },
-                  ],
-                },
-              ],
-            },
-          ],
-        },
-      ],
-    }));
-    jest.spyOn(qwenService, 'callQwenForChangeAggregation').mockResolvedValue(JSON.stringify({
-      d: [
-        {
-          k: 'long_term_goal',
-          s: '用户当前围绕 LOL 段位和职业试训形成明确长期目标。',
-          c: [
-            {
-              t: 'LOL 国服王者/EDG 试训',
-              s: '用户计划在半年内达到 LOL 国服王者段位并尝试 EDG 试训。',
-              score: 9,
-              p: { s: '2026-06-22T00:00:00Z', e: '2026-06-22T23:59:59Z' },
-              e: ['turn-edited'],
-            },
-          ],
-        },
-        {
-          k: 'emotion',
-          s: '用户当前情绪整体平稳，但仍有轻微焦虑。',
-          c: [
-            {
-              t: '情绪平稳',
-              s: '用户当前情绪整体平稳，但仍有轻微焦虑。',
-              score: 6,
-              p: { s: '2026-06-22T00:00:00Z', e: '2026-06-22T23:59:59Z' },
-              e: ['turn-edited'],
-            },
-          ],
-        },
-      ],
-    }));
-
-    const result = await service.analyzeSource(createSessionContext(), {
-      createdAfter: '2026-06-22T00:00:00Z',
-      createdBefore: '2026-06-22T23:59:59Z',
-    });
-
-    expect(result.dimensions[0]?.summary).toBe('用户当前围绕 LOL 段位和职业试训形成明确长期目标。');
-    expect(result.dimensions[0]?.changes[0]?.score).toBeUndefined();
-    expect(result.dimensions[1]?.dimension).toBe('emotion');
-    expect(result.dimensions[1]?.summary).toBe('用户当前情绪整体平稳，但仍有轻微焦虑。');
-    expect(result.dimensions[1]?.changes[0]?.score).toBe(6);
-    expect(result.dimensions[0]?.changes[0]?.evidence[0]).toEqual({
-      evidenceId: 'turn-edited',
-      quote: '我打算半年内打上lol国服王者，然后取EDG试训',
-      review: {
-        correctness: 'correct',
-        edited: true,
-        editVersion: 7,
-        editedAt: '2026-06-27T10:17:52Z',
-      },
-    });
-  });
-
-  it('uses the cache version for period summary cache lookups and writes', async () => {
-    const { service, repository } = createSessionService({
-      source: {
-        fetchSessionMemories: jest.fn(async () => [
-          {
-            id: 'turn-1',
-            content: '今天开始准备法考，晚上复盘学习计划。',
-            createdAt: '2026-06-22T08:05:03Z',
-            memoryType: 'session',
-            metadata: {},
-          },
-        ]),
-      },
-    });
-    const qwenService = service as unknown as {
-      callQwenForPeriodSummaries: () => Promise<string>;
-      callQwenForChangeAggregation: () => Promise<string>;
-    };
-    jest.spyOn(qwenService, 'callQwenForPeriodSummaries').mockResolvedValue(JSON.stringify({
-      periods: [
-        {
-          periodKey: '2026-06-22',
-          dimensions: [
-            {
-              dimension: 'long_term_goal',
-              insights: [
-                {
-                  title: '法考准备',
-                  summary: '用户开始准备法考并复盘学习计划。',
-                  evidence: [{ evidenceId: 'turn-1', quote: '开始准备法考' }],
-                },
-              ],
-            },
-          ],
-        },
-      ],
-    }));
-    jest.spyOn(qwenService, 'callQwenForChangeAggregation').mockResolvedValue(JSON.stringify({
-      d: [
-        {
-          k: 'long_term_goal',
-          s: '用户围绕法考形成学习计划。',
-          c: [
-            {
-              t: '法考准备',
-              s: '用户开始准备法考并复盘学习计划。',
-              p: { s: '2026-06-22T00:00:00Z', e: '2026-06-22T23:59:59Z' },
-              e: ['turn-1'],
-            },
-          ],
-        },
-      ],
-    }));
-
-    await service.analyzeSource(createSessionContext(), {
-      createdAfter: '2026-06-22T00:00:00Z',
-      createdBefore: '2026-06-22T23:59:59Z',
-    });
-
-    expect(repository.findMemoryAnalysisPeriodCache).toHaveBeenCalledWith({
-      fingerprint: createSessionContext().apiKeyFingerprint,
-      periodKey: '2026-06-22',
-      model: 'test-model',
-      promptVersion: MEMORY_PERIOD_SUMMARY_CACHE_VERSION,
-    });
-    expect(repository.upsertMemoryAnalysisPeriodCache).toHaveBeenCalledWith(expect.objectContaining({
-      fingerprint: createSessionContext().apiKeyFingerprint,
-      periodKey: '2026-06-22',
-      model: 'test-model',
-      promptVersion: MEMORY_PERIOD_SUMMARY_CACHE_VERSION,
-    }));
-  });
 });

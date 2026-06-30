@@ -553,7 +553,20 @@ export interface DeepAnalysisReportMessage {
   traceId: string;
 }
 
-export type AnalysisLlmQueueMessage = AnalysisLlmMessage | DeepAnalysisReportMessage;
+export interface MemoryAnalysisReportMessage {
+  messageType: 'memory_analysis_report';
+  reportId: number;
+  apiKeyFingerprintHex: string;
+  rawApiKey: string;
+  createdAfter: string;
+  createdBefore: string;
+  traceId: string;
+}
+
+export type AnalysisLlmQueueMessage =
+  | AnalysisLlmMessage
+  | DeepAnalysisReportMessage
+  | MemoryAnalysisReportMessage;
 
 export interface ProgressEventPayload {
   progress: JobProgressSnapshot;

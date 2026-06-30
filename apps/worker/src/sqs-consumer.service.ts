@@ -11,6 +11,7 @@ import * as Sentry from '@sentry/nestjs';
 
 import { BatchProcessorService } from './batch-processor.service';
 import { DeepAnalysisReportProcessorService } from './deep-analysis-report-processor.service';
+import { MemoryAnalysisReportProcessorService } from './memory-analysis-report-processor.service';
 
 @Injectable()
 export class SqsConsumerService implements OnModuleDestroy {
@@ -21,6 +22,7 @@ export class SqsConsumerService implements OnModuleDestroy {
     private readonly queue: SqsQueueService,
     private readonly batchProcessor: BatchProcessorService,
     private readonly deepAnalysisProcessor: DeepAnalysisReportProcessorService,
+    private readonly memoryAnalysisProcessor: MemoryAnalysisReportProcessorService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
 
@@ -61,6 +63,10 @@ export class SqsConsumerService implements OnModuleDestroy {
       processMessage: async (payload) => {
         if (payload.messageType === 'deep_report') {
           await this.deepAnalysisProcessor.process(payload);
+          return;
+        }
+        if (payload.messageType === 'memory_analysis_report') {
+          await this.memoryAnalysisProcessor.process(payload);
         }
       },
       loopName: 'llm',
