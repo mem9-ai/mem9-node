@@ -8,6 +8,8 @@ import type {
   TaxonomyMatchType,
 } from './enums';
 
+export const MEMORY_PERIOD_SUMMARY_CACHE_VERSION = 'v1';
+
 export interface DateRange {
   start: string;
   end: string;

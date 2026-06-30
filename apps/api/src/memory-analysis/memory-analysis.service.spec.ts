@@ -8,6 +8,12 @@ const reportContext = {
   requestId: 'req_1',
 } as never;
 
+const TEST_CONFIG = {
+  analysis: {
+    qwenModel: 'test-model',
+  },
+} as never;
+
 function createReport(overrides: Record<string, unknown> = {}) {
   return {
     reportId: 1,
@@ -28,17 +34,27 @@ function createReport(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function createReportService(repository: Record<string, jest.Mock>, queue?: Record<string, jest.Mock>) {
+function createReportService(
+  repository: Record<string, jest.Mock>,
+  queue?: Record<string, jest.Mock>,
+  sourceOverrides?: Record<string, jest.Mock>,
+  redisOverrides?: Record<string, jest.Mock>,
+) {
   return new MemoryAnalysisService(
     {
       fetchSessionMemories: jest.fn(async () => []),
+      countSessionMemories: jest.fn(async () => 101),
+      ...sourceOverrides,
     } as never,
     repository as never,
     (queue ?? { enqueueLlmMessage: jest.fn(async () => undefined) }) as never,
     {
       smembers: jest.fn(async () => []),
+      mget: jest.fn(async () => []),
       del: jest.fn(async () => 0),
+      ...redisOverrides,
     } as never,
+    TEST_CONFIG,
   );
 }
 
@@ -119,6 +135,7 @@ function createSessionService(overrides?: {
       repository as never,
       { enqueueLlmMessage: jest.fn(async () => undefined) } as never,
       redis as never,
+      TEST_CONFIG,
     ),
   };
 }
@@ -126,13 +143,14 @@ function createSessionService(overrides?: {
 describe('memory analysis report service', () => {
   it('creates queued memory analysis report jobs', async () => {
     const repository = {
-      findActiveMemoryAnalysisReportByWindow: jest.fn(async () => null),
+      findActiveMemoryAnalysisReportByDay: jest.fn(async () => null),
+      countMemoryAnalysisReportsByDay: jest.fn(async () => 0),
       createMemoryAnalysisReport: jest.fn(async () => createReport({
         templateId: 'memory_analysis',
         reportContent: '',
         renderStatus: 'queued',
         reportStage: 'queued',
-        memoryCount: 0,
+        memoryCount: 101,
       })),
       updateMemoryAnalysisReport: jest.fn(async () => createReport()),
     };
@@ -153,14 +171,16 @@ describe('memory analysis report service', () => {
       endTime: new Date('2026-06-14T23:59:59.999Z'),
       renderStatus: 'queued',
       reportStage: 'queued',
-      memoryCount: 0,
+      memoryCount: 101,
     });
-    expect(repository.findActiveMemoryAnalysisReportByWindow).toHaveBeenCalledWith({
+    expect(repository.findActiveMemoryAnalysisReportByDay).toHaveBeenCalledWith(expect.objectContaining({
       fingerprint: reportApiKeyFingerprint,
       templateId: 'memory_analysis',
-      startTime: new Date('2026-06-01T00:00:00.000Z'),
-      endTime: new Date('2026-06-14T23:59:59.999Z'),
-    });
+    }));
+    expect(repository.countMemoryAnalysisReportsByDay).toHaveBeenCalledWith(expect.objectContaining({
+      fingerprint: reportApiKeyFingerprint,
+      templateId: 'memory_analysis',
+    }));
     expect(response).toEqual({
       report_id: 1,
       template_id: 'memory_analysis',
@@ -174,7 +194,7 @@ describe('memory analysis report service', () => {
       report_stage: 'queued',
       fail_code: null,
       fail_reason: null,
-      memory_count: 0,
+      memory_count: 101,
     });
 
     expect(queue.enqueueLlmMessage).toHaveBeenCalledWith({
@@ -189,9 +209,58 @@ describe('memory analysis report service', () => {
     expect(repository.updateMemoryAnalysisReport).not.toHaveBeenCalled();
   });
 
-  it('returns an existing queued or running report for the same time window', async () => {
+  it('checks only uncached period days against the processing memory limit', async () => {
     const repository = {
-      findActiveMemoryAnalysisReportByWindow: jest.fn(async () => createReport({
+      findActiveMemoryAnalysisReportByDay: jest.fn(async () => null),
+      countMemoryAnalysisReportsByDay: jest.fn(async () => 0),
+      createMemoryAnalysisReport: jest.fn(async () => createReport({
+        templateId: 'memory_analysis',
+        reportContent: '',
+        renderStatus: 'queued',
+        reportStage: 'queued',
+        memoryCount: 30001,
+      })),
+      updateMemoryAnalysisReport: jest.fn(async () => createReport()),
+    };
+    const countSessionMemories = jest
+      .fn()
+      .mockResolvedValueOnce(30001)
+      .mockResolvedValueOnce(15000);
+    const mget = jest.fn(async () => [
+      JSON.stringify({ periodKey: '2026-06-01' }),
+      null,
+    ]);
+    const service = createReportService(
+      repository,
+      undefined,
+      { countSessionMemories },
+      { mget },
+    );
+
+    await service.createReport(reportContext, {
+      createdAfter: '2026-06-01T00:00:00.000Z',
+      createdBefore: '2026-06-02T23:59:59.999Z',
+    });
+
+    expect(mget).toHaveBeenCalledWith(
+      `ma:period:${reportApiKeyFingerprint.toString('hex')}:2026-06-01:test-model:v1`,
+      `ma:period:${reportApiKeyFingerprint.toString('hex')}:2026-06-02:test-model:v1`,
+    );
+    expect(countSessionMemories).toHaveBeenCalledTimes(2);
+    expect(countSessionMemories).toHaveBeenNthCalledWith(1, 'space-key', {
+      createdAfter: '2026-06-01T00:00:00.000Z',
+      createdBefore: '2026-06-02T23:59:59.999Z',
+    });
+    expect(countSessionMemories).toHaveBeenNthCalledWith(2, 'space-key', {
+      createdAfter: '2026-06-02T00:00:00.000Z',
+      createdBefore: '2026-06-02T23:59:59.999Z',
+    });
+    expect(repository.createMemoryAnalysisReport).toHaveBeenCalled();
+  });
+
+  it('rejects creating a report when another report is running for the same day', async () => {
+    const repository = {
+      findActiveMemoryAnalysisReportByDay: jest.fn(async () => createReport({
         reportId: 9,
         templateId: 'memory_analysis',
         reportContent: '',
@@ -204,21 +273,79 @@ describe('memory analysis report service', () => {
     };
     const service = createReportService(repository);
 
-    const response = await service.createReport(reportContext, {
+    await expect(service.createReport(reportContext, {
       createdAfter: '2026-06-01T00:00:00.000Z',
       createdBefore: '2026-06-14T23:59:59.999Z',
+    })).rejects.toMatchObject({
+      statusCode: 409,
+      code: 'DEEP_ANALYSIS_ALREADY_RUNNING',
+      details: {
+        reportId: 9,
+      },
     });
 
-    expect(response.report_id).toBe(9);
-    expect(response.render_status).toBe('running');
-    expect(response.report_content).toBeNull();
     expect(repository.createMemoryAnalysisReport).not.toHaveBeenCalled();
     expect(repository.updateMemoryAnalysisReport).not.toHaveBeenCalled();
   });
 
+  it('rejects the eleventh memory analysis report for the same day', async () => {
+    const repository = {
+      findActiveMemoryAnalysisReportByDay: jest.fn(async () => null),
+      countMemoryAnalysisReportsByDay: jest.fn(async () => 10),
+      createMemoryAnalysisReport: jest.fn(),
+    };
+    const service = createReportService(repository);
+
+    await expect(service.createReport(reportContext, {
+      createdAfter: '2026-06-01T00:00:00.000Z',
+      createdBefore: '2026-06-14T23:59:59.999Z',
+    })).rejects.toMatchObject({
+      statusCode: 409,
+      code: 'DEEP_ANALYSIS_DAILY_LIMIT',
+      details: {
+        maximumPerDay: 10,
+      },
+    });
+
+    expect(repository.createMemoryAnalysisReport).not.toHaveBeenCalled();
+  });
+
+  it('rejects memory analysis report creation when the source window is too large', async () => {
+    const repository = {
+      findActiveMemoryAnalysisReportByDay: jest.fn(async () => null),
+      countMemoryAnalysisReportsByDay: jest.fn(async () => 0),
+      createMemoryAnalysisReport: jest.fn(),
+    };
+    const service = createReportService(
+      repository,
+      undefined,
+      {
+        countSessionMemories: jest
+          .fn()
+          .mockResolvedValueOnce(30001)
+          .mockResolvedValueOnce(20001),
+      },
+    );
+
+    await expect(service.createReport(reportContext, {
+      createdAfter: '2026-06-01T00:00:00.000Z',
+      createdBefore: '2026-06-14T23:59:59.999Z',
+    })).rejects.toMatchObject({
+      statusCode: 422,
+      code: 'DEEP_ANALYSIS_TOO_MANY_MEMORIES',
+      details: {
+        memoryCount: 20001,
+        maximum: 20000,
+      },
+    });
+
+    expect(repository.createMemoryAnalysisReport).not.toHaveBeenCalled();
+  });
+
   it('marks the report failed when queueing generation fails', async () => {
     const repository = {
-      findActiveMemoryAnalysisReportByWindow: jest.fn(async () => null),
+      findActiveMemoryAnalysisReportByDay: jest.fn(async () => null),
+      countMemoryAnalysisReportsByDay: jest.fn(async () => 0),
       createMemoryAnalysisReport: jest.fn(async () => createReport({
         templateId: 'memory_analysis',
         reportContent: '',

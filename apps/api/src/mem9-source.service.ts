@@ -190,6 +190,18 @@ export class Mem9SourceService {
     return memories;
   }
 
+  public async countSessionMemories(
+    apiKey: string,
+    options: FetchSessionMemoriesOptions,
+  ): Promise<number> {
+    const page = await this.fetchPage(apiKey, 1, 0, {
+      createdAfter: options.createdAfter,
+      createdBefore: options.createdBefore,
+      memoryType: 'session',
+    });
+    return page.total;
+  }
+
   public async fetchAllMemories(apiKey: string): Promise<DeepAnalysisMemorySnapshot[]> {
     const memories: DeepAnalysisMemorySnapshot[] = [];
     const pageSize = this.config.analysis.mem9SourcePageSize;

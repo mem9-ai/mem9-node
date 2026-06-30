@@ -611,11 +611,11 @@ export class AnalysisRepository {
     });
   }
 
-  public async findActiveMemoryAnalysisReportByWindow(data: {
+  public async findActiveMemoryAnalysisReportByDay(data: {
     fingerprint: Buffer;
     templateId: string;
-    startTime: Date;
-    endTime: Date;
+    dayStart: Date;
+    dayEnd: Date;
   }): Promise<MemoryReport | null> {
     await this.ensureMemoryReportTable();
 
@@ -623,14 +623,36 @@ export class AnalysisRepository {
       where: {
         apiKeyFingerprint: toPrismaBytes(data.fingerprint),
         templateId: data.templateId,
-        startTime: data.startTime,
-        endTime: data.endTime,
+        generatedAt: {
+          gte: data.dayStart,
+          lt: data.dayEnd,
+        },
         renderStatus: {
           in: ['queued', 'running'],
         },
       },
       orderBy: {
         generatedAt: 'desc',
+      },
+    });
+  }
+
+  public async countMemoryAnalysisReportsByDay(data: {
+    fingerprint: Buffer;
+    templateId: string;
+    dayStart: Date;
+    dayEnd: Date;
+  }): Promise<number> {
+    await this.ensureMemoryReportTable();
+
+    return this.prisma.memoryReport.count({
+      where: {
+        apiKeyFingerprint: toPrismaBytes(data.fingerprint),
+        templateId: data.templateId,
+        generatedAt: {
+          gte: data.dayStart,
+          lt: data.dayEnd,
+        },
       },
     });
   }

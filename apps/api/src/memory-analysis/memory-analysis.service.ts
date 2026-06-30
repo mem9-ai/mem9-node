@@ -1,3 +1,5 @@
+import type { AppConfig } from '@mem9/config';
+import { APP_CONFIG } from '@mem9/config';
 import type {
   DeleteSessionMessageEditResponse,
   EditSessionMessageRequest,
@@ -5,8 +7,9 @@ import type {
   GetSessionMessageEditResponse,
   MarkSessionMessageResponse,
 } from '@mem9/contracts';
+import { MEMORY_PERIOD_SUMMARY_CACHE_VERSION } from '@mem9/contracts';
 import { AnalysisRepository, AppError, RedisService, SqsQueueService, redisKeys } from '@mem9/shared';
-import { HttpStatus, Injectable, Logger } from '@nestjs/common';
+import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
 import type { MemoryReport } from '@prisma/client';
 
 import type { Mem9RequestContext } from '../common/request-context';
@@ -31,6 +34,8 @@ export interface MemoryAnalysisReportResponse {
 }
 
 const MAX_ANALYSIS_RANGE_MS = 14 * 24 * 60 * 60 * 1000;
+const MAX_DAILY_MEMORY_ANALYSIS_REPORTS = 10;
+const MAX_MEMORY_ANALYSIS_SOURCE_MEMORIES = 20000;
 const MEMORY_ANALYSIS_REPORT_TEMPLATE_ID = 'memory_analysis';
 
 @Injectable()
@@ -42,6 +47,7 @@ export class MemoryAnalysisService {
     private readonly repository: AnalysisRepository,
     private readonly queue: SqsQueueService,
     private readonly redis: RedisService,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
 
   public async createReport(
@@ -51,24 +57,60 @@ export class MemoryAnalysisService {
     this.validateDateRange(dto);
     const startTime = new Date(dto.createdAfter);
     const endTime = new Date(dto.createdBefore);
-    const existingReport = await this.repository.findActiveMemoryAnalysisReportByWindow({
+    const dayRange = this.getUtcDayRange(new Date());
+    const activeReport = await this.repository.findActiveMemoryAnalysisReportByDay({
       fingerprint: context.apiKeyFingerprint,
       templateId: MEMORY_ANALYSIS_REPORT_TEMPLATE_ID,
-      startTime,
-      endTime,
+      dayStart: dayRange.start,
+      dayEnd: dayRange.end,
     });
 
-    if (existingReport !== null) {
-      this.logger.log(JSON.stringify({
-        event: 'memory_analysis_report_deduplicated',
-        reportId: existingReport.reportId,
-        renderStatus: existingReport.renderStatus,
-        reportStage: existingReport.reportStage,
-        apiKeyFingerprint: context.apiKeyFingerprintHex,
-        startTime: startTime.toISOString(),
-        endTime: endTime.toISOString(),
-      }));
-      return this.toReportResponse(existingReport);
+    if (activeReport !== null) {
+      throw new AppError('A memory analysis report is already running for today', {
+        statusCode: HttpStatus.CONFLICT,
+        code: 'DEEP_ANALYSIS_ALREADY_RUNNING',
+        details: {
+          reportId: activeReport.reportId,
+        },
+      });
+    }
+
+    const dailyReportCount = await this.repository.countMemoryAnalysisReportsByDay({
+      fingerprint: context.apiKeyFingerprint,
+      templateId: MEMORY_ANALYSIS_REPORT_TEMPLATE_ID,
+      dayStart: dayRange.start,
+      dayEnd: dayRange.end,
+    });
+
+    if (dailyReportCount >= MAX_DAILY_MEMORY_ANALYSIS_REPORTS) {
+      throw new AppError(`Memory analysis can be executed at most ${MAX_DAILY_MEMORY_ANALYSIS_REPORTS} times per day`, {
+        statusCode: HttpStatus.CONFLICT,
+        code: 'DEEP_ANALYSIS_DAILY_LIMIT',
+        details: {
+          maximumPerDay: MAX_DAILY_MEMORY_ANALYSIS_REPORTS,
+        },
+      });
+    }
+
+    const memoryCount = await this.source.countSessionMemories(context.rawApiKey, {
+      createdAfter: dto.createdAfter,
+      createdBefore: dto.createdBefore,
+    });
+    const uncachedMemoryCount = await this.countUncachedSessionMemories(
+      context,
+      dto,
+      MAX_MEMORY_ANALYSIS_SOURCE_MEMORIES,
+    );
+
+    if (uncachedMemoryCount > MAX_MEMORY_ANALYSIS_SOURCE_MEMORIES) {
+      throw new AppError(`Memory analysis supports at most ${MAX_MEMORY_ANALYSIS_SOURCE_MEMORIES} memories`, {
+        statusCode: HttpStatus.UNPROCESSABLE_ENTITY,
+        code: 'DEEP_ANALYSIS_TOO_MANY_MEMORIES',
+        details: {
+          memoryCount: uncachedMemoryCount,
+          maximum: MAX_MEMORY_ANALYSIS_SOURCE_MEMORIES,
+        },
+      });
     }
 
     const report = await this.repository.createMemoryAnalysisReport({
@@ -78,7 +120,7 @@ export class MemoryAnalysisService {
       endTime,
       renderStatus: 'queued',
       reportStage: 'queued',
-      memoryCount: 0,
+      memoryCount,
     });
 
     try {
@@ -248,6 +290,76 @@ export class MemoryAnalysisService {
     return periodKey;
   }
 
+  private async countUncachedSessionMemories(
+    context: Mem9RequestContext,
+    dto: CreateMemoryAnalysisReportDto,
+    stopAfter: number,
+  ): Promise<number> {
+    const uncachedDayRanges = await this.getUncachedDayRanges(context, dto);
+    let count = 0;
+
+    for (const range of uncachedDayRanges) {
+      count += await this.source.countSessionMemories(context.rawApiKey, {
+        createdAfter: range.createdAfter,
+        createdBefore: range.createdBefore,
+      });
+
+      if (count > stopAfter) {
+        break;
+      }
+    }
+
+    return count;
+  }
+
+  private async getUncachedDayRanges(
+    context: Mem9RequestContext,
+    dto: CreateMemoryAnalysisReportDto,
+  ): Promise<Array<{ periodKey: string; createdAfter: string; createdBefore: string }>> {
+    const model = this.config.analysis.qwenModel;
+    if (!model) {
+      return this.buildDayRanges(dto.createdAfter, dto.createdBefore);
+    }
+
+    const fingerprintHex = context.apiKeyFingerprintHex ?? context.apiKeyFingerprint.toString('hex');
+    const dayRanges = this.buildDayRanges(dto.createdAfter, dto.createdBefore);
+    const cacheKeys = dayRanges.map((range) => redisKeys.memoryAnalysisPeriodCache(
+      fingerprintHex,
+      range.periodKey,
+      model,
+      MEMORY_PERIOD_SUMMARY_CACHE_VERSION,
+    ));
+    const cachedValues = cacheKeys.length > 0 ? await this.redis.mget(...cacheKeys) : [];
+
+    return dayRanges.filter((_, index) => cachedValues[index] === null || cachedValues[index] === undefined);
+  }
+
+  private buildDayRanges(
+    createdAfter: string,
+    createdBefore: string,
+  ): Array<{ periodKey: string; createdAfter: string; createdBefore: string }> {
+    const start = new Date(createdAfter);
+    const end = new Date(createdBefore);
+    const ranges: Array<{ periodKey: string; createdAfter: string; createdBefore: string }> = [];
+    let cursor = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate()));
+
+    while (cursor <= end) {
+      const nextDay = new Date(cursor.getTime() + 24 * 60 * 60 * 1000);
+      const rangeStart = new Date(Math.max(start.getTime(), cursor.getTime()));
+      const rangeEnd = new Date(Math.min(end.getTime(), nextDay.getTime() - 1));
+
+      ranges.push({
+        periodKey: cursor.toISOString().slice(0, 10),
+        createdAfter: rangeStart.toISOString(),
+        createdBefore: rangeEnd.toISOString(),
+      });
+
+      cursor = nextDay;
+    }
+
+    return ranges;
+  }
+
   private validateDateRange(dto: CreateMemoryAnalysisReportDto): void {
     const createdAfter = dto.createdAfter?.trim();
     const createdBefore = dto.createdBefore?.trim();
@@ -297,6 +409,16 @@ export class MemoryAnalysisService {
 
     const datePart = value.slice(0, 10);
     return /^\d{4}-\d{2}-\d{2}$/.test(datePart) ? datePart : 'unknown-date';
+  }
+
+  private getUtcDayRange(now: Date): { start: Date; end: Date } {
+    const start = new Date(Date.UTC(
+      now.getUTCFullYear(),
+      now.getUTCMonth(),
+      now.getUTCDate(),
+    ));
+    const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+    return { start, end };
   }
 
   private toReportResponse(report: MemoryReport): MemoryAnalysisReportResponse {
