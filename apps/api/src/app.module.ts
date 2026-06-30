@@ -28,6 +28,7 @@ import { DeepAnalysisService } from './deep-analysis.service';
 import { HealthController } from './health.controller';
 import { Mem9SourceService } from './mem9-source.service';
 import { MemoryAnalysisController } from './memory-analysis/memory-analysis.controller';
+import { MemoryAnalysisReportCleanupService } from './memory-analysis/memory-analysis-report-cleanup.service';
 import { MemoryAnalysisService } from './memory-analysis/memory-analysis.service';
 import { UserProfileController } from './user-profile.controller';
 import { UserProfileService } from './user-profile.service';
@@ -83,6 +84,7 @@ const appConfig = loadConfig();
     DeepAnalysisDuplicateOpsService,
     DeepAnalysisSourcePreparationService,
     Mem9SourceService,
+    MemoryAnalysisReportCleanupService,
     MemoryAnalysisService,
     UserProfileService,
     ApiKeyGuard,

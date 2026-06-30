@@ -580,6 +580,56 @@ export class AnalysisRepository {
     });
   }
 
+  public async expireStaleMemoryAnalysisReports(data: {
+    templateId: string;
+    queuedBefore: Date;
+    runningBefore: Date;
+    completedAt: Date;
+    failCode: string;
+    failReason: string;
+  }): Promise<number> {
+    await this.ensureMemoryReportTable();
+
+    const result = await this.prisma.memoryReport.updateMany({
+      where: {
+        templateId: data.templateId,
+        OR: [
+          {
+            renderStatus: 'queued',
+            generatedAt: {
+              lt: data.queuedBefore,
+            },
+          },
+          {
+            renderStatus: 'running',
+            OR: [
+              {
+                startedAt: {
+                  lt: data.runningBefore,
+                },
+              },
+              {
+                startedAt: null,
+                generatedAt: {
+                  lt: data.runningBefore,
+                },
+              },
+            ],
+          },
+        ],
+      },
+      data: {
+        renderStatus: 'fail',
+        reportStage: 'failed',
+        completedAt: data.completedAt,
+        failCode: data.failCode,
+        failReason: data.failReason,
+      },
+    });
+
+    return result.count;
+  }
+
   public async listMemoryAnalysisReportsByTemplateId(
     fingerprint: Buffer,
     templateId: string,

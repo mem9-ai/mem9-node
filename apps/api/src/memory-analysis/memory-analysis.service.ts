@@ -16,6 +16,12 @@ import type { Mem9RequestContext } from '../common/request-context';
 import type { CreateMemoryAnalysisReportDto } from '../dto/create-memory-analysis-report.dto';
 import type { ListMemoryAnalysisReportsDto } from '../dto/list-memory-analysis-reports.dto';
 import { Mem9SourceService } from '../mem9-source.service';
+import {
+  isExpiredMemoryAnalysisReport,
+  MEMORY_ANALYSIS_REPORT_EXPIRED_CODE,
+  MEMORY_ANALYSIS_REPORT_EXPIRED_REASON,
+  MEMORY_ANALYSIS_REPORT_TEMPLATE_ID,
+} from './memory-analysis-report-expiration';
 
 export interface MemoryAnalysisReportResponse {
   report_id: number;
@@ -36,7 +42,6 @@ export interface MemoryAnalysisReportResponse {
 const MAX_ANALYSIS_RANGE_MS = 14 * 24 * 60 * 60 * 1000;
 const MAX_DAILY_MEMORY_ANALYSIS_REPORTS = 10;
 const MAX_MEMORY_ANALYSIS_SOURCE_MEMORIES = 20000;
-const MEMORY_ANALYSIS_REPORT_TEMPLATE_ID = 'memory_analysis';
 
 @Injectable()
 export class MemoryAnalysisService {
@@ -65,7 +70,9 @@ export class MemoryAnalysisService {
       dayEnd: dayRange.end,
     });
 
-    if (activeReport !== null) {
+    if (activeReport !== null && isExpiredMemoryAnalysisReport(activeReport, new Date())) {
+      await this.expireActiveReport(activeReport);
+    } else if (activeReport !== null) {
       throw new AppError('A memory analysis report is already running for today', {
         statusCode: HttpStatus.CONFLICT,
         code: 'DEEP_ANALYSIS_ALREADY_RUNNING',
@@ -310,6 +317,22 @@ export class MemoryAnalysisService {
     }
 
     return count;
+  }
+
+  private async expireActiveReport(report: MemoryReport): Promise<void> {
+    await this.repository.updateMemoryAnalysisReport(report.reportId, {
+      renderStatus: 'fail',
+      reportStage: 'failed',
+      completedAt: new Date(),
+      failCode: MEMORY_ANALYSIS_REPORT_EXPIRED_CODE,
+      failReason: MEMORY_ANALYSIS_REPORT_EXPIRED_REASON,
+    });
+    this.logger.warn(JSON.stringify({
+      event: 'memory_analysis_report_expired',
+      reportId: report.reportId,
+      renderStatus: report.renderStatus,
+      reportStage: report.reportStage,
+    }));
   }
 
   private async getUncachedDayRanges(

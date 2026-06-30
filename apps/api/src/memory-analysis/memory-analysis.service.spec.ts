@@ -141,6 +141,10 @@ function createSessionService(overrides?: {
 }
 
 describe('memory analysis report service', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
   it('creates queued memory analysis report jobs', async () => {
     const repository = {
       findActiveMemoryAnalysisReportByDay: jest.fn(async () => null),
@@ -259,6 +263,7 @@ describe('memory analysis report service', () => {
   });
 
   it('rejects creating a report when another report is running for the same day', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-06-30T08:00:00.000Z'));
     const repository = {
       findActiveMemoryAnalysisReportByDay: jest.fn(async () => createReport({
         reportId: 9,
@@ -267,6 +272,8 @@ describe('memory analysis report service', () => {
         renderStatus: 'running',
         reportStage: 'period_summary',
         memoryCount: 0,
+        generatedAt: new Date('2026-06-30T07:30:00.000Z'),
+        startedAt: new Date('2026-06-30T07:30:00.000Z'),
       })),
       createMemoryAnalysisReport: jest.fn(),
       updateMemoryAnalysisReport: jest.fn(),
@@ -286,6 +293,85 @@ describe('memory analysis report service', () => {
 
     expect(repository.createMemoryAnalysisReport).not.toHaveBeenCalled();
     expect(repository.updateMemoryAnalysisReport).not.toHaveBeenCalled();
+  });
+
+  it('expires a stale queued report before creating a new one', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-06-30T08:00:00.000Z'));
+    const repository = {
+      findActiveMemoryAnalysisReportByDay: jest.fn(async () => createReport({
+        reportId: 9,
+        templateId: 'memory_analysis',
+        reportContent: '',
+        renderStatus: 'queued',
+        reportStage: 'queued',
+        memoryCount: 0,
+        generatedAt: new Date('2026-06-30T07:49:59.000Z'),
+      })),
+      countMemoryAnalysisReportsByDay: jest.fn(async () => 1),
+      createMemoryAnalysisReport: jest.fn(async () => createReport({
+        reportId: 10,
+        templateId: 'memory_analysis',
+        reportContent: '',
+        renderStatus: 'queued',
+        reportStage: 'queued',
+        memoryCount: 101,
+      })),
+      updateMemoryAnalysisReport: jest.fn(async () => createReport()),
+    };
+    const service = createReportService(repository);
+
+    const response = await service.createReport(reportContext, {
+      createdAfter: '2026-06-01T00:00:00.000Z',
+      createdBefore: '2026-06-14T23:59:59.999Z',
+    });
+
+    expect(response.report_id).toBe(10);
+    expect(repository.updateMemoryAnalysisReport).toHaveBeenCalledWith(9, expect.objectContaining({
+      renderStatus: 'fail',
+      reportStage: 'failed',
+      failCode: 'MEMORY_ANALYSIS_REPORT_EXPIRED',
+    }));
+    expect(repository.createMemoryAnalysisReport).toHaveBeenCalled();
+  });
+
+  it('expires a stale running report before creating a new one', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-06-30T08:00:00.000Z'));
+    const repository = {
+      findActiveMemoryAnalysisReportByDay: jest.fn(async () => createReport({
+        reportId: 9,
+        templateId: 'memory_analysis',
+        reportContent: '',
+        renderStatus: 'running',
+        reportStage: 'period_summary',
+        memoryCount: 0,
+        generatedAt: new Date('2026-06-30T06:59:59.000Z'),
+        startedAt: new Date('2026-06-30T06:59:59.000Z'),
+      })),
+      countMemoryAnalysisReportsByDay: jest.fn(async () => 1),
+      createMemoryAnalysisReport: jest.fn(async () => createReport({
+        reportId: 10,
+        templateId: 'memory_analysis',
+        reportContent: '',
+        renderStatus: 'queued',
+        reportStage: 'queued',
+        memoryCount: 101,
+      })),
+      updateMemoryAnalysisReport: jest.fn(async () => createReport()),
+    };
+    const service = createReportService(repository);
+
+    const response = await service.createReport(reportContext, {
+      createdAfter: '2026-06-01T00:00:00.000Z',
+      createdBefore: '2026-06-14T23:59:59.999Z',
+    });
+
+    expect(response.report_id).toBe(10);
+    expect(repository.updateMemoryAnalysisReport).toHaveBeenCalledWith(9, expect.objectContaining({
+      renderStatus: 'fail',
+      reportStage: 'failed',
+      failCode: 'MEMORY_ANALYSIS_REPORT_EXPIRED',
+    }));
+    expect(repository.createMemoryAnalysisReport).toHaveBeenCalled();
   });
 
   it('rejects the eleventh memory analysis report for the same day', async () => {
