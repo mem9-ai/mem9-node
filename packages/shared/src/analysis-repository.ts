@@ -5,7 +5,6 @@ import type {
   ApiKeySubject,
   DeepAnalysisReport,
   MemoryReport,
-  MemoryAnalysisPeriodCache,
   RateLimitPolicy,
   TaxonomyRule,
 } from '@prisma/client';
@@ -531,70 +530,6 @@ export class AnalysisRepository {
     await this.prisma.deepAnalysisReport.delete({
       where: { id: reportId },
     });
-  }
-
-  public async findMemoryAnalysisPeriodCache(data: {
-    fingerprint: Buffer;
-    periodKey: string;
-    model: string;
-    promptVersion: string;
-  }): Promise<MemoryAnalysisPeriodCache | null> {
-    return this.prisma.memoryAnalysisPeriodCache.findUnique({
-      where: {
-        apiKeyFingerprint_periodKey_model_promptVersion: {
-          apiKeyFingerprint: toPrismaBytes(data.fingerprint),
-          periodKey: data.periodKey,
-          model: data.model,
-          promptVersion: data.promptVersion,
-        },
-      },
-    });
-  }
-
-  public async upsertMemoryAnalysisPeriodCache(data: {
-    fingerprint: Buffer;
-    periodKey: string;
-    model: string;
-    promptVersion: string;
-    resultJson: Prisma.InputJsonValue;
-  }): Promise<MemoryAnalysisPeriodCache> {
-    const where = {
-      apiKeyFingerprint_periodKey_model_promptVersion: {
-        apiKeyFingerprint: toPrismaBytes(data.fingerprint),
-        periodKey: data.periodKey,
-        model: data.model,
-        promptVersion: data.promptVersion,
-      },
-    };
-
-    return this.prisma.memoryAnalysisPeriodCache.upsert({
-      where,
-      create: {
-        id: createPrefixedId('mapc'),
-        apiKeyFingerprint: toPrismaBytes(data.fingerprint),
-        periodKey: data.periodKey,
-        model: data.model,
-        promptVersion: data.promptVersion,
-        resultJson: data.resultJson,
-      },
-      update: {
-        resultJson: data.resultJson,
-      },
-    });
-  }
-
-  public async invalidateMemoryAnalysisPeriodCache(data: {
-    fingerprint: Buffer;
-    periodKey: string;
-  }): Promise<number> {
-    const result = await this.prisma.memoryAnalysisPeriodCache.deleteMany({
-      where: {
-        apiKeyFingerprint: toPrismaBytes(data.fingerprint),
-        periodKey: data.periodKey,
-      },
-    });
-
-    return result.count;
   }
 
   public async createMemoryAnalysisReport(data: {

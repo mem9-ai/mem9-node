@@ -35,6 +35,10 @@ function createReportService(repository: Record<string, jest.Mock>, queue?: Reco
     } as never,
     repository as never,
     (queue ?? { enqueueLlmMessage: jest.fn(async () => undefined) }) as never,
+    {
+      smembers: jest.fn(async () => []),
+      del: jest.fn(async () => 0),
+    } as never,
   );
 }
 
@@ -51,6 +55,7 @@ function createSessionContext() {
 function createSessionService(overrides?: {
   source?: Record<string, unknown>;
   repository?: Record<string, unknown>;
+  redis?: Record<string, unknown>;
 }) {
   const source = {
     markSessionMessage: jest.fn(async () => ({
@@ -95,19 +100,25 @@ function createSessionService(overrides?: {
     ...overrides?.source,
   };
   const repository = {
-    invalidateMemoryAnalysisPeriodCache: jest.fn(async () => 1),
-    findMemoryAnalysisPeriodCache: jest.fn(async () => null),
-    upsertMemoryAnalysisPeriodCache: jest.fn(async () => undefined),
     ...overrides?.repository,
+  };
+  const redis = {
+    smembers: jest.fn(async () => [
+      `ma:period:${createSessionContext().apiKeyFingerprintHex}:2026-06-27:test-model:v1`,
+    ]),
+    del: jest.fn(async () => 2),
+    ...overrides?.redis,
   };
 
   return {
     source,
     repository,
+    redis,
     service: new MemoryAnalysisService(
       source as never,
       repository as never,
       { enqueueLlmMessage: jest.fn(async () => undefined) } as never,
+      redis as never,
     ),
   };
 }
@@ -303,7 +314,7 @@ describe('memory analysis report service', () => {
 
 describe('memory analysis session message operations', () => {
   it('marks session messages and invalidates the source day cache', async () => {
-    const { service, source, repository } = createSessionService();
+    const { service, source, redis } = createSessionService();
 
     const result = await service.markSessionMessage(createSessionContext(), 'turn-1', 'correct');
 
@@ -314,10 +325,13 @@ describe('memory analysis session message operations', () => {
     });
     expect(source.fetchMemoryById).toHaveBeenCalledWith('space-key', 'turn-1');
     expect(source.markSessionMessage).toHaveBeenCalledWith('space-key', 'turn-1', 'correct');
-    expect(repository.invalidateMemoryAnalysisPeriodCache).toHaveBeenCalledWith({
-      fingerprint: createSessionContext().apiKeyFingerprint,
-      periodKey: '2026-06-27',
-    });
+    expect(redis.smembers).toHaveBeenCalledWith(
+      `ma:period:index:${createSessionContext().apiKeyFingerprintHex}:2026-06-27`,
+    );
+    expect(redis.del).toHaveBeenCalledWith(
+      `ma:period:${createSessionContext().apiKeyFingerprintHex}:2026-06-27:test-model:v1`,
+      `ma:period:index:${createSessionContext().apiKeyFingerprintHex}:2026-06-27`,
+    );
   });
 
   it('rejects invalid mark values before calling mem9 server', async () => {
@@ -334,7 +348,7 @@ describe('memory analysis session message operations', () => {
   });
 
   it('edits session messages and invalidates the source day cache', async () => {
-    const { service, repository } = createSessionService();
+    const { service, redis } = createSessionService();
 
     const result = await service.editSessionMessage(createSessionContext(), 'turn-1', {
       content: 'corrected',
@@ -342,10 +356,9 @@ describe('memory analysis session message operations', () => {
     });
 
     expect(result.invalidatedPeriodKey).toBe('2026-06-27');
-    expect(repository.invalidateMemoryAnalysisPeriodCache).toHaveBeenCalledWith({
-      fingerprint: createSessionContext().apiKeyFingerprint,
-      periodKey: '2026-06-27',
-    });
+    expect(redis.smembers).toHaveBeenCalledWith(
+      `ma:period:index:${createSessionContext().apiKeyFingerprintHex}:2026-06-27`,
+    );
   });
 
   it('rejects empty edit content before calling mem9 server', async () => {
@@ -364,7 +377,7 @@ describe('memory analysis session message operations', () => {
   });
 
   it('loads the session timestamp before deleting an edit and invalidates cache', async () => {
-    const { service, source, repository } = createSessionService();
+    const { service, source, redis } = createSessionService();
 
     const result = await service.deleteSessionMessageEdit(createSessionContext(), 'turn-1');
 
@@ -375,10 +388,9 @@ describe('memory analysis session message operations', () => {
     });
     expect(source.fetchMemoryById).toHaveBeenCalledWith('space-key', 'turn-1');
     expect(source.deleteSessionMessageEdit).toHaveBeenCalledWith('space-key', 'turn-1');
-    expect(repository.invalidateMemoryAnalysisPeriodCache).toHaveBeenCalledWith({
-      fingerprint: createSessionContext().apiKeyFingerprint,
-      periodKey: '2026-06-27',
-    });
+    expect(redis.smembers).toHaveBeenCalledWith(
+      `ma:period:index:${createSessionContext().apiKeyFingerprintHex}:2026-06-27`,
+    );
   });
 
 });

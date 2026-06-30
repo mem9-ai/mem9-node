@@ -1,9 +1,8 @@
 import type { AppConfig } from '@mem9/config';
 import { APP_CONFIG } from '@mem9/config';
 import type { DeepAnalysisMemorySnapshot } from '@mem9/contracts';
-import { AnalysisRepository, AppError, sha256Hex } from '@mem9/shared';
+import { AnalysisRepository, AppError, RedisService, redisKeys, sha256Hex } from '@mem9/shared';
 import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
 
 import { Mem9SourceService } from './mem9-source.service';
 
@@ -92,6 +91,7 @@ const QWEN_PERIOD_SUMMARY_CONCURRENCY = 5;
 const MAX_ANALYSIS_RANGE_MS = 14 * 24 * 60 * 60 * 1000;
 const MEMORY_ANALYSIS_REPORT_MAX_ATTEMPTS = 3;
 const MEMORY_ANALYSIS_REPORT_RETRY_BASE_MS = 1000;
+const MEMORY_PERIOD_SUMMARY_CACHE_TTL_SECONDS = 30 * 24 * 60 * 60;
 const MEMORY_PERIOD_SUMMARY_PROMPT_HASH = sha256Hex(MEMORY_PERIOD_SUMMARY_SYSTEM_PROMPT);
 
 @Injectable()
@@ -102,6 +102,7 @@ export class MemoryAnalysisReportRunnerService {
     @Inject(APP_CONFIG) private readonly config: AppConfig,
     private readonly source: Mem9SourceService,
     private readonly repository: AnalysisRepository,
+    private readonly redis: RedisService,
   ) {}
 
   public async analyzeSource(
@@ -412,34 +413,40 @@ export class MemoryAnalysisReportRunnerService {
       QWEN_PERIOD_SUMMARY_CONCURRENCY,
       async (period) => {
         const model = this.config.analysis.qwenModel!;
-        const cached = period.cacheable
-          ? await this.repository.findMemoryAnalysisPeriodCache({
-            fingerprint: apiKeyFingerprint,
-            periodKey: period.periodKey,
-            model,
-            promptVersion: MEMORY_PERIOD_SUMMARY_CACHE_VERSION,
-          })
-          : null;
+        const fingerprintHex = apiKeyFingerprint.toString('hex');
+        const cacheKey = redisKeys.memoryAnalysisPeriodCache(
+          fingerprintHex,
+          period.periodKey,
+          model,
+          MEMORY_PERIOD_SUMMARY_CACHE_VERSION,
+        );
+        const cacheIndexKey = redisKeys.memoryAnalysisPeriodCacheIndex(fingerprintHex, period.periodKey);
+        const cached = period.cacheable ? await this.redis.get(cacheKey) : null;
 
         if (cached) {
-          return {
-            periods: [this.normalizeCachedPeriodSummary(cached.resultJson, period)],
-            responseChars: 0,
-            cacheHit: true,
-          };
+          try {
+            return {
+              periods: [this.normalizeCachedPeriodSummary(JSON.parse(cached), period)],
+              responseChars: 0,
+              cacheHit: true,
+            };
+          } catch {
+            await this.redis.del(cacheKey);
+          }
         }
 
         const content = await this.callQwenForPeriodSummaries([period], logMeta);
         const parsed = this.parseJsonObject(content);
         const normalizedPeriods = this.normalizePeriodSummaryResult(parsed, [period]);
         if (period.cacheable) {
-          await this.repository.upsertMemoryAnalysisPeriodCache({
-            fingerprint: apiKeyFingerprint,
-            periodKey: period.periodKey,
-            model,
-            promptVersion: MEMORY_PERIOD_SUMMARY_CACHE_VERSION,
-            resultJson: normalizedPeriods[0] as unknown as Prisma.InputJsonValue,
-          });
+          await this.redis.set(
+            cacheKey,
+            JSON.stringify(normalizedPeriods[0]),
+            'EX',
+            MEMORY_PERIOD_SUMMARY_CACHE_TTL_SECONDS,
+          );
+          await this.redis.sadd(cacheIndexKey, cacheKey);
+          await this.redis.expire(cacheIndexKey, MEMORY_PERIOD_SUMMARY_CACHE_TTL_SECONDS);
         }
 
         return {

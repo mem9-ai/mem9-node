@@ -18,6 +18,35 @@ const TEST_CONFIG = {
   },
 } as AppConfig;
 
+class FakeRedis {
+  public readonly values = new Map<string, string>();
+  public readonly sets = new Map<string, Set<string>>();
+  public readonly get = jest.fn(async (key: string) => this.values.get(key) ?? null);
+  public readonly set = jest.fn(async (key: string, value: string) => {
+    this.values.set(key, value);
+    return 'OK';
+  });
+  public readonly sadd = jest.fn(async (key: string, value: string) => {
+    const current = this.sets.get(key) ?? new Set<string>();
+    current.add(value);
+    this.sets.set(key, current);
+    return current.size;
+  });
+  public readonly expire = jest.fn(async () => 1);
+  public readonly del = jest.fn(async (...keys: string[]) => {
+    let deleted = 0;
+    for (const key of keys) {
+      if (this.values.delete(key)) {
+        deleted += 1;
+      }
+      if (this.sets.delete(key)) {
+        deleted += 1;
+      }
+    }
+    return deleted;
+  });
+}
+
 function createReport(overrides: Record<string, unknown> = {}) {
   return {
     reportId: 1,
@@ -53,6 +82,7 @@ describe('MemoryAnalysisReportRunnerService', () => {
       { analysis: {} } as never,
       source as never,
       repository as never,
+      new FakeRedis() as never,
     );
 
     await runner.generateReport(reportContext, 1, {
@@ -87,6 +117,7 @@ describe('MemoryAnalysisReportRunnerService', () => {
       { analysis: {} } as never,
       source as never,
       repository as never,
+      new FakeRedis() as never,
     );
 
     await runner.generateReport(reportContext, 1, {
@@ -114,14 +145,13 @@ describe('MemoryAnalysisReportRunnerService', () => {
         },
       ]),
     };
-    const repository = {
-      findMemoryAnalysisPeriodCache: jest.fn(async () => null),
-      upsertMemoryAnalysisPeriodCache: jest.fn(async () => undefined),
-    };
+    const repository = {};
+    const redis = new FakeRedis();
     const runner = new MemoryAnalysisReportRunnerService(
       TEST_CONFIG,
       source as never,
       repository as never,
+      redis as never,
     );
     const qwenService = runner as unknown as {
       callQwenForPeriodSummaries: () => Promise<string>;
@@ -168,17 +198,83 @@ describe('MemoryAnalysisReportRunnerService', () => {
       createdBefore: '2026-06-22T23:59:59Z',
     });
 
-    expect(repository.findMemoryAnalysisPeriodCache).toHaveBeenCalledWith({
-      fingerprint: reportApiKeyFingerprint,
+    const expectedCacheKey = `ma:period:${reportApiKeyFingerprint.toString('hex')}:2026-06-22:test-model:${MEMORY_PERIOD_SUMMARY_CACHE_VERSION}`;
+    const expectedIndexKey = `ma:period:index:${reportApiKeyFingerprint.toString('hex')}:2026-06-22`;
+    expect(redis.get).toHaveBeenCalledWith(expectedCacheKey);
+    expect(redis.set).toHaveBeenCalledWith(
+      expectedCacheKey,
+      expect.any(String),
+      'EX',
+      2592000,
+    );
+    expect(redis.sadd).toHaveBeenCalledWith(expectedIndexKey, expectedCacheKey);
+    expect(redis.expire).toHaveBeenCalledWith(expectedIndexKey, 2592000);
+  });
+
+  it('uses cached Redis period summaries without calling Qwen for the period pass', async () => {
+    const source = {
+      fetchSessionMemories: jest.fn(async () => [
+        {
+          id: 'turn-1',
+          content: '今天继续准备法考。',
+          createdAt: '2026-06-22T08:05:03Z',
+          memoryType: 'session',
+          metadata: {},
+        },
+      ]),
+    };
+    const redis = new FakeRedis();
+    const cacheKey = `ma:period:${reportApiKeyFingerprint.toString('hex')}:2026-06-22:test-model:${MEMORY_PERIOD_SUMMARY_CACHE_VERSION}`;
+    redis.values.set(cacheKey, JSON.stringify({
       periodKey: '2026-06-22',
-      model: 'test-model',
-      promptVersion: MEMORY_PERIOD_SUMMARY_CACHE_VERSION,
-    });
-    expect(repository.upsertMemoryAnalysisPeriodCache).toHaveBeenCalledWith(expect.objectContaining({
-      fingerprint: reportApiKeyFingerprint,
-      periodKey: '2026-06-22',
-      model: 'test-model',
-      promptVersion: MEMORY_PERIOD_SUMMARY_CACHE_VERSION,
+      dimensions: [
+        {
+          dimension: 'long_term_goal',
+          insights: [
+            {
+              title: '法考准备',
+              summary: '用户持续准备法考。',
+              evidence: [{ evidenceId: 'turn-1', quote: '继续准备法考' }],
+            },
+          ],
+        },
+      ],
     }));
+    const runner = new MemoryAnalysisReportRunnerService(
+      TEST_CONFIG,
+      source as never,
+      {} as never,
+      redis as never,
+    );
+    const qwenService = runner as unknown as {
+      callQwenForPeriodSummaries: () => Promise<string>;
+      callQwenForChangeAggregation: () => Promise<string>;
+    };
+    const periodSpy = jest.spyOn(qwenService, 'callQwenForPeriodSummaries');
+    jest.spyOn(qwenService, 'callQwenForChangeAggregation').mockResolvedValue(JSON.stringify({
+      d: [
+        {
+          k: 'long_term_goal',
+          s: '用户持续围绕法考推进准备。',
+          c: [
+            {
+              t: '法考准备',
+              s: '用户持续准备法考。',
+              p: { s: '2026-06-22T00:00:00Z', e: '2026-06-22T23:59:59Z' },
+              e: ['turn-1'],
+            },
+          ],
+        },
+      ],
+    }));
+
+    await runner.analyzeSource(reportContext, {
+      createdAfter: '2026-06-22T00:00:00Z',
+      createdBefore: '2026-06-22T23:59:59Z',
+    });
+
+    expect(redis.get).toHaveBeenCalledWith(cacheKey);
+    expect(periodSpy).not.toHaveBeenCalled();
+    expect(redis.set).not.toHaveBeenCalled();
   });
 });

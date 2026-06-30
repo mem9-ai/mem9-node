@@ -5,7 +5,7 @@ import type {
   GetSessionMessageEditResponse,
   MarkSessionMessageResponse,
 } from '@mem9/contracts';
-import { AnalysisRepository, AppError, SqsQueueService } from '@mem9/shared';
+import { AnalysisRepository, AppError, RedisService, SqsQueueService, redisKeys } from '@mem9/shared';
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import type { MemoryReport } from '@prisma/client';
 
@@ -41,6 +41,7 @@ export class MemoryAnalysisService {
     private readonly source: Mem9SourceService,
     private readonly repository: AnalysisRepository,
     private readonly queue: SqsQueueService,
+    private readonly redis: RedisService,
   ) {}
 
   public async createReport(
@@ -225,10 +226,14 @@ export class MemoryAnalysisService {
     }
 
     try {
-      await this.repository.invalidateMemoryAnalysisPeriodCache({
-        fingerprint: context.apiKeyFingerprint,
-        periodKey,
-      });
+      const fingerprintHex = context.apiKeyFingerprintHex ?? context.apiKeyFingerprint.toString('hex');
+      const indexKey = redisKeys.memoryAnalysisPeriodCacheIndex(fingerprintHex, periodKey);
+      const cacheKeys = await this.redis.smembers(indexKey);
+      if (cacheKeys.length > 0) {
+        await this.redis.del(...cacheKeys, indexKey);
+      } else {
+        await this.redis.del(indexKey);
+      }
     } catch (error) {
       throw new AppError('Failed to invalidate memory analysis cache', {
         statusCode: HttpStatus.INTERNAL_SERVER_ERROR,

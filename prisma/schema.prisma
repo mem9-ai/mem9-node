@@ -195,20 +195,6 @@ model DeepAnalysisReport {
   @@index([status, requestedAt])
 }
 
-model MemoryAnalysisPeriodCache {
-  id                String   @id @db.VarChar(64)
-  apiKeyFingerprint Bytes    @db.VarBinary(32)
-  periodKey         String   @db.VarChar(64)
-  model             String   @db.VarChar(128)
-  promptVersion     String   @db.VarChar(32)
-  resultJson        Json
-  createdAt         DateTime @default(now()) @db.DateTime(3)
-  updatedAt         DateTime @updatedAt @db.DateTime(3)
-
-  @@unique([apiKeyFingerprint, periodKey, model, promptVersion], map: "MAPC_scope_key")
-  @@index([apiKeyFingerprint, periodKey], map: "MAPC_owner_period_idx")
-}
-
 model MemoryReport {
   reportId          Int      @id @default(autoincrement()) @map("report_id")
   apiKeyFingerprint Bytes    @map("api_key_fingerprint") @db.VarBinary(32)
