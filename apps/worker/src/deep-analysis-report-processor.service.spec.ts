@@ -310,6 +310,12 @@ describe('deep analysis report processor service', () => {
       traceId: 'trace_1',
     });
 
+    const systemPrompts = qwen.createJson.mock.calls.map((call) => String(call[1]));
+    expect(systemPrompts[0]).toContain('资深用户研究员和长期记忆');
+    expect(systemPrompts[0]).toContain('current_priority（最多5项）');
+    expect(systemPrompts[0]).toContain('companion_style（150字以内）');
+    expect(systemPrompts[1]).toContain('constraint（最多5项）');
+
     expect(storage.putJson).toHaveBeenCalledTimes(1);
     const [, report] = storage.putJson.mock.calls[0] as unknown as [
       string,
@@ -503,6 +509,154 @@ describe('deep analysis report processor service', () => {
         httpStatus: 200,
       }),
     ]);
+  });
+
+  it('normalizes new profile LLM fields into the existing persona report schema', async () => {
+    const repository = {
+      getDeepAnalysisReport: jest.fn(async () => ({
+        id: 'dar_profile_alias',
+        status: 'QUEUED',
+        lang: 'zh-CN',
+        sourceSnapshotObjectKey:
+          'deep-analysis/reports/dar_profile_alias/source.json.gz',
+        internalComment: null,
+      })),
+      updateDeepAnalysisReport: jest.fn(async () => undefined),
+    };
+    const storage = {
+      getObjectBuffer: jest.fn(async () =>
+        gzipJson({
+          fetchedAt: '2026-03-28T00:00:00Z',
+          memoryCount: 1,
+          memories: [
+            {
+              id: 'mem_1',
+              content:
+                '用户长期关注 AI Agent 与 Memory，偏好直接结论、结构化方案和持续跟进。',
+              createdAt: '2026-03-28T00:00:00Z',
+              updatedAt: '2026-03-28T00:00:00Z',
+              memoryType: 'insight',
+              tags: ['profile'],
+              metadata: null,
+            },
+          ],
+        }),
+      ),
+      putJson: jest.fn(async () => undefined),
+    };
+    const qwen = {
+      getConfiguredModel: jest.fn(() => TEST_QWEN_MODEL),
+      createJson: jest
+        .fn()
+        .mockImplementationOnce(async () => createChunkResult({
+          parsed: {
+            summary: '用户长期关注 AI Agent 与 Memory。',
+            themes: [],
+            entities: {
+              people: [],
+              teams: [],
+              projects: [],
+              tools: ['AI Agent'],
+              places: [],
+            },
+            personaSignals: {
+              workingStyle: [],
+              goals: [],
+              preferences: [],
+              constraints: [],
+              decisionSignals: [],
+              notableRoutines: [],
+              contradictionsOrTensions: [],
+            },
+            relationships: [],
+          },
+        }))
+        .mockImplementationOnce(async () => ({
+          parsed: {
+            overview: {
+              memoryCount: 1,
+              deduplicatedMemoryCount: 1,
+              generatedAt: '2026-03-28T00:00:00.000Z',
+              lang: 'zh-CN',
+              timeSpan: { start: '2026-03-28T00:00:00.000Z', end: '2026-03-28T00:00:00.000Z' },
+            },
+            persona: {
+              summary: '用户长期关注 AI Agent 与 Memory，偏好结构化、高效率协作。',
+              current_priority: ['深入学习 AI Agent 与 Memory'],
+              companion_style: '偏好直接给出结论，再提供结构化、可执行方案，并持续跟进长期目标。',
+              constraint: ['回答需结构化，避免重复背景介绍'],
+            },
+            themeLandscape: { highlights: [] },
+            entities: {
+              people: [],
+              teams: [],
+              projects: [],
+              tools: [],
+              places: [],
+            },
+            relationships: [],
+            discoveries: [],
+            quality: {
+              duplicateRatio: 0,
+              duplicateMemoryCount: 0,
+              noisyMemoryCount: 0,
+              duplicateClusters: [],
+              lowQualityExamples: [],
+              coverageGaps: [],
+            },
+            recommendations: [],
+            productSignals: {
+              candidateNodes: [],
+              candidateEdges: [],
+              searchSeeds: [],
+            },
+          },
+          usage: null,
+          requestMeta: {
+            stage: 'global_synthesis' as const,
+            success: true,
+            requested: true,
+            httpStatus: 200,
+            parseSucceeded: true,
+            errorCode: null,
+            errorMessage: null,
+            requestedAt: '2026-03-28T00:00:01.000Z',
+            finishedAt: '2026-03-28T00:00:02.000Z',
+          },
+          rawResponse: null,
+        })),
+    };
+    const processor = new DeepAnalysisReportProcessorService(
+      repository as never,
+      storage as never,
+      qwen as never,
+      createConfig() as never,
+    );
+
+    await processor.process({
+      messageType: 'deep_report',
+      reportId: 'dar_profile_alias',
+      traceId: 'trace_profile_alias',
+    });
+
+    const [, report] = storage.putJson.mock.calls[0] as unknown as [
+      string,
+      {
+        persona: {
+          summary: string;
+          goals: string[];
+          workingStyle: string[];
+          preferences: string[];
+          constraints: string[];
+        };
+      },
+    ];
+
+    expect(report.persona.summary).toBe('用户长期关注 AI Agent 与 Memory，偏好结构化、高效率协作。');
+    expect(report.persona.goals).toEqual(['深入学习 AI Agent 与 Memory']);
+    expect(report.persona.workingStyle).toEqual(['偏好直接给出结论，再提供结构化、可执行方案，并持续跟进长期目标。']);
+    expect(report.persona.preferences).toEqual(['偏好直接给出结论，再提供结构化、可执行方案，并持续跟进长期目标。']);
+    expect(report.persona.constraints).toEqual(['回答需结构化，避免重复背景介绍']);
   });
 
   it('updates progress within chunk analysis for large reports', async () => {

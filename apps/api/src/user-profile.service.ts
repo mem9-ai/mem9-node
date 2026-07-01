@@ -4,7 +4,6 @@ import type {
   UserProfileEvidence,
   UserProfileImageItem,
   UserProfileItemKind,
-  UserProfileRelationshipItem,
   UserProfileResponse,
 } from '@mem9/contracts';
 import { Injectable } from '@nestjs/common';
@@ -12,7 +11,6 @@ import { Injectable } from '@nestjs/common';
 import type { Mem9RequestContext } from './common/request-context';
 import { Mem9SourceService } from './mem9-source.service';
 
-const MAX_RELATIONSHIPS = 10;
 const MAX_ITEMS_PER_KIND = 10;
 const SUMMARY_EVIDENCE_LIMIT = 5;
 const ITEM_EVIDENCE_LIMIT = 3;
@@ -42,33 +40,27 @@ const KIND_KEYWORDS: Record<UserProfileItemKind, RegExp> = {
 const ROBOT_TARGET_KEYWORDS = /(机器人|助手|agent|AI|模型|系统|你|bot|assistant)/iu;
 const ROBOT_BEHAVIOR_KEYWORDS = /(回复|回应|回答|建议|提醒|解释|输出|格式|称呼|语气|引用|召回|记住|忽略|自动|respond|reply|answer|suggest|remind|format|tone|memory|recall)/iu;
 const CONSTRAINT_KEYWORDS = /(约束|限制|边界|不要|不能|避免|禁止|不得|只从|必须基于|只能|不允许|constraint|avoid|should not|never|only|must use)/iu;
+const COMPANION_TARGET_KEYWORDS = /(陪伴|回应|回复|回答|建议|提醒|沟通|语气|表达|说教|鼓励|assistant|companion|respond|reply|answer|suggest|communication|tone)/iu;
 
-const PERSONA_SUMMARY_KEYWORDS = /(是什么样的人|用户是|性格|特质|特点|画像|persona|trait|profile)/iu;
+const PERSONA_SUMMARY_KEYWORDS = /(是什么样的人|用户是|性格|特质|特点|画像|trait)/iu;
 const PREFERENCE_SUMMARY_KEYWORDS = /(偏好|喜欢|倾向|重视|看重|prefer|preference|likes|values)/iu;
 const DISLIKE_SUMMARY_KEYWORDS = /(不喜欢|讨厌|反感|避免|不希望|dislike|hates|avoid)/iu;
 const WORK_STYLE_SUMMARY_KEYWORDS = /(做事风格|工作风格|决策|习惯|执行方式|推进方式|结构化推进|style|habit|decision|structured)/iu;
 const TEMPORAL_PLAN_KEYWORDS = /(当前|现在|近期|明年|优先事项|优先处理|待办|备考|考试|换.*岗位|资格证|需要补上|priority|todo|exam)/iu;
+const EPHEMERAL_SUMMARY_KEYWORDS = /(今天|昨天|明天|刚才|本次|这次|当前对话|随口|临时|一次性|暂时|已失效|过期|today|yesterday|tomorrow|temporary|one-off|expired)/iu;
+const STABLE_PERSONA_KEYWORDS = /(长期|经常|常用|持续|稳定|习惯|偏好|不喜欢|讨厌|兴趣|领域|技能|目标|学习方向|消费|决策|沟通|思维|工具|工作内容|家庭角色|创业|AI使用|性格|特质|做事风格|long[- ]term|often|usually|habit|preference|skill|goal|trait)/iu;
+const PRODUCT_OR_DOC_MEMORY_KEYWORDS = /\b(PRD|RFC|module|modules|covers|including|backend|server|endpoint|API|CRUD|Letta|MemGPT|referenced|concept|concepts|partitioning|archival|recall|comparison|inspiration|foundation|foundations)\b|模块|接口|后端|服务端|返回字段|实现|支持|缺少|不支持|参考|概念|分区|竞品|对比|启发|资料/iu;
+const PROFILE_FACT_ONLY_KEYWORDS = /\b(?:\d+(?:\.\d+)?\s*(?:cm|kg)|height|weighs?|weight)\b|身高|体重/iu;
+const FILE_OR_DEMO_OPERATION_KEYWORDS = /\b(?:created|create|containing|folder|directory|path|README|requirements\.txt|\.env|script|demo|SDK|Cloud SDK|seed_[\w-]+\.py|[\w-]+-demo)\b|\/Users\/|文件夹|目录|路径|脚本|创建|包含/iu;
 
-const RELATION_KEYWORDS =
-  /(家人|亲人|配偶|丈夫|妻子|老公|老婆|恋人|男友|女友|父母|爸爸|妈妈|父亲|母亲|孩子|女儿|儿子|兄弟|姐妹|哥哥|姐姐|弟弟|妹妹|好友|朋友|同事|老师|导师|客户|老板|直属领导|领导|合作伙伴|长期联系人|经常提及的人|family|spouse|husband|wife|partner|boyfriend|girlfriend|child|daughter|son|parent|father|mother|sibling|brother|sister|friend|close friend|leader|manager|boss|colleague|teammate|teacher|mentor|customer|stakeholder|contact)/iu;
-const RELATION_ROLE_NAME_PATTERN =
-  /^(家人|亲人|配偶|丈夫|妻子|老公|老婆|恋人|男友|女友|父母|爸爸|妈妈|父亲|母亲|孩子|女儿|儿子|兄弟|姐妹|哥哥|姐姐|弟弟|妹妹|好友|朋友|同事|老师|导师|客户|老板|直属领导|领导|合作伙伴|长期联系人|经常提及的人|family|spouse|husband|wife|partner|boyfriend|girlfriend|child|daughter|son|parent|father|mother|sibling|brother|sister|friend|close friend|leader|manager|boss|colleague|teammate|teacher|mentor|customer|stakeholder|contact)$/iu;
-const ZH_RELATION_ROLE_NAME_PATTERN =
-  /^(家人|亲人|配偶|丈夫|妻子|老公|老婆|恋人|男友|女友|父母|爸爸|妈妈|父亲|母亲|孩子|女儿|儿子|兄弟|姐妹|哥哥|姐姐|弟弟|妹妹|好友|朋友|同事|老师|导师|客户|老板|直属领导|领导|合作伙伴|长期联系人|经常提及的人)$/u;
-const NON_RELATIONSHIP_NAME_PATTERN =
-  /(提到|看五月天|五月天|演唱会|直接给结论|律师资格证|资格证|考试|科目|建议|说教|背景|长期兴趣|专业技能|长期目标|当前项目|工作习惯|沟通风格|偏好|目标是)/iu;
-const NON_RELATIONSHIP_RELATION_PATTERN =
-  /(提及|提到|兴趣|偏好|技能|目标|项目|沟通|风格|证书|考试|科目|娱乐|话题)/iu;
-const EXCLUDED_RELATIONSHIP_PATTERN =
-  /(新闻人物|新闻|名人|明星|歌手|演员|总统|临时客服|客服|文档作者|作者|示例人物|示例|样例|example|demo|alice|bob)/iu;
-const ENGLISH_FRAGMENT_PATTERN =
-  /\b(a|an|the|for|to|in|on|at|by|about|into|over|under|next|last|this|that|today|tomorrow|yesterday|week|month|year|morning|afternoon|evening|night|with|from|of|and|or|but|if|then|than|as|is|are|was|were|be|been|being|have|has|had|do|does|did|meal|meeting|call|chat|email|message|task|project|plan|goal|exam|test|document|article|report|ticket|support|service)\b/iu;
-const LOWERCASE_ENGLISH_PHRASE_PATTERN = /^[a-z][a-z' -]*$/u;
-const ENGLISH_PERSON_NAME_PATTERN =
-  /^[A-Z][a-z]+(?:[ '-][A-Z][a-z]+){0,2}$/u;
-const SHORT_ENGLISH_NICKNAME_PATTERN = /^[A-Za-z]{1,2}$/u;
-const REPAIRABLE_SHORT_NICKNAME_FRAGMENT_PATTERN =
-  /^([A-Za-z]{1,2})\s+(?:for|with|to|in|at|on)\b/iu;
+interface PersonaSummarySignals {
+  identities: string[];
+  domains: string[];
+  traits: string[];
+  workStyles: string[];
+  longTermPlans: string[];
+  evidence: UserProfileEvidence[];
+}
 
 const ATTRIBUTE_KEYWORDS: Record<UserProfileAttributeKind, RegExp> = {
   long_term_interest: /(长期兴趣|兴趣|关注领域|关注方向|持续关注|interest|interested|focus area)/iu,
@@ -82,13 +74,6 @@ const ATTRIBUTE_KEYWORDS: Record<UserProfileAttributeKind, RegExp> = {
 interface ProfileCandidate {
   title: string;
   summary: string;
-  importance: number;
-  evidence: UserProfileEvidence[];
-}
-
-interface RelationshipCandidate {
-  name: string;
-  relation?: string;
   importance: number;
   evidence: UserProfileEvidence[];
 }
@@ -108,45 +93,71 @@ export class UserProfileService {
         memoryTypes: ['fact', 'insight', 'pinned'],
         memoryCount: activeMemories.length,
       },
-      summary: this.buildSummary(activeMemories),
+      summary: this.buildSummary(activeMemories, items),
       attributes: [],
       changes: [],
-      relationships: this.buildRelationships(activeMemories),
       items,
     };
   }
 
-  private buildSummary(memories: DeepAnalysisMemorySnapshot[]): UserProfileResponse['summary'] {
-    const descriptions = this.extractProfileDescriptions(memories);
-    if (descriptions.length > 0) {
-      const selectedDescriptions = descriptions.slice(0, SUMMARY_EVIDENCE_LIMIT);
+  private buildSummary(
+    memories: DeepAnalysisMemorySnapshot[],
+    items: UserProfileImageItem[],
+  ): UserProfileResponse['summary'] {
+    const stableMemories = memories.filter((memory) => this.isStablePersonaMemory(memory));
+    const personaSignals = this.collectPersonaSummarySignals(stableMemories, items);
+    const personaSummary = this.synthesizePersonaSummary(personaSignals);
+
+    if (personaSummary) {
+      const signalCount = new Set([
+        ...personaSignals.identities,
+        ...personaSignals.domains,
+        ...personaSignals.traits,
+        ...personaSignals.workStyles,
+        ...personaSignals.longTermPlans,
+      ]).size;
       return {
-        text: this.synthesizeProfileDescriptions(selectedDescriptions),
-        message: this.buildSummaryMessage(memories, selectedDescriptions.length),
-        evidence: this.uniqueEvidence(selectedDescriptions.map((description) => description.evidence))
+        text: personaSummary,
+        message: this.buildSummaryMessage(memories, signalCount),
+        evidence: this.uniqueEvidence(personaSignals.evidence)
           .slice(0, SUMMARY_EVIDENCE_LIMIT),
       };
     }
 
-    const facets = [
-      this.buildSummaryFacet(memories, PERSONA_SUMMARY_KEYWORDS, '整体画像'),
-      this.buildSummaryFacet(memories, PREFERENCE_SUMMARY_KEYWORDS, '偏好', DISLIKE_SUMMARY_KEYWORDS),
-      this.buildSummaryFacet(memories, DISLIKE_SUMMARY_KEYWORDS, '不喜欢'),
-      this.buildSummaryFacet(memories, WORK_STYLE_SUMMARY_KEYWORDS, '做事风格'),
+    const descriptions = this.extractProfileDescriptions(stableMemories).slice(0, SUMMARY_EVIDENCE_LIMIT);
+
+    const baseFacets = [
+      this.buildSummaryFacet(stableMemories, PERSONA_SUMMARY_KEYWORDS, '整体画像'),
+      this.buildSummaryFacet(stableMemories, PREFERENCE_SUMMARY_KEYWORDS, '偏好', DISLIKE_SUMMARY_KEYWORDS),
+      this.buildSummaryFacet(stableMemories, DISLIKE_SUMMARY_KEYWORDS, '不喜欢'),
+      this.buildSummaryFacet(stableMemories, WORK_STYLE_SUMMARY_KEYWORDS, '做事风格'),
     ].filter((value): value is { text: string; memory: DeepAnalysisMemorySnapshot } => value !== null);
-    const fallback = facets.length === 0 ? this.buildFallbackSummary(memories) : null;
-    const evidenceMemories = facets.length > 0
-      ? facets.map((facet) => facet.memory)
-      : fallback?.memories ?? [];
+    const genericFacet = descriptions.length === 0 && baseFacets.length === 0
+      ? this.buildSummaryFacet(stableMemories, STABLE_PERSONA_KEYWORDS, '长期特征')
+      : null;
+    const facets = genericFacet ? [genericFacet] : baseFacets;
+
+    const descriptionEvidence = descriptions.map((description) => description.evidence);
+    const facetEvidence = this.uniqueMemories(facets.map((facet) => facet.memory))
+      .map((memory) => this.toEvidence(memory));
+    const signalCount = descriptions.length + facets.length;
+
+    if (signalCount === 0) {
+      return {
+        text: '',
+        message: this.buildSummaryMessage(memories, 0),
+        evidence: [],
+      };
+    }
 
     return {
-      text: facets.length > 0
-        ? facets.map((facet) => facet.text).join('；')
-        : fallback?.text ?? '',
-      message: this.buildSummaryMessage(memories, facets.length),
-      evidence: this.uniqueMemories(evidenceMemories)
-        .slice(0, SUMMARY_EVIDENCE_LIMIT)
-        .map((memory) => this.toEvidence(memory)),
+      text: this.limitSummaryText([
+        ...facets.map((facet) => facet.text),
+        descriptions.length > 0 ? this.synthesizeProfileDescriptions(descriptions) : '',
+      ].filter(Boolean).join('；')),
+      message: this.buildSummaryMessage(memories, signalCount),
+      evidence: this.uniqueEvidence([...descriptionEvidence, ...facetEvidence])
+        .slice(0, SUMMARY_EVIDENCE_LIMIT),
     };
   }
 
@@ -155,41 +166,179 @@ export class UserProfileService {
     value: string;
   }>): string {
     const byKind = new Map(descriptions.map((description) => [description.kind, description.value] as const));
-    const sentences: string[] = [];
+    const clauses: string[] = [];
     const longTermGoal = byKind.get('long_term_goal');
-    const currentProject = byKind.get('current_project');
     const professionalSkill = byKind.get('professional_skill');
     const longTermInterest = byKind.get('long_term_interest');
     const workHabit = byKind.get('work_habit');
     const communicationStyle = byKind.get('communication_style');
 
-    if (longTermGoal || currentProject) {
-      sentences.push(`你的目标导向较明确${longTermGoal ? `，长期目标是${this.toInlineClause(longTermGoal)}` : ''}${currentProject ? `，当前重心在${this.toInlineClause(currentProject)}` : ''}。`);
+    if (longTermGoal) {
+      clauses.push(`长期目标是${this.toInlineClause(longTermGoal)}`);
     }
 
     if (professionalSkill) {
-      sentences.push(`你会主动关注或补充专业能力，当前涉及${this.toInlineClause(professionalSkill)}。`);
+      clauses.push(`专业能力涉及${this.toInlineClause(professionalSkill)}`);
     }
 
     if (longTermInterest) {
-      sentences.push(`兴趣上，你关注${this.toInlineClause(longTermInterest)}，整体投入方式较为理性。`);
+      clauses.push(`兴趣上关注${this.toInlineClause(longTermInterest)}`);
     }
 
     if (workHabit) {
-      sentences.push(`做事上更偏向${this.toInlineClause(workHabit)}。`);
+      clauses.push(`做事偏${this.toInlineClause(workHabit)}`);
     }
 
     if (communicationStyle) {
-      sentences.push(`沟通偏效率型，更希望${this.toInlineClause(communicationStyle)}。`);
+      clauses.push(`沟通偏${this.toInlineClause(communicationStyle)}`);
     }
 
-    if (sentences.length > 0) {
-      return sentences.join('');
+    if (clauses.length > 0) {
+      return this.limitSummaryText(`你${clauses.join('，')}`);
     }
 
-    return `基于现有信息，你目前体现出：${descriptions
+    return this.limitSummaryText(`你${descriptions
       .map((description) => this.toInlineClause(description.value))
-      .join('；')}`;
+      .join('，')}`);
+  }
+
+  private collectPersonaSummarySignals(
+    memories: DeepAnalysisMemorySnapshot[],
+    items: UserProfileImageItem[],
+  ): PersonaSummarySignals {
+    const signals: PersonaSummarySignals = {
+      identities: [],
+      domains: [],
+      traits: [],
+      workStyles: [],
+      longTermPlans: [],
+      evidence: [],
+    };
+
+    for (const memory of memories) {
+      const text = this.cleanText(memory.content);
+      this.collectSignalsFromText(signals, text, this.toEvidence(memory));
+    }
+
+    for (const item of items) {
+      const text = this.cleanText(`${item.title} ${item.summary}`);
+      if (item.kind === 'current_priority') {
+        this.collectPlanSignals(signals, text);
+      }
+      if (item.kind === 'companion_style' || item.kind === 'robot_constraint') {
+        this.collectStyleSignals(signals, text);
+      }
+      signals.evidence.push(...item.evidence);
+    }
+
+    signals.identities = this.uniqueStrings(signals.identities);
+    signals.domains = this.uniqueStrings(signals.domains);
+    signals.traits = this.uniqueStrings(signals.traits);
+    signals.workStyles = this.uniqueStrings(signals.workStyles);
+    signals.longTermPlans = this.uniqueStrings(signals.longTermPlans);
+    signals.evidence = this.uniqueEvidence(signals.evidence);
+    return signals;
+  }
+
+  private collectSignalsFromText(
+    signals: PersonaSummarySignals,
+    text: string,
+    evidence: UserProfileEvidence,
+  ): void {
+    if (/(前端|React|TypeScript|工程实践|开发工程师|frontend|front-end)/iu.test(text)) {
+      signals.identities.push(/AI|Agent|Memory|用户画像|长期记忆/iu.test(text)
+        ? 'AI 产品与前端工程实践者'
+        : '前端工程实践者');
+      signals.evidence.push(evidence);
+    } else if (/(产品|PRD|用户研究|用户画像|治理系统|可视化方案)/iu.test(text) && /AI|mem9|Memory|Agent|长期记忆/iu.test(text)) {
+      signals.identities.push('AI 产品实践者');
+      signals.evidence.push(evidence);
+    }
+
+    if (/(AI|Agent|Memory|长期记忆|用户画像|mem9)/iu.test(text)) {
+      signals.domains.push('AI、用户画像、Memory、Agent');
+      signals.evidence.push(evidence);
+    }
+    if (/(TiDB|数据库|database)/iu.test(text)) {
+      signals.domains.push('数据库');
+      signals.evidence.push(evidence);
+    }
+
+    if (/(目标驱动|目标导向|成长驱动力|执行力|持续推进|长期目标)/iu.test(text)) {
+      signals.traits.push('目标驱动');
+      signals.evidence.push(evidence);
+    }
+    if (/(系统化|结构化|拆解|可落地|工程化|模板|自动化|复用)/iu.test(text)) {
+      signals.traits.push('擅长系统化思考');
+      signals.workStyles.push('习惯将复杂问题拆解为可落地方案');
+      signals.evidence.push(evidence);
+    }
+    if (/(效率|直接给结论|简洁高效|少说教|可执行)/iu.test(text)) {
+      signals.workStyles.push('重视效率与可执行建议');
+      signals.evidence.push(evidence);
+    }
+
+    this.collectPlanSignals(signals, text);
+  }
+
+  private collectPlanSignals(signals: PersonaSummarySignals, text: string): void {
+    if (/(英语|KET|CET|六级|单词|备考)/iu.test(text)) {
+      signals.longTermPlans.push('英语学习');
+    }
+    if (/(健康|减脂|饮食|步数|运动|睡眠)/iu.test(text)) {
+      signals.longTermPlans.push('健康管理');
+    }
+    if (/(家庭教育|孩子|女儿|亲子)/iu.test(text)) {
+      signals.longTermPlans.push('家庭教育');
+    }
+    if (/(AI Agent|Agent|Memory|长期记忆)/iu.test(text) && /(学习|深入|关注|推进|研究)/iu.test(text)) {
+      signals.longTermPlans.push('AI Agent 与 Memory 学习');
+    }
+    if (/(TiDB Cloud|项目开发|开发)/iu.test(text) && /(推进|持续|长期|工作)/iu.test(text)) {
+      signals.longTermPlans.push('项目开发');
+    }
+  }
+
+  private collectStyleSignals(signals: PersonaSummarySignals, text: string): void {
+    if (/(直接|结论|结构化|可执行|完整|模板|风险|优化|跟进|规划|决策)/iu.test(text)) {
+      signals.workStyles.push('偏好结构化、直接且可执行的协作方式');
+    }
+  }
+
+  private synthesizePersonaSummary(signals: PersonaSummarySignals): string {
+    const signalCount = new Set([
+      ...signals.identities,
+      ...signals.domains,
+      ...signals.traits,
+      ...signals.workStyles,
+      ...signals.longTermPlans,
+    ]).size;
+    if (signalCount < 2) {
+      return '';
+    }
+
+    const hasFrontendIdentity = signals.identities.some((value) => /前端/u.test(value));
+    const hasAiDomain = signals.domains.some((value) => /AI|Memory|Agent|用户画像/iu.test(value));
+    const identity = hasFrontendIdentity && hasAiDomain
+      ? 'AI 产品与前端工程实践者'
+      : signals.identities[0] ?? '目标驱动的长期成长型用户';
+    const clauses: string[] = [`你是一位${identity}`];
+    if (signals.traits.length > 0) {
+      clauses.push(signals.traits.slice(0, 2).join('、'));
+    }
+    if (signals.domains.length > 0) {
+      clauses.push(`关注${signals.domains.slice(0, 2).join('、')}`);
+    }
+    if (signals.workStyles.length > 0) {
+      clauses.push(signals.workStyles.some((value) => /拆解|落地/u.test(value))
+        ? '擅长系统化拆解并落地方案'
+        : signals.workStyles[0]!);
+    }
+    if (signals.longTermPlans.length > 0) {
+      clauses.push(`持续推进${signals.longTermPlans.slice(0, 3).join('、')}`);
+    }
+
+    return this.limitSummaryText(`${clauses.join('，')}。`);
   }
 
   private extractProfileDescriptions(memories: DeepAnalysisMemorySnapshot[]): Array<{
@@ -236,27 +385,6 @@ export class UserProfileService {
     }
 
     return undefined;
-  }
-
-  private buildFallbackSummary(memories: DeepAnalysisMemorySnapshot[]): {
-    text: string;
-    memories: DeepAnalysisMemorySnapshot[];
-  } | null {
-    const candidates = memories
-      .filter((memory) => !this.isSummaryMemory(memory))
-      .sort((left, right) => this.memoryScore(right) - this.memoryScore(left))
-      .slice(0, 2);
-
-    if (candidates.length === 0) {
-      return null;
-    }
-
-    return {
-      text: `基于现有信息，你目前体现出：${candidates
-        .map((memory) => this.extractSummaryClause(memory.content))
-        .join('；')}`,
-      memories: candidates,
-    };
   }
 
   private buildSummaryFacet(
@@ -314,8 +442,11 @@ export class UserProfileService {
         }
       }
 
+      const synthesizedCandidates = this.synthesizeItemCandidates(kind, [...candidates.values()], memories);
+      const finalCandidates = synthesizedCandidates.length > 0 ? synthesizedCandidates : [...candidates.values()];
+
       items.push(
-        ...[...candidates.values()]
+        ...finalCandidates
           .sort((left, right) => right.importance - left.importance)
           .slice(0, MAX_ITEMS_PER_KIND)
           .map((candidate) => ({
@@ -332,49 +463,133 @@ export class UserProfileService {
     return items;
   }
 
-  private buildRelationships(memories: DeepAnalysisMemorySnapshot[]): UserProfileRelationshipItem[] {
-    const candidates = new Map<string, RelationshipCandidate>();
-
-    for (const memory of memories) {
-      if (this.isSummaryMemory(memory)) {
-        continue;
-      }
-      const relation = this.extractMetadataString(memory, ['relation', 'relationship', 'relationshipType']);
-      const person = this.extractMetadataString(memory, ['person', 'name', 'target', 'entity']);
-      const inferred = person
-        ? { name: person, relation: relation ?? undefined }
-        : this.inferRelationship(memory.content);
-      const normalized = inferred ? this.normalizeRelationshipCandidate(inferred) : null;
-
-      if (
-        !normalized ||
-        !this.isRelationshipMemory(memory, normalized.relation) ||
-        !this.isValidRelationshipCandidate(normalized)
-      ) {
-        continue;
-      }
-
-      const key = this.normalizeKey(`${normalized.relation ?? ''}:${normalized.name}`);
-      const evidence = this.toEvidence(memory);
-      const existing = candidates.get(key);
-
-      if (existing) {
-        existing.importance += this.memoryScore(memory);
-        existing.evidence.push(evidence);
-      } else {
-        candidates.set(key, {
-          name: normalized.name,
-          relation: normalized.relation ?? undefined,
-          importance: this.memoryScore(memory),
-          evidence: [evidence],
-        });
-      }
+  private synthesizeItemCandidates(
+    kind: UserProfileItemKind,
+    candidates: ProfileCandidate[],
+    memories: DeepAnalysisMemorySnapshot[],
+  ): ProfileCandidate[] {
+    if (kind === 'companion_style') {
+      return this.synthesizeCompanionStyleCandidates(candidates, memories);
     }
 
-    return [...candidates.values()]
-      .sort((left, right) => this.relationshipImportanceScore(right) - this.relationshipImportanceScore(left))
-      .slice(0, MAX_RELATIONSHIPS)
-      .map((candidate) => this.toRelationshipItem(candidate));
+    if (kind === 'robot_constraint') {
+      return this.synthesizeRobotConstraintCandidates(candidates, memories);
+    }
+
+    return [];
+  }
+
+  private synthesizeCompanionStyleCandidates(
+    candidates: ProfileCandidate[],
+    memories: DeepAnalysisMemorySnapshot[],
+  ): ProfileCandidate[] {
+    const planCandidates = memories
+      .filter((memory) => this.isProfileMemory(memory) && !this.isSummaryMemory(memory))
+      .filter((memory) => !this.isProductOrDocumentMemory(memory) && !this.isFileOrDemoOperationMemory(memory))
+      .filter((memory) => /(目标|计划|拆解|任务|进展|提醒|复盘|跟进|调整|KET|英语|健康|减脂|长期|goal|plan|progress|follow|review)/iu.test(memory.content))
+      .map((memory) => ({
+        title: this.firstSentence(memory.content) ?? '长期陪伴信号',
+        summary: this.cleanText(memory.content),
+        importance: this.memoryScore(memory),
+        evidence: [this.toEvidence(memory)],
+      }));
+    const sourceCandidates = [...candidates, ...planCandidates];
+    if (sourceCandidates.length === 0) {
+      return [];
+    }
+
+    const sourceText = sourceCandidates.map((candidate) => `${candidate.title} ${candidate.summary}`).join(' ');
+    const summaryParts: string[] = [];
+
+    if (/(目标|计划|进展|跟进|复盘|提醒|调整|长期|goal|plan|progress|follow|review)/iu.test(sourceText)) {
+      summaryParts.push('用户偏好目标导向、主动跟进型陪伴，而非单纯情绪安慰型');
+    }
+    if (/(制定计划|拆解|任务|步骤|清单|模板|可执行|具体|plan|step|task|actionable)/iu.test(sourceText)) {
+      summaryParts.push('希望通过制定计划、拆解任务、记录进展、定期提醒和复盘获得持续支持');
+    }
+    if (/(直接|结论|简洁|高效|结构化|数据|反馈|少说教|direct|concise|structured|data)/iu.test(sourceText)) {
+      summaryParts.push('交流风格简洁直接，重视结构化输出、可执行建议和数据反馈');
+    }
+    if (/(记住|长期目标|历史|上下文|动态|调整|进度|memory|context|adjust)/iu.test(sourceText)) {
+      summaryParts.push('期待 AI 记住目标并根据进度动态调整计划');
+    }
+
+    if (summaryParts.length === 0) {
+      return [];
+    }
+
+    return [this.toSyntheticCandidate(
+      '目标导向陪伴',
+      this.limitSummaryText(summaryParts.join('；'), 150),
+      sourceCandidates,
+    )];
+  }
+
+  private synthesizeRobotConstraintCandidates(
+    candidates: ProfileCandidate[],
+    memories: DeepAnalysisMemorySnapshot[],
+  ): ProfileCandidate[] {
+    const memoryCandidates = memories
+        .filter((memory) => this.isProfileMemory(memory) && !this.isSummaryMemory(memory))
+        .map((memory) => ({
+          title: this.firstSentence(memory.content) ?? '长期约束',
+          summary: this.cleanText(memory.content),
+          importance: this.memoryScore(memory),
+          evidence: [this.toEvidence(memory)],
+        }));
+    const sourceCandidates = [...candidates, ...memoryCandidates];
+    const sourceText = sourceCandidates.map((candidate) => `${candidate.title} ${candidate.summary}`).join(' ');
+    const results: ProfileCandidate[] = [];
+
+    if (/(空泛|说教|重复背景|绕太多|冗长|直接|结论|结构化|可执行|vague|verbose|direct|structured)/iu.test(sourceText)) {
+      results.push(this.toSyntheticCandidate(
+        '避免空泛冗长',
+        '回答要直接、结构化、具体可执行，避免空泛建议、重复背景和说教式表达。',
+        sourceCandidates,
+      ));
+    }
+
+    if (/(facts|insights|证据|基于|不要编造|无依据|确认|纠错|evidence|grounded)/iu.test(sourceText)) {
+      results.push(this.toSyntheticCandidate(
+        '基于证据回答',
+        '重要判断需基于已有 facts、insights 或明确证据，不要无依据推断。',
+        sourceCandidates,
+      ));
+    }
+
+    if (/(React|TypeScript|TiDB Cloud|TiDB|PRD|AI Agent|Agent|Memory|长期记忆|mem9|英文 PRD)/iu.test(sourceText)) {
+      results.push(this.toSyntheticCandidate(
+        '结合长期背景',
+        '回答需结合用户在 AI、Memory、Agent、前端工程和相关产品设计中的长期背景。',
+        sourceCandidates,
+      ));
+    }
+
+    if (/(英语|KET|CET|六级|健康|减脂|饮食|家庭教育|长期目标|持续推进)/iu.test(sourceText)) {
+      results.push(this.toSyntheticCandidate(
+        '衔接长期目标',
+        '涉及学习、健康、家庭教育等主题时，应衔接长期目标并避免只按单次问题处理。',
+        sourceCandidates,
+      ));
+    }
+
+    return results;
+  }
+
+  private toSyntheticCandidate(
+    title: string,
+    summary: string,
+    candidates: ProfileCandidate[],
+  ): ProfileCandidate {
+    const evidence = this.uniqueEvidence(candidates.flatMap((candidate) => candidate.evidence))
+      .slice(0, ITEM_EVIDENCE_LIMIT);
+    const importance = candidates.reduce((total, candidate) => total + candidate.importance, 0);
+    return {
+      title,
+      summary,
+      importance,
+      evidence,
+    };
   }
 
   private isProfileMemory(memory: DeepAnalysisMemorySnapshot): boolean {
@@ -388,11 +603,28 @@ export class UserProfileService {
       return explicitKind === kind;
     }
 
+    if (
+      (kind === 'companion_style' || kind === 'robot_constraint') &&
+      (this.isProductOrDocumentMemory(memory) || this.isFileOrDemoOperationMemory(memory))
+    ) {
+      return false;
+    }
+
     if (kind === 'robot_constraint') {
       return this.matchesRobotConstraint(memory);
     }
 
+    if (kind === 'companion_style') {
+      return this.matchesCompanionStyle(memory);
+    }
+
     return KIND_KEYWORDS[kind].test(memory.content);
+  }
+
+  private matchesCompanionStyle(memory: DeepAnalysisMemorySnapshot): boolean {
+    const text = memory.content;
+    const hasPreference = PREFERENCE_SUMMARY_KEYWORDS.test(text) || /prefer|preference|likes?|喜欢|偏好|希望|更希望/iu.test(text);
+    return hasPreference && COMPANION_TARGET_KEYWORDS.test(text);
   }
 
   private matchesRobotConstraint(memory: DeepAnalysisMemorySnapshot): boolean {
@@ -416,13 +648,16 @@ export class UserProfileService {
   }
 
   private isSummaryMemory(memory: DeepAnalysisMemorySnapshot): boolean {
-    return this.hasAnyToken(memory, [
-      'profile_summary',
-      'persona_summary',
-      'summary',
-      '用户画像',
-      '画像总结',
-    ]);
+    const content = this.cleanText(memory.content);
+    if (/^(profile_summary|persona_summary|summary|用户画像总结|画像总结)\s*[:：]/iu.test(content)) {
+      return true;
+    }
+
+    const metadataAndTags = [
+      ...(memory.tags ?? []),
+      ...Object.entries(memory.metadata ?? {}).flatMap(([key, value]) => [key, String(value)]),
+    ].join(' ').toLowerCase();
+    return ['profile_summary', 'persona_summary', '画像总结'].some((token) => metadataAndTags.includes(token.toLowerCase()));
   }
 
   private isOperationalItemMemory(memory: DeepAnalysisMemorySnapshot): boolean {
@@ -433,156 +668,54 @@ export class UserProfileService {
     return TEMPORAL_PLAN_KEYWORDS.test(memory.content);
   }
 
-  private isRelationshipMemory(memory: DeepAnalysisMemorySnapshot, relation?: string): boolean {
-    return Boolean(relation) ||
-      this.hasAnyToken(memory, ['relationship', '关系', '人物关系']) ||
-      RELATION_KEYWORDS.test(memory.content);
-  }
-
-  private isValidRelationshipCandidate(value: { name: string; relation?: string }): boolean {
-    const name = this.cleanText(value.name);
-    const relation = value.relation ? this.cleanText(value.relation) : '';
+  private isStablePersonaMemory(memory: DeepAnalysisMemorySnapshot): boolean {
+    if (this.isSummaryMemory(memory) || this.isOperationalItemMemory(memory)) {
+      return false;
+    }
 
     if (
-      !name ||
-      NON_RELATIONSHIP_NAME_PATTERN.test(name) ||
-      NON_RELATIONSHIP_RELATION_PATTERN.test(relation) ||
-      EXCLUDED_RELATIONSHIP_PATTERN.test(name) ||
-      EXCLUDED_RELATIONSHIP_PATTERN.test(relation) ||
-      !this.looksLikeRelationshipName(name)
+      this.isProductOrDocumentMemory(memory) ||
+      this.isProfileFactOnlyMemory(memory) ||
+      this.isFileOrDemoOperationMemory(memory)
     ) {
       return false;
     }
 
-    return RELATION_KEYWORDS.test(name) || RELATION_KEYWORDS.test(relation);
+    const explicitAttributeKind = this.matchExplicitAttributeKind(memory);
+    if (explicitAttributeKind && explicitAttributeKind !== 'current_project') {
+      return !EPHEMERAL_SUMMARY_KEYWORDS.test(memory.content);
+    }
+
+    if (this.isTemporalPlanMemory(memory) || EPHEMERAL_SUMMARY_KEYWORDS.test(memory.content)) {
+      return false;
+    }
+
+    return this.hasStablePersonaSignal(memory);
   }
 
-  private normalizeRelationshipCandidate(value: { name: string; relation?: string }): {
-    name: string;
-    relation?: string;
-  } | null {
-    const name = this.cleanText(value.name);
-    const relation = value.relation ? this.cleanText(value.relation) : undefined;
-    const shortNickname = name.match(REPAIRABLE_SHORT_NICKNAME_FRAGMENT_PATTERN)?.[1];
-
-    if (
-      shortNickname &&
-      relation &&
-      RELATION_ROLE_NAME_PATTERN.test(relation) &&
-      !/^(a|i)$/iu.test(shortNickname)
-    ) {
-      return {
-        name: shortNickname,
-        relation,
-      };
-    }
-
-    return {
-      name,
-      relation,
-    };
+  private isProductOrDocumentMemory(memory: DeepAnalysisMemorySnapshot): boolean {
+    return PRODUCT_OR_DOC_MEMORY_KEYWORDS.test(memory.content) &&
+      !/(用户|你|user)\s*(经常|常用|长期|偏好|不喜欢|喜欢|习惯|擅长|从事|使用|uses?|prefers?|likes?|dislikes?|often|usually)/iu.test(memory.content);
   }
 
-  private looksLikeRelationshipName(name: string): boolean {
-    if (ZH_RELATION_ROLE_NAME_PATTERN.test(name)) {
-      return true;
-    }
-
-    if (SHORT_ENGLISH_NICKNAME_PATTERN.test(name) && !/^(a|i)$/iu.test(name)) {
-      return true;
-    }
-
-    if (/^[A-Za-z][A-Za-z' -]{1,40}$/u.test(name)) {
-      return ENGLISH_PERSON_NAME_PATTERN.test(name) &&
-        !ENGLISH_FRAGMENT_PATTERN.test(name) &&
-        !LOWERCASE_ENGLISH_PHRASE_PATTERN.test(name);
-    }
-
-    if (/[\u4e00-\u9fff]/u.test(name)) {
-      return name.length <= 12 && !/[，。！？；,.;!?]/u.test(name);
-    }
-
-    return false;
+  private isFileOrDemoOperationMemory(memory: DeepAnalysisMemorySnapshot): boolean {
+    return FILE_OR_DEMO_OPERATION_KEYWORDS.test(memory.content);
   }
 
-  private toRelationshipItem(candidate: RelationshipCandidate): UserProfileRelationshipItem {
-    const occurrenceEstimate = candidate.evidence.length;
-    const userRelation = candidate.relation ?? '经常提及的人';
-    const confidence = this.relationshipConfidence(candidate);
-    const importanceScore = this.relationshipImportanceScore(candidate);
-
-    return {
-      name: candidate.name,
-      relation: candidate.relation,
-      confidence,
-      occurrenceEstimate,
-      userRelation,
-      reason: this.relationshipReason(candidate.name, userRelation, occurrenceEstimate),
-      importanceScore,
-      importance: Math.round(importanceScore),
-      evidenceCount: occurrenceEstimate,
-      evidence: candidate.evidence.slice(0, ITEM_EVIDENCE_LIMIT),
-    };
+  private isProfileFactOnlyMemory(memory: DeepAnalysisMemorySnapshot): boolean {
+    return PROFILE_FACT_ONLY_KEYWORDS.test(memory.content);
   }
 
-  private relationshipConfidence(candidate: RelationshipCandidate): number {
-    const hasExplicitRelation = Boolean(candidate.relation);
-    const base = hasExplicitRelation ? 0.82 : 0.68;
-    const evidenceBoost = Math.min(candidate.evidence.length * 0.04, 0.16);
-    return Math.min(0.98, Number((base + evidenceBoost).toFixed(2)));
-  }
-
-  private relationshipImportanceScore(candidate: RelationshipCandidate): number {
-    const relationWeight = this.relationshipWeight(candidate.relation ?? candidate.name);
-    const occurrenceWeight = Math.min(candidate.evidence.length, 5) * 8;
-    const confidenceWeight = this.relationshipConfidence(candidate) * 20;
-    return Number((relationWeight + occurrenceWeight + confidenceWeight).toFixed(2));
-  }
-
-  private relationshipWeight(value: string): number {
-    if (/(配偶|丈夫|妻子|老公|老婆|恋人|男友|女友|孩子|女儿|儿子|父母|爸爸|妈妈|父亲|母亲)/u.test(value)) {
-      return 60;
-    }
-    if (/(兄弟|姐妹|哥哥|姐姐|弟弟|妹妹|好友|长期联系人|经常提及的人)/u.test(value)) {
-      return 48;
-    }
-    if (/(老板|直属领导|领导|导师|合作伙伴|客户)/u.test(value)) {
-      return 44;
-    }
-    if (/(同事|老师|朋友)/u.test(value)) {
-      return 36;
-    }
-    return 24;
-  }
-
-  private relationshipReason(name: string, relation: string, occurrenceEstimate: number): string {
-    const occurrenceText = occurrenceEstimate > 1
-      ? `已在记忆中出现约 ${occurrenceEstimate} 次`
-      : '已在记忆中出现';
-    return `${name}是用户的${relation}，${occurrenceText}，可能影响用户的生活、工作或决策，值得长期记忆。`;
-  }
-
-  private inferRelationship(content: string): { name: string; relation?: string } | null {
-    const relationMatch = content.match(RELATION_KEYWORDS);
-    if (!relationMatch?.[0]) {
-      return null;
-    }
-
-    const relation = relationMatch[0];
-    const namePatterns = [
-      new RegExp(`${this.escapeRegExp(relation)}(?:是|叫|为|:|：)?\\s*([\\p{Script=Han}A-Za-z][\\p{Script=Han}A-Za-z0-9_\\- ]{0,23}?)(?:长期|经常|对|和|与|在|会|是|为|,|，|。|；|;|$)`, 'iu'),
-      new RegExp(`([\\p{Script=Han}A-Za-z][\\p{Script=Han}A-Za-z0-9_\\- ]{0,23}?)(?:是|为|作为|担任)?\\s*${this.escapeRegExp(relation)}`, 'iu'),
-    ];
-
-    for (const pattern of namePatterns) {
-      const match = content.match(pattern);
-      const name = this.cleanName(match?.[1] ?? '');
-      if (name) {
-        return { name, relation };
-      }
-    }
-
-    return { name: relation, relation };
+  private hasStablePersonaSignal(memory: DeepAnalysisMemorySnapshot): boolean {
+    return STABLE_PERSONA_KEYWORDS.test(memory.content) ||
+      this.matchesMetadataValue(memory, STABLE_PERSONA_KEYWORDS) ||
+      Object.values(ATTRIBUTE_KEYWORDS).some((pattern) => pattern.test(memory.content) || this.matchesMetadataValue(memory, pattern)) ||
+      [
+        PERSONA_SUMMARY_KEYWORDS,
+        PREFERENCE_SUMMARY_KEYWORDS,
+        DISLIKE_SUMMARY_KEYWORDS,
+        WORK_STYLE_SUMMARY_KEYWORDS,
+      ].some((pattern) => pattern.test(memory.content) || this.matchesMetadataValue(memory, pattern));
   }
 
   private extractTitle(memory: DeepAnalysisMemorySnapshot, kind: UserProfileItemKind): string {
@@ -630,6 +763,25 @@ export class UserProfileService {
   }
 
   private matchAttributeKind(memory: DeepAnalysisMemorySnapshot): UserProfileAttributeKind | null {
+    const explicitAttributeKind = this.matchExplicitAttributeKind(memory);
+    if (explicitAttributeKind) {
+      return explicitAttributeKind;
+    }
+
+    if (DISLIKE_SUMMARY_KEYWORDS.test(memory.content)) {
+      return null;
+    }
+
+    for (const kind of Object.keys(ATTRIBUTE_KIND_LABELS) as UserProfileAttributeKind[]) {
+      if (ATTRIBUTE_KEYWORDS[kind].test(memory.content) || this.matchesMetadataValue(memory, ATTRIBUTE_KEYWORDS[kind])) {
+        return kind;
+      }
+    }
+
+    return null;
+  }
+
+  private matchExplicitAttributeKind(memory: DeepAnalysisMemorySnapshot): UserProfileAttributeKind | null {
     const explicitKind = this.extractMetadataString(memory, [
       'attributeKind',
       'profileKind',
@@ -647,16 +799,6 @@ export class UserProfileService {
         ) {
           return kind;
         }
-      }
-    }
-
-    if (DISLIKE_SUMMARY_KEYWORDS.test(memory.content)) {
-      return null;
-    }
-
-    for (const kind of Object.keys(ATTRIBUTE_KIND_LABELS) as UserProfileAttributeKind[]) {
-      if (ATTRIBUTE_KEYWORDS[kind].test(memory.content) || this.matchesMetadataValue(memory, ATTRIBUTE_KEYWORDS[kind])) {
-        return kind;
       }
     }
 
@@ -679,6 +821,18 @@ export class UserProfileService {
         return false;
       }
       seen.add(item.memoryId);
+      return true;
+    });
+  }
+
+  private uniqueStrings(values: string[]): string[] {
+    const seen = new Set<string>();
+    return values.filter((value) => {
+      const key = this.normalizeKey(value);
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
       return true;
     });
   }
@@ -729,6 +883,30 @@ export class UserProfileService {
       .trim();
   }
 
+  private limitSummaryText(value: string, maxLength = 100): string {
+    const text = this.cleanText(value)
+      .replace(/[；，、。,.，:：;]+$/u, '');
+    if (text.length <= maxLength) {
+      return text;
+    }
+
+    const head = text.slice(0, maxLength);
+    const sentenceBoundary = Math.max(
+      head.lastIndexOf('。'),
+      head.lastIndexOf('！'),
+      head.lastIndexOf('？'),
+      head.lastIndexOf('.'),
+      head.lastIndexOf('!'),
+      head.lastIndexOf('?'),
+      head.lastIndexOf('；'),
+      head.lastIndexOf(';'),
+    );
+    const shortened = (sentenceBoundary > 0 ? head.slice(0, sentenceBoundary + 1) : head)
+      .replace(/[；，、。,.，:：;]+$/u, '')
+      .trim();
+    return shortened || text.slice(0, maxLength).trim();
+  }
+
   private uniqueMemories(memories: DeepAnalysisMemorySnapshot[]): DeepAnalysisMemorySnapshot[] {
     const seen = new Set<string>();
     return memories.filter((memory) => {
@@ -748,22 +926,7 @@ export class UserProfileService {
     return value.replace(/\s+/gu, ' ').trim();
   }
 
-  private cleanName(value: string): string | null {
-    const name = this.cleanText(value)
-      .replace(/[，。,.!！?？；;].*$/u, '')
-      .replace(/^(用户的?|我的?|其|他|她)\s*/u, '')
-      .trim();
-    if (/(用户|user|重要|长期|经常|指导|影响|关系)/iu.test(name)) {
-      return null;
-    }
-    return name.length > 0 ? name : null;
-  }
-
   private normalizeKey(value: string): string {
     return this.cleanText(value).toLowerCase();
-  }
-
-  private escapeRegExp(value: string): string {
-    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 }

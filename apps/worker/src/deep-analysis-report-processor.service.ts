@@ -148,6 +148,29 @@ interface CorpusSignals {
   };
 }
 
+const USER_PROFILE_LLM_INSTRUCTIONS = [
+  '你是一名资深用户研究员和长期记忆（Long-term Memory）分析专家。',
+  '请根据用户的全部历史聊天记录，提炼出对未来对话最有价值的信息。',
+  '不要总结聊天内容，而是总结能够持续影响未来回答的信息。',
+  '',
+  '1. Summary（100字以内）',
+  '概括这个用户是谁。应包括长期身份（职业/角色）、长期兴趣、思维特点、工作特点、学习特点。',
+  '要求：100字以内；不描述临时问题；不描述一次性事件；使用第三人称描述。',
+  '',
+  '2. current_priority（最多5项）',
+  '输出用户最近一段时间持续关注、未来仍可能继续推进的事项。',
+  '仅保留持续性的目标，不要输出今天的问题、一次性咨询、已完成事项，按重要程度排序。',
+  '',
+  '3. companion_style（150字以内）',
+  '分析 AI 应采用怎样的陪伴方式。关注回复风格、主动程度、信息组织方式、是否提供建议、是否持续跟进、是否帮助规划、是否帮助决策。不要分析人格。',
+  '',
+  '4. constraint（最多5项）',
+  '提取未来回答必须长期遵守的重要约束，包括长期偏好、长期背景、长期目标。',
+  '不要包含临时状态、短期需求、一次性问题，按重要程度排序。',
+  '',
+  '输出原则：只依据历史聊天内容，不要猜测；仅保留未来仍有价值的信息；如果信息不足，不要编造；内容简洁，避免重复；除 JSON 外，不输出任何解释或 Markdown。',
+].join('\n');
+
 interface InternalCommentAggregate {
   requestCount: number;
   successCount: number;
@@ -353,6 +376,11 @@ function normalizeLookupKey(value: unknown): string {
 }
 
 function coerceStringArray(value: unknown, limit = Number.POSITIVE_INFINITY): string[] {
+  const singleValue = trimToString(value);
+  if (singleValue) {
+    return [singleValue].slice(0, limit);
+  }
+
   if (!Array.isArray(value)) {
     return [];
   }
@@ -967,7 +995,7 @@ function validateReport(
     (report.persona?.notableRoutines?.length ?? 0) +
     (report.persona?.evidenceHighlights?.length ?? 0);
 
-  if ((trimToString(report.persona?.summary)?.length ?? 0) < 80 || personaSignalCount < 4) {
+  if ((trimToString(report.persona?.summary)?.length ?? 0) === 0 || personaSignalCount < 1) {
     throw new AppError('Report persona section is too shallow', {
       statusCode: 500,
       code: 'DEEP_ANALYSIS_REPORT_INVALID',
@@ -2094,10 +2122,12 @@ export class DeepAnalysisReportProcessorService {
         'chunk_analysis',
         [
           'You analyze one chunk of user memories and return JSON only.',
+          USER_PROFILE_LLM_INSTRUCTIONS,
           'Never emit stopwords or generic role terms like the, and, for, user, agent, assistant, self, team, project, task, system, memory, workflow.',
           'Themes must be high-information phrases or specific concepts, not filler words.',
           'Entities must be specific people, teams, projects, tools, or places with stable evidence.',
           'Persona signals must summarize repeated behavior patterns across the chunk, not restate one memory.',
+          'Map current_priority into personaSignals.goals, companion_style into personaSignals.preferences or workingStyle, and constraint into personaSignals.constraints.',
           'Return an object with keys: summary, themes, entities, personaSignals, relationships.',
         ].join(' '),
         JSON.stringify({
@@ -2543,6 +2573,9 @@ export class DeepAnalysisReportProcessorService {
     const rawReport: Record<string, unknown> = isRecord(report) ? report : {};
     const rawOverview: Record<string, unknown> = isRecord(rawReport.overview) ? rawReport.overview : {};
     const rawPersona: Record<string, unknown> = isRecord(rawReport.persona) ? rawReport.persona : {};
+    const rawCurrentPriority = rawPersona.current_priority ?? rawPersona.currentPriority;
+    const rawCompanionStyle = rawPersona.companion_style ?? rawPersona.companionStyle;
+    const rawConstraint = rawPersona.constraint ?? rawPersona.constraints;
     const rawEntities: Record<string, unknown> = isRecord(rawReport.entities) ? rawReport.entities : {};
     const rawQuality: Record<string, unknown> = isRecord(rawReport.quality) ? rawReport.quality : {};
 
@@ -2560,13 +2593,13 @@ export class DeepAnalysisReportProcessorService {
         },
       },
       persona: {
-        summary: (trimToString(rawPersona.summary)?.length ?? 0) >= 80
+        summary: (trimToString(rawPersona.summary)?.length ?? 0) > 0
           ? trimToString(rawPersona.summary) ?? fallbackReport.persona.summary
           : fallbackReport.persona.summary,
-        workingStyle: normalizeTextList(rawPersona.workingStyle, fallbackReport.persona.workingStyle ?? [], diagnostics, 5),
-        goals: normalizeTextList(rawPersona.goals, fallbackReport.persona.goals ?? [], diagnostics, 5),
-        preferences: normalizeTextList(rawPersona.preferences, fallbackReport.persona.preferences ?? [], diagnostics, 5),
-        constraints: normalizeTextList(rawPersona.constraints, fallbackReport.persona.constraints ?? [], diagnostics, 5),
+        workingStyle: normalizeTextList(rawPersona.workingStyle ?? rawCompanionStyle, fallbackReport.persona.workingStyle ?? [], diagnostics, 5),
+        goals: normalizeTextList(rawPersona.goals ?? rawCurrentPriority, fallbackReport.persona.goals ?? [], diagnostics, 5),
+        preferences: normalizeTextList(rawPersona.preferences ?? rawCompanionStyle, fallbackReport.persona.preferences ?? [], diagnostics, 5),
+        constraints: normalizeTextList(rawConstraint, fallbackReport.persona.constraints ?? [], diagnostics, 5),
         decisionSignals: normalizeTextList(rawPersona.decisionSignals, fallbackReport.persona.decisionSignals ?? [], diagnostics, 5),
         notableRoutines: normalizeTextList(rawPersona.notableRoutines, fallbackReport.persona.notableRoutines ?? [], diagnostics, 5),
         contradictionsOrTensions: normalizeTextList(
@@ -2691,6 +2724,7 @@ export class DeepAnalysisReportProcessorService {
       'global_synthesis',
       [
         'You synthesize a deep memory analysis report and must return JSON only.',
+        USER_PROFILE_LLM_INSTRUCTIONS,
         'Preserve the exact top-level keys: overview, persona, themeLandscape, entities, relationships, discoveries, quality, recommendations, productSignals.',
         'Use only real memory ids copied verbatim from the provided inputs.',
         'Never emit chunk ids, chunk_insight ids, array indexes, placeholders, or any synthesized ids inside evidenceMemoryIds or memoryIds.',
@@ -2699,7 +2733,8 @@ export class DeepAnalysisReportProcessorService {
         'relationships must be objects {source, relation, target, confidence, evidenceMemoryIds, evidenceExcerpts}.',
         'discoveries must be objects {id, kind, title, summary, confidence, evidenceMemoryIds}.',
         'Do not output stopwords or generic terms such as the, and, for, user, agent, assistant, self, team, project, task, system, memory, workflow.',
-        'Persona.summary must be 2-4 strong sentences describing sustained behavior, priorities, and routines across the corpus.',
+        'Persona.summary must follow Summary above: third-person, <=100 Chinese characters or equivalent concise length, stable user profile only.',
+        'Persona may include alias fields current_priority, companion_style, and constraint; they will be normalized into goals, preferences/workingStyle, and constraints.',
         'Persona fields must summarize stable patterns using evidence-based statements, not one-off facts.',
         'Every relationship, discovery, and persona evidence item must include valid memoryIds that appear in the provided inputs.',
         'Theme landscape should prefer specific phrases over generic single words.',

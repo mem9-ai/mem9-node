@@ -432,19 +432,6 @@ export interface UserProfileSummarySection {
   evidence: UserProfileEvidence[];
 }
 
-export interface UserProfileRelationshipItem {
-  name: string;
-  relation?: string;
-  confidence: number;
-  occurrenceEstimate: number;
-  userRelation: string;
-  reason: string;
-  importanceScore: number;
-  importance: number;
-  evidenceCount: number;
-  evidence: UserProfileEvidence[];
-}
-
 export interface UserProfileImageItem {
   kind: UserProfileItemKind;
   title: string;
@@ -496,7 +483,6 @@ export interface UserProfileResponse {
   summary: UserProfileSummarySection;
   attributes: UserProfileAttributeItem[];
   changes: UserProfileAttributeChange[];
-  relationships: UserProfileRelationshipItem[];
   items: UserProfileImageItem[];
 }
 
