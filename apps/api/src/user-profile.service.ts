@@ -376,12 +376,12 @@ export class UserProfileService {
   private buildSummaryMessage(memories: DeepAnalysisMemorySnapshot[], facetCount: number): string | undefined {
     if (facetCount === 0) {
       return memories.length === 0
-        ? '当前没有可用于生成用户画像总结的 facts、insights 或 pinned。'
-        : '当前 facts、insights 和 pinned 中稳定画像信号较少，已根据现有信息生成初步总结，但画像可能不稳定。';
+        ? '当前没有可用于生成用户画像总结的记忆。'
+        : '当前记忆中稳定画像信号较少，已根据现有信息生成初步总结，但画像可能不稳定。';
     }
 
     if (facetCount < STABLE_SUMMARY_FACET_COUNT) {
-      return '当前可用画像信息较少，已根据现有 facts、insights 和 pinned 生成初步总结，但画像可能不稳定。';
+      return '当前可用记忆信息较少，已根据现有记忆生成初步总结，但画像可能不稳定。';
     }
 
     return undefined;
