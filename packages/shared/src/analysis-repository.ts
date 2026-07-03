@@ -4,7 +4,7 @@ import type {
   AnalysisJobBatch,
   ApiKeySubject,
   DeepAnalysisReport,
-  Prisma,
+  MemoryReport,
   RateLimitPolicy,
   TaxonomyRule,
 } from '@prisma/client';
@@ -14,6 +14,7 @@ import {
   ApiKeySubjectStatus,
   DeepAnalysisReportStage,
   DeepAnalysisReportStatus,
+  Prisma,
 } from '@prisma/client';
 
 import { AppError } from './errors';
@@ -37,6 +38,8 @@ function toPrismaBytes(value: Buffer): Uint8Array<ArrayBuffer> {
 
 @Injectable()
 export class AnalysisRepository {
+  private memoryReportTableReady?: Promise<void>;
+
   public constructor(private readonly prisma: PrismaService) {}
 
   public async ensureApiKeySubject(fingerprint: Buffer): Promise<ApiKeySubject> {
@@ -527,5 +530,296 @@ export class AnalysisRepository {
     await this.prisma.deepAnalysisReport.delete({
       where: { id: reportId },
     });
+  }
+
+  public async createMemoryAnalysisReport(data: {
+    fingerprint: Buffer;
+    templateId: string;
+    reportContent?: string;
+    startTime: Date;
+    endTime: Date;
+    renderStatus: string;
+    reportStage?: string;
+    startedAt?: Date | null;
+    completedAt?: Date | null;
+    failCode?: string | null;
+    failReason?: string | null;
+    memoryCount: number;
+  }): Promise<MemoryReport> {
+    await this.ensureMemoryReportTable();
+
+    return this.prisma.memoryReport.create({
+      data: {
+        apiKeyFingerprint: toPrismaBytes(data.fingerprint),
+        templateId: data.templateId,
+        reportContent: data.reportContent ?? '',
+        startTime: data.startTime,
+        endTime: data.endTime,
+        renderStatus: data.renderStatus,
+        reportStage: data.reportStage ?? 'queued',
+        startedAt: data.startedAt ?? null,
+        completedAt: data.completedAt ?? null,
+        failCode: data.failCode ?? null,
+        failReason: data.failReason ?? null,
+        memoryCount: data.memoryCount,
+      },
+    });
+  }
+
+  public async updateMemoryAnalysisReport(
+    reportId: number,
+    data: Prisma.MemoryReportUncheckedUpdateInput,
+  ): Promise<MemoryReport> {
+    await this.ensureMemoryReportTable();
+
+    return this.prisma.memoryReport.update({
+      where: {
+        reportId,
+      },
+      data,
+    });
+  }
+
+  public async expireStaleMemoryAnalysisReports(data: {
+    templateId: string;
+    queuedBefore: Date;
+    runningBefore: Date;
+    completedAt: Date;
+    failCode: string;
+    failReason: string;
+  }): Promise<number> {
+    await this.ensureMemoryReportTable();
+
+    const result = await this.prisma.memoryReport.updateMany({
+      where: {
+        templateId: data.templateId,
+        OR: [
+          {
+            renderStatus: 'queued',
+            generatedAt: {
+              lt: data.queuedBefore,
+            },
+          },
+          {
+            renderStatus: 'running',
+            OR: [
+              {
+                startedAt: {
+                  lt: data.runningBefore,
+                },
+              },
+              {
+                startedAt: null,
+                generatedAt: {
+                  lt: data.runningBefore,
+                },
+              },
+            ],
+          },
+        ],
+      },
+      data: {
+        renderStatus: 'fail',
+        reportStage: 'failed',
+        completedAt: data.completedAt,
+        failCode: data.failCode,
+        failReason: data.failReason,
+      },
+    });
+
+    return result.count;
+  }
+
+  public async listMemoryAnalysisReportsByTemplateId(
+    fingerprint: Buffer,
+    templateId: string,
+  ): Promise<MemoryReport[]> {
+    await this.ensureMemoryReportTable();
+
+    return this.prisma.memoryReport.findMany({
+      where: {
+        apiKeyFingerprint: toPrismaBytes(fingerprint),
+        templateId,
+      },
+      orderBy: {
+        generatedAt: 'desc',
+      },
+    });
+  }
+
+  public async findMemoryAnalysisReport(
+    fingerprint: Buffer,
+    reportId: number,
+  ): Promise<MemoryReport | null> {
+    await this.ensureMemoryReportTable();
+
+    return this.prisma.memoryReport.findFirst({
+      where: {
+        apiKeyFingerprint: toPrismaBytes(fingerprint),
+        reportId,
+      },
+    });
+  }
+
+  public async findActiveMemoryAnalysisReportByDay(data: {
+    fingerprint: Buffer;
+    templateId: string;
+    dayStart: Date;
+    dayEnd: Date;
+  }): Promise<MemoryReport | null> {
+    await this.ensureMemoryReportTable();
+
+    return this.prisma.memoryReport.findFirst({
+      where: {
+        apiKeyFingerprint: toPrismaBytes(data.fingerprint),
+        templateId: data.templateId,
+        generatedAt: {
+          gte: data.dayStart,
+          lt: data.dayEnd,
+        },
+        renderStatus: {
+          in: ['queued', 'running'],
+        },
+      },
+      orderBy: {
+        generatedAt: 'desc',
+      },
+    });
+  }
+
+  public async countMemoryAnalysisReportsByDay(data: {
+    fingerprint: Buffer;
+    templateId: string;
+    dayStart: Date;
+    dayEnd: Date;
+  }): Promise<number> {
+    await this.ensureMemoryReportTable();
+
+    return this.prisma.memoryReport.count({
+      where: {
+        apiKeyFingerprint: toPrismaBytes(data.fingerprint),
+        templateId: data.templateId,
+        generatedAt: {
+          gte: data.dayStart,
+          lt: data.dayEnd,
+        },
+      },
+    });
+  }
+
+  private async ensureMemoryReportTable(): Promise<void> {
+    this.memoryReportTableReady ??= this.initializeMemoryReportTable();
+    return this.memoryReportTableReady;
+  }
+
+  private async initializeMemoryReportTable(): Promise<void> {
+    await this.prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS \`memory_report\` (
+        \`report_id\` INTEGER NOT NULL AUTO_INCREMENT,
+        \`api_key_fingerprint\` VARBINARY(32) NOT NULL,
+        \`template_id\` VARCHAR(255) NOT NULL,
+        \`report_content\` LONGTEXT NOT NULL,
+        \`generated_at\` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+        \`started_at\` DATETIME(3) NULL,
+        \`completed_at\` DATETIME(3) NULL,
+        \`start_time\` DATETIME(3) NULL,
+        \`end_time\` DATETIME(3) NULL,
+        \`render_status\` VARCHAR(16) NOT NULL,
+        \`report_stage\` VARCHAR(32) NOT NULL DEFAULT 'queued',
+        \`fail_code\` VARCHAR(64) NULL,
+        \`fail_reason\` LONGTEXT NULL,
+        \`memory_count\` INTEGER NOT NULL,
+        PRIMARY KEY (\`report_id\`),
+        INDEX \`memory_report_owner_template_generated_idx\` (\`api_key_fingerprint\`, \`template_id\`, \`generated_at\`),
+        INDEX \`memory_report_owner_report_idx\` (\`api_key_fingerprint\`, \`report_id\`)
+      );
+    `);
+
+    if (!(await this.hasMemoryReportColumn('api_key_fingerprint'))) {
+      await this.prisma.$executeRawUnsafe(`
+        ALTER TABLE \`memory_report\`
+        ADD COLUMN \`api_key_fingerprint\` VARBINARY(32) NULL AFTER \`report_id\`;
+      `);
+    }
+
+    if (!(await this.hasMemoryReportColumn('start_time'))) {
+      await this.prisma.$executeRawUnsafe(`
+        ALTER TABLE \`memory_report\`
+        ADD COLUMN \`start_time\` DATETIME(3) NULL AFTER \`generated_at\`;
+      `);
+    }
+
+    if (!(await this.hasMemoryReportColumn('started_at'))) {
+      await this.prisma.$executeRawUnsafe(`
+        ALTER TABLE \`memory_report\`
+        ADD COLUMN \`started_at\` DATETIME(3) NULL AFTER \`generated_at\`;
+      `);
+    }
+
+    if (!(await this.hasMemoryReportColumn('completed_at'))) {
+      await this.prisma.$executeRawUnsafe(`
+        ALTER TABLE \`memory_report\`
+        ADD COLUMN \`completed_at\` DATETIME(3) NULL AFTER \`started_at\`;
+      `);
+    }
+
+    if (!(await this.hasMemoryReportColumn('end_time'))) {
+      await this.prisma.$executeRawUnsafe(`
+        ALTER TABLE \`memory_report\`
+        ADD COLUMN \`end_time\` DATETIME(3) NULL AFTER \`start_time\`;
+      `);
+    }
+
+    if (!(await this.hasMemoryReportColumn('report_stage'))) {
+      await this.prisma.$executeRawUnsafe(`
+        ALTER TABLE \`memory_report\`
+        ADD COLUMN \`report_stage\` VARCHAR(32) NOT NULL DEFAULT 'queued' AFTER \`render_status\`;
+      `);
+    }
+
+    if (!(await this.hasMemoryReportColumn('fail_code'))) {
+      await this.prisma.$executeRawUnsafe(`
+        ALTER TABLE \`memory_report\`
+        ADD COLUMN \`fail_code\` VARCHAR(64) NULL AFTER \`report_stage\`;
+      `);
+    }
+
+    if (!(await this.hasMemoryReportIndex('memory_report_owner_template_generated_idx'))) {
+      await this.prisma.$executeRawUnsafe(`
+        CREATE INDEX \`memory_report_owner_template_generated_idx\`
+        ON \`memory_report\` (\`api_key_fingerprint\`, \`template_id\`, \`generated_at\`);
+      `);
+    }
+
+    if (!(await this.hasMemoryReportIndex('memory_report_owner_report_idx'))) {
+      await this.prisma.$executeRawUnsafe(`
+        CREATE INDEX \`memory_report_owner_report_idx\`
+        ON \`memory_report\` (\`api_key_fingerprint\`, \`report_id\`);
+      `);
+    }
+  }
+
+  private async hasMemoryReportColumn(columnName: string): Promise<boolean> {
+    const rows = await this.prisma.$queryRaw<{ count: bigint | number | string }[]>(Prisma.sql`
+      SELECT COUNT(*) AS count
+      FROM information_schema.columns
+      WHERE table_schema = DATABASE()
+        AND table_name = 'memory_report'
+        AND column_name = ${columnName};
+    `);
+
+    return Number(rows[0]?.count ?? 0) > 0;
+  }
+
+  private async hasMemoryReportIndex(indexName: string): Promise<boolean> {
+    const rows = await this.prisma.$queryRaw<{ count: bigint | number | string }[]>(Prisma.sql`
+      SELECT COUNT(*) AS count
+      FROM information_schema.statistics
+      WHERE table_schema = DATABASE()
+        AND table_name = 'memory_report'
+        AND index_name = ${indexName};
+    `);
+
+    return Number(rows[0]?.count ?? 0) > 0;
   }
 }

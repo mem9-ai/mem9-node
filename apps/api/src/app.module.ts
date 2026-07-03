@@ -12,8 +12,8 @@ import {
 } from '@mem9/shared';
 import { Module } from '@nestjs/common';
 import { APP_INTERCEPTOR } from '@nestjs/core';
-import { LoggerModule } from 'nestjs-pino';
 import { SentryModule } from '@sentry/nestjs/setup';
+import { LoggerModule } from 'nestjs-pino';
 
 import { AnalysisJobsController } from './analysis-jobs.controller';
 import { AnalysisJobsService } from './analysis-jobs.service';
@@ -21,12 +21,17 @@ import { ApiKeyGuard } from './common/api-key.guard';
 import { HealthService } from './common/health.service';
 import { RateLimitGuard } from './common/rate-limit.guard';
 import { RequestAuditInterceptor } from './common/request-audit.interceptor';
-import { DeepAnalysisController } from './deep-analysis.controller';
 import { DeepAnalysisDuplicateOpsService } from './deep-analysis-duplicate-ops.service';
-import { DeepAnalysisService } from './deep-analysis.service';
 import { DeepAnalysisSourcePreparationService } from './deep-analysis-source-preparation.service';
+import { DeepAnalysisController } from './deep-analysis.controller';
+import { DeepAnalysisService } from './deep-analysis.service';
 import { HealthController } from './health.controller';
 import { Mem9SourceService } from './mem9-source.service';
+import { MemoryAnalysisController } from './memory-analysis/memory-analysis.controller';
+import { MemoryAnalysisReportCleanupService } from './memory-analysis/memory-analysis-report-cleanup.service';
+import { MemoryAnalysisService } from './memory-analysis/memory-analysis.service';
+import { UserProfileController } from './user-profile.controller';
+import { UserProfileService } from './user-profile.service';
 
 const appConfig = loadConfig();
 
@@ -56,6 +61,8 @@ const appConfig = loadConfig();
   controllers: [
     AnalysisJobsController,
     DeepAnalysisController,
+    MemoryAnalysisController,
+    UserProfileController,
     HealthController,
   ],
   providers: [
@@ -77,6 +84,9 @@ const appConfig = loadConfig();
     DeepAnalysisDuplicateOpsService,
     DeepAnalysisSourcePreparationService,
     Mem9SourceService,
+    MemoryAnalysisReportCleanupService,
+    MemoryAnalysisService,
+    UserProfileService,
     ApiKeyGuard,
     RateLimitGuard,
     HealthService,

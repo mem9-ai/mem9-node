@@ -8,6 +8,8 @@ import type {
   TaxonomyMatchType,
 } from './enums';
 
+export const MEMORY_PERIOD_SUMMARY_CACHE_VERSION = 'v1';
+
 export interface DateRange {
   start: string;
   end: string;
@@ -209,6 +211,65 @@ export interface DeepAnalysisMemorySnapshot {
   metadata?: Record<string, unknown> | null;
 }
 
+export type SessionMessageCorrectness = 'correct' | 'incorrect';
+
+export interface SessionMessageView {
+  id: string;
+  content: string;
+  createdAt?: string;
+  updatedAt?: string;
+  memoryType?: string;
+  tags?: string[];
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface SessionMessageEditView {
+  id: string;
+  version: number;
+  correctness?: SessionMessageCorrectness | null;
+  originalContent: string;
+  editedContent?: string | null;
+  tags?: string[] | null;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface MarkSessionMessageRequest {
+  correctness: SessionMessageCorrectness;
+}
+
+export interface MarkSessionMessageResponse {
+  id: string;
+  correctness: SessionMessageCorrectness;
+  version: number;
+}
+
+export interface EditSessionMessageRequest {
+  content: string;
+  tags?: string[];
+  reason?: string;
+}
+
+export interface EditSessionMessageResponse {
+  id: string;
+  editId: string;
+  version: number;
+  correctness?: SessionMessageCorrectness | null;
+  originalContent: string;
+  editedContent: string;
+  tags?: string[] | null;
+  session: SessionMessageView;
+  invalidatedPeriodKey: string | null;
+}
+
+export interface GetSessionMessageEditResponse extends SessionMessageEditView {}
+
+export interface DeleteSessionMessageEditResponse {
+  id: string;
+  reverted: boolean;
+  invalidatedPeriodKey: string | null;
+}
+
 export interface DeepAnalysisOverviewSection {
   memoryCount: number;
   deduplicatedMemoryCount: number;
@@ -353,6 +414,78 @@ export interface DeepAnalysisReportDocument {
   };
 }
 
+export type UserProfileItemKind =
+  | 'current_priority'
+  | 'companion_style'
+  | 'robot_constraint';
+
+export interface UserProfileEvidence {
+  memoryId: string;
+  memoryType?: string;
+  quote: string;
+  createdAt?: string;
+}
+
+export interface UserProfileSummarySection {
+  text: string;
+  message?: string;
+  evidence: UserProfileEvidence[];
+}
+
+export interface UserProfileImageItem {
+  kind: UserProfileItemKind;
+  title: string;
+  summary: string;
+  importance: number;
+  evidenceCount: number;
+  evidence: UserProfileEvidence[];
+}
+
+export type UserProfileAttributeKind =
+  | 'long_term_interest'
+  | 'professional_skill'
+  | 'current_project'
+  | 'long_term_goal'
+  | 'work_habit'
+  | 'communication_style';
+
+export interface UserProfileAttributeHistoryItem {
+  value: string;
+  observedAt?: string;
+  evidence: UserProfileEvidence[];
+}
+
+export interface UserProfileAttributeItem {
+  kind: UserProfileAttributeKind;
+  label: string;
+  value: string;
+  updatedAt?: string;
+  evidenceCount: number;
+  evidence: UserProfileEvidence[];
+  history: UserProfileAttributeHistoryItem[];
+}
+
+export interface UserProfileAttributeChange {
+  kind: UserProfileAttributeKind;
+  label: string;
+  previous: string;
+  current: string;
+  changedAt?: string;
+  evidence: UserProfileEvidence[];
+}
+
+export interface UserProfileResponse {
+  generatedAt: string;
+  source: {
+    memoryTypes: string[];
+    memoryCount: number;
+  };
+  summary: UserProfileSummarySection;
+  attributes: UserProfileAttributeItem[];
+  changes: UserProfileAttributeChange[];
+  items: UserProfileImageItem[];
+}
+
 export interface DeepAnalysisReportPreview {
   generatedAt: string;
   summary: string;
@@ -408,7 +541,20 @@ export interface DeepAnalysisReportMessage {
   traceId: string;
 }
 
-export type AnalysisLlmQueueMessage = AnalysisLlmMessage | DeepAnalysisReportMessage;
+export interface MemoryAnalysisReportMessage {
+  messageType: 'memory_analysis_report';
+  reportId: number;
+  apiKeyFingerprintHex: string;
+  rawApiKey: string;
+  createdAfter: string;
+  createdBefore: string;
+  traceId: string;
+}
+
+export type AnalysisLlmQueueMessage =
+  | AnalysisLlmMessage
+  | DeepAnalysisReportMessage
+  | MemoryAnalysisReportMessage;
 
 export interface ProgressEventPayload {
   progress: JobProgressSnapshot;

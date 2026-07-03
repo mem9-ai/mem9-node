@@ -32,4 +32,15 @@ export const redisKeys = {
   rateLimitPolicy(planCode: string): string {
     return `rlp:${planCode}`;
   },
+  memoryAnalysisPeriodCache(
+    fingerprintHex: string,
+    periodKey: string,
+    model: string,
+    cacheVersion: string,
+  ): string {
+    return `ma:period:${fingerprintHex}:${periodKey}:${model}:${cacheVersion}`;
+  },
+  memoryAnalysisPeriodCacheIndex(fingerprintHex: string, periodKey: string): string {
+    return `ma:period:index:${fingerprintHex}:${periodKey}`;
+  },
 };

@@ -195,6 +195,27 @@ model DeepAnalysisReport {
   @@index([status, requestedAt])
 }
 
+model MemoryReport {
+  reportId          Int      @id @default(autoincrement()) @map("report_id")
+  apiKeyFingerprint Bytes    @map("api_key_fingerprint") @db.VarBinary(32)
+  templateId        String   @map("template_id") @db.VarChar(255)
+  reportContent     String   @map("report_content") @db.LongText
+  generatedAt       DateTime @default(now()) @map("generated_at") @db.DateTime(3)
+  startedAt         DateTime? @map("started_at") @db.DateTime(3)
+  completedAt       DateTime? @map("completed_at") @db.DateTime(3)
+  startTime         DateTime? @map("start_time") @db.DateTime(3)
+  endTime           DateTime? @map("end_time") @db.DateTime(3)
+  renderStatus      String   @map("render_status") @db.VarChar(16)
+  reportStage       String   @default("queued") @map("report_stage") @db.VarChar(32)
+  failCode          String?  @map("fail_code") @db.VarChar(64)
+  failReason        String?  @map("fail_reason") @db.LongText
+  memoryCount       Int      @map("memory_count")
+
+  @@index([apiKeyFingerprint, templateId, generatedAt], map: "memory_report_owner_template_generated_idx")
+  @@index([apiKeyFingerprint, reportId], map: "memory_report_owner_report_idx")
+  @@map("memory_report")
+}
+
 model RequestAuditMeta {
   id                String   @id @db.VarChar(64)
   requestId         String   @db.VarChar(64)
