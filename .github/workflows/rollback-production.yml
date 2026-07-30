@@ -1,0 +1,239 @@
+name: Roll back production
+run-name: Roll back production to its previous release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ap-southeast-1
+  ECS_CLUSTER: mem9-node-prod-cluster
+  API_SERVICE: mem9-node-prod-api
+  WORKER_SERVICE: mem9-node-prod-worker
+
+jobs:
+  rollback:
+    name: Roll back to previous successful release
+    # Temporary guard: rollback becomes usable after CI owns a verified release.
+    if: github.ref == 'refs/heads/main' && false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: write
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Configure AWS deployment credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::401696231252:role/mem9-node-prod-github-apply
+          role-session-name: mem9-node-production-rollback
+          aws-region: ${{ env.AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: Read current ECS release
+        run: |
+          CURRENT_API_TASK_DEFINITION=$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services "$API_SERVICE" \
+            --query 'services[0].taskDefinition' \
+            --output text \
+            --region "$AWS_REGION")
+          CURRENT_WORKER_TASK_DEFINITION=$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services "$WORKER_SERVICE" \
+            --query 'services[0].taskDefinition' \
+            --output text \
+            --region "$AWS_REGION")
+
+          test -n "$CURRENT_API_TASK_DEFINITION" && test "$CURRENT_API_TASK_DEFINITION" != "None"
+          test -n "$CURRENT_WORKER_TASK_DEFINITION" && test "$CURRENT_WORKER_TASK_DEFINITION" != "None"
+
+          {
+            echo "CURRENT_API_TASK_DEFINITION=$CURRENT_API_TASK_DEFINITION"
+            echo "CURRENT_WORKER_TASK_DEFINITION=$CURRENT_WORKER_TASK_DEFINITION"
+          } >> "$GITHUB_ENV"
+
+      - name: Find the previous release pair
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RECORD_DIR="$RUNNER_TEMP/production-releases"
+          mkdir -p "$RECORD_DIR"
+
+          gh api --paginate "/repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" \
+            --jq '.artifacts[]
+              | select(.expired == false)
+              | select(.name | startswith("production-release-"))
+              | [.created_at, (.id | tostring)]
+              | @tsv' \
+            | sort -r > "$RECORD_DIR/releases.tsv"
+
+          gh api --paginate "/repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" \
+            --jq '.artifacts[]
+              | select(.expired == false)
+              | select(.name | startswith("production-restore-point-"))
+              | [.created_at, (.id | tostring)]
+              | @tsv' \
+            | sort -r > "$RECORD_DIR/restore-points.tsv"
+
+          TARGET_API_TASK_DEFINITION=""
+          TARGET_WORKER_TASK_DEFINITION=""
+          SOURCE_RELEASE=""
+          FALLBACK_API_TASK_DEFINITION=""
+          FALLBACK_WORKER_TASK_DEFINITION=""
+          FALLBACK_RELEASE=""
+
+          while IFS=$'\t' read -r _ artifact_id; do
+            test -n "$artifact_id" || continue
+
+            archive="$RECORD_DIR/$artifact_id.zip"
+            record="$RECORD_DIR/$artifact_id.json"
+            gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > "$archive"
+            unzip -p "$archive" release.json > "$record"
+
+            recorded_api=$(jq -r '.apiTaskDefinition // empty' "$record")
+            recorded_worker=$(jq -r '.workerTaskDefinition // empty' "$record")
+
+            if [ -z "$FALLBACK_API_TASK_DEFINITION" ] && [ -n "$recorded_api" ] && [ -n "$recorded_worker" ]; then
+              FALLBACK_API_TASK_DEFINITION="$recorded_api"
+              FALLBACK_WORKER_TASK_DEFINITION="$recorded_worker"
+              FALLBACK_RELEASE=$(jq -r '.release // empty' "$record")
+            fi
+
+            if [ "$recorded_api" = "$CURRENT_API_TASK_DEFINITION" ] && \
+               [ "$recorded_worker" = "$CURRENT_WORKER_TASK_DEFINITION" ]; then
+              previous_api=$(jq -r '.previousApiTaskDefinition // empty' "$record")
+              previous_worker=$(jq -r '.previousWorkerTaskDefinition // empty' "$record")
+
+              if [ -n "$previous_api" ] && [ -n "$previous_worker" ] && \
+                 [ "$previous_api" != "$CURRENT_API_TASK_DEFINITION" ] && \
+                 [ "$previous_worker" != "$CURRENT_WORKER_TASK_DEFINITION" ]; then
+                TARGET_API_TASK_DEFINITION="$previous_api"
+                TARGET_WORKER_TASK_DEFINITION="$previous_worker"
+                SOURCE_RELEASE=$(jq -r '.release // empty' "$record")
+                break
+              fi
+            fi
+          done < "$RECORD_DIR/releases.tsv"
+
+          if [ -z "$TARGET_API_TASK_DEFINITION" ] && \
+             [ -n "$FALLBACK_API_TASK_DEFINITION" ] && \
+             [ -n "$FALLBACK_WORKER_TASK_DEFINITION" ]; then
+            TARGET_API_TASK_DEFINITION="$FALLBACK_API_TASK_DEFINITION"
+            TARGET_WORKER_TASK_DEFINITION="$FALLBACK_WORKER_TASK_DEFINITION"
+            SOURCE_RELEASE="unrecorded-current-to-$FALLBACK_RELEASE"
+          fi
+
+          if [ -z "$TARGET_API_TASK_DEFINITION" ] || [ -z "$TARGET_WORKER_TASK_DEFINITION" ]; then
+            while IFS=$'\t' read -r _ artifact_id; do
+              test -n "$artifact_id" || continue
+
+              archive="$RECORD_DIR/restore-$artifact_id.zip"
+              record="$RECORD_DIR/restore-$artifact_id.json"
+              gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > "$archive"
+              unzip -p "$archive" restore-point.json > "$record"
+
+              previous_api=$(jq -r '.previousApiTaskDefinition // empty' "$record")
+              previous_worker=$(jq -r '.previousWorkerTaskDefinition // empty' "$record")
+
+              if [ -n "$previous_api" ] && [ -n "$previous_worker" ] && \
+                 { [ "$previous_api" != "$CURRENT_API_TASK_DEFINITION" ] || \
+                   [ "$previous_worker" != "$CURRENT_WORKER_TASK_DEFINITION" ]; }; then
+                TARGET_API_TASK_DEFINITION="$previous_api"
+                TARGET_WORKER_TASK_DEFINITION="$previous_worker"
+                SOURCE_RELEASE="failed-$(jq -r '.release // "unknown"' "$record")"
+                break
+              fi
+            done < "$RECORD_DIR/restore-points.tsv"
+          fi
+
+          test -n "$TARGET_API_TASK_DEFINITION"
+          test -n "$TARGET_WORKER_TASK_DEFINITION"
+          test "$TARGET_API_TASK_DEFINITION" != "$CURRENT_API_TASK_DEFINITION" || \
+            test "$TARGET_WORKER_TASK_DEFINITION" != "$CURRENT_WORKER_TASK_DEFINITION"
+
+          {
+            echo "TARGET_API_TASK_DEFINITION=$TARGET_API_TASK_DEFINITION"
+            echo "TARGET_WORKER_TASK_DEFINITION=$TARGET_WORKER_TASK_DEFINITION"
+            echo "SOURCE_RELEASE=$SOURCE_RELEASE"
+          } >> "$GITHUB_ENV"
+
+      - name: Verify target task definitions
+        run: |
+          test "$(aws ecs describe-task-definition \
+            --task-definition "$TARGET_API_TASK_DEFINITION" \
+            --query 'taskDefinition.status' \
+            --output text \
+            --region "$AWS_REGION")" = "ACTIVE"
+          test "$(aws ecs describe-task-definition \
+            --task-definition "$TARGET_WORKER_TASK_DEFINITION" \
+            --query 'taskDefinition.status' \
+            --output text \
+            --region "$AWS_REGION")" = "ACTIVE"
+
+      - name: Roll back ECS services
+        run: |
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "$API_SERVICE" \
+            --task-definition "$TARGET_API_TASK_DEFINITION" \
+            --region "$AWS_REGION" > /dev/null
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "$WORKER_SERVICE" \
+            --task-definition "$TARGET_WORKER_TASK_DEFINITION" \
+            --region "$AWS_REGION" > /dev/null
+
+      - name: Wait for ECS services
+        run: |
+          aws ecs wait services-stable \
+            --cluster "$ECS_CLUSTER" \
+            --services "$API_SERVICE" "$WORKER_SERVICE" \
+            --region "$AWS_REGION"
+
+      - name: Record rollback
+        run: |
+          jq -n \
+            --arg sourceRelease "$SOURCE_RELEASE" \
+            --arg fromApiTaskDefinition "$CURRENT_API_TASK_DEFINITION" \
+            --arg fromWorkerTaskDefinition "$CURRENT_WORKER_TASK_DEFINITION" \
+            --arg toApiTaskDefinition "$TARGET_API_TASK_DEFINITION" \
+            --arg toWorkerTaskDefinition "$TARGET_WORKER_TASK_DEFINITION" \
+            --arg workflowActor "$GITHUB_ACTOR" \
+            --arg rolledBackAt "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            '{
+              sourceRelease: $sourceRelease,
+              fromApiTaskDefinition: $fromApiTaskDefinition,
+              fromWorkerTaskDefinition: $fromWorkerTaskDefinition,
+              toApiTaskDefinition: $toApiTaskDefinition,
+              toWorkerTaskDefinition: $toWorkerTaskDefinition,
+              workflowActor: $workflowActor,
+              rolledBackAt: $rolledBackAt,
+              status: "rolled-back"
+            }' > rollback.json
+
+          {
+            echo "## Production rolled back"
+            echo
+            echo "- From API: \`$CURRENT_API_TASK_DEFINITION\`"
+            echo "- To API: \`$TARGET_API_TASK_DEFINITION\`"
+            echo "- From worker: \`$CURRENT_WORKER_TASK_DEFINITION\`"
+            echo "- To worker: \`$TARGET_WORKER_TASK_DEFINITION\`"
+            echo "- ECS services: stable"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload rollback record
+        uses: actions/upload-artifact@v7
+        with:
+          name: production-rollback-${{ github.run_id }}
+          path: rollback.json
+          if-no-files-found: error
+          retention-days: 90
