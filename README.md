@@ -50,10 +50,10 @@ Worker health: `http://127.0.0.1:3001/health/live`
 
 ## Production Deployment
 
-Pull requests run application and Terraform checks. Production is released
-manually from the current `main` commit; one workflow builds immutable API and
-worker images, applies Terraform, and waits for ECS. Rollback automatically
-selects the previous recorded task-definition pair. See [Production
+Pull requests run application and Terraform checks. The current production
+workflow is intentionally prepare-only: it builds SHA-tagged API and worker
+images, verifies their contents, and creates a production Terraform plan. It
+does not apply Terraform or change ECS. See [Production
 deployment](docs/production-deployment.md) for setup and operating details.
 
 ## API Flow
