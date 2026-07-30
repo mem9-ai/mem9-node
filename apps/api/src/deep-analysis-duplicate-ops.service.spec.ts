@@ -60,11 +60,18 @@ describe('deep analysis duplicate ops service', () => {
   });
 
   it('delegates duplicate deletion to the mem9 source client', async () => {
+    let resolveDeletionStarted!: () => void;
+    const deletionStarted = new Promise<void>((resolve) => {
+      resolveDeletionStarted = resolve;
+    });
     const source = {
-      deleteMemories: jest.fn(async () => ({
-        deletedMemoryIds: ['mem_2'],
-        failedMemoryIds: ['mem_3'],
-      })),
+      deleteMemories: jest.fn(async () => {
+        resolveDeletionStarted();
+        return {
+          deletedMemoryIds: ['mem_2'],
+          failedMemoryIds: ['mem_3'],
+        };
+      }),
     };
     const service = new DeepAnalysisDuplicateOpsService(
       {
@@ -114,7 +121,7 @@ describe('deep analysis duplicate ops service', () => {
     );
 
     const result = await service.deleteDuplicateMemories(createContext(), 'dar_1');
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await deletionStarted;
 
     expect(result.duplicateCleanup.status).toBe('QUEUED');
     expect(result.duplicateCleanup.totalCount).toBe(2);

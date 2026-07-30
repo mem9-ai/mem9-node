@@ -48,6 +48,14 @@ Worker health: `http://127.0.0.1:3001/health/live`
 - Build and upload Sentry sourcemaps: `pnpm build:with-sourcemaps`
 - Verify: `pnpm verify`
 
+## Production Deployment
+
+Pull requests run application and Terraform checks. Production is released
+manually from the current `main` commit; one workflow builds immutable API and
+worker images, applies Terraform, and waits for ECS. Rollback automatically
+selects the previous recorded task-definition pair. See [Production
+deployment](docs/production-deployment.md) for setup and operating details.
+
 ## API Flow
 
 ### Create a job

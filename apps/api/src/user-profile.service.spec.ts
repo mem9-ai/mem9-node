@@ -259,7 +259,7 @@ describe('user profile service', () => {
     const result = await service.getProfile(createContext());
 
     expect(result.summary.text).toBe('你是一位目标驱动的长期成长型用户，持续推进英语学习、健康管理');
-    expect(result.summary.message).toBe('当前可用画像信息较少，已根据现有 facts、insights 和 pinned 生成初步总结，但画像可能不稳定。');
+    expect(result.summary.message).toBe('当前可用记忆信息较少，已根据现有记忆生成初步总结，但画像可能不稳定。');
     expect(result.summary.evidence).toHaveLength(1);
   });
 
@@ -274,7 +274,7 @@ describe('user profile service', () => {
     const result = await service.getProfile(createContext());
 
     expect(result.summary.text).toContain('整体画像：一个偏理性、重视稳定成长的人');
-    expect(result.summary.message).toBe('当前可用画像信息较少，已根据现有 facts、insights 和 pinned 生成初步总结，但画像可能不稳定。');
+    expect(result.summary.message).toBe('当前可用记忆信息较少，已根据现有记忆生成初步总结，但画像可能不稳定。');
     expect(result.summary.evidence).toHaveLength(1);
   });
 

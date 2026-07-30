@@ -4,13 +4,14 @@ resource "aws_ecs_task_definition" "api" {
   network_mode             = "awsvpc"
   cpu                      = "512"
   memory                   = "1024"
+  skip_destroy             = true
   execution_role_arn       = aws_iam_role.task_execution.arn
   task_role_arn            = aws_iam_role.task_runtime.arn
 
   container_definitions = jsonencode([
     {
       name      = "api"
-      image     = "${aws_ecr_repository.api.repository_url}:latest"
+      image     = var.api_image
       essential = true
 
       portMappings = [
@@ -86,6 +87,11 @@ resource "aws_ecs_task_definition" "api" {
       }
     }
   ])
+
+  tags = {
+    Release = var.release_id
+    Service = "api"
+  }
 }
 
 resource "aws_ecs_task_definition" "worker" {
@@ -94,13 +100,14 @@ resource "aws_ecs_task_definition" "worker" {
   network_mode             = "awsvpc"
   cpu                      = "512"
   memory                   = "1024"
+  skip_destroy             = true
   execution_role_arn       = aws_iam_role.task_execution.arn
   task_role_arn            = aws_iam_role.task_runtime.arn
 
   container_definitions = jsonencode([
     {
       name      = "worker"
-      image     = "${aws_ecr_repository.worker.repository_url}:latest"
+      image     = var.worker_image
       essential = true
 
       portMappings = [
@@ -172,4 +179,9 @@ resource "aws_ecs_task_definition" "worker" {
       }
     }
   ])
+
+  tags = {
+    Release = var.release_id
+    Service = "worker"
+  }
 }

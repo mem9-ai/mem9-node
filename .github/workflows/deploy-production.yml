@@ -1,0 +1,350 @@
+name: Deploy production
+run-name: Deploy ${{ github.sha }} to production
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ap-southeast-1
+  ECR_REGISTRY: 401696231252.dkr.ecr.ap-southeast-1.amazonaws.com
+  API_REPOSITORY: mem9-node-prod-api
+  WORKER_REPOSITORY: mem9-node-prod-worker
+  TF_STATE_BUCKET: mem9-node-prod-terraform-state
+  TF_STATE_KMS_KEY_ARN: arn:aws:kms:ap-southeast-1:401696231252:key/4cd4c7a1-c1a6-47ad-9205-548678b84d86
+  TERRAFORM_VERSION: 1.15.4
+  TF_WORKING_DIR: infra/terraform
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+jobs:
+  deploy:
+    name: Build and deploy current main
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      actions: write
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Check out the release commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Verify release source
+        run: |
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Configure AWS image credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::401696231252:role/mem9-node-prod-github-prepare
+          role-session-name: mem9-node-production-images
+          aws-region: ${{ env.AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: Log in to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push API image
+        run: |
+          if aws ecr describe-images \
+            --repository-name "$API_REPOSITORY" \
+            --image-ids "imageTag=$GITHUB_SHA" \
+            --region "$AWS_REGION" > /dev/null 2>&1; then
+            echo "API image $GITHUB_SHA already exists; reusing it."
+          else
+            docker build \
+              --platform linux/amd64 \
+              --file apps/api/Dockerfile \
+              --tag "$ECR_REGISTRY/$API_REPOSITORY:$GITHUB_SHA" \
+              .
+            docker push "$ECR_REGISTRY/$API_REPOSITORY:$GITHUB_SHA"
+          fi
+
+      - name: Build and push worker image
+        run: |
+          if aws ecr describe-images \
+            --repository-name "$WORKER_REPOSITORY" \
+            --image-ids "imageTag=$GITHUB_SHA" \
+            --region "$AWS_REGION" > /dev/null 2>&1; then
+            echo "Worker image $GITHUB_SHA already exists; reusing it."
+          else
+            docker build \
+              --platform linux/amd64 \
+              --file apps/worker/Dockerfile \
+              --tag "$ECR_REGISTRY/$WORKER_REPOSITORY:$GITHUB_SHA" \
+              .
+            docker push "$ECR_REGISTRY/$WORKER_REPOSITORY:$GITHUB_SHA"
+          fi
+
+      - name: Lock release images
+        run: |
+          API_IMAGE="$ECR_REGISTRY/$API_REPOSITORY:$GITHUB_SHA"
+          WORKER_IMAGE="$ECR_REGISTRY/$WORKER_REPOSITORY:$GITHUB_SHA"
+          API_DIGEST=$(aws ecr describe-images \
+            --repository-name "$API_REPOSITORY" \
+            --image-ids "imageTag=$GITHUB_SHA" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text \
+            --region "$AWS_REGION")
+          WORKER_DIGEST=$(aws ecr describe-images \
+            --repository-name "$WORKER_REPOSITORY" \
+            --image-ids "imageTag=$GITHUB_SHA" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text \
+            --region "$AWS_REGION")
+
+          test -n "$API_DIGEST" && test "$API_DIGEST" != "None"
+          test -n "$WORKER_DIGEST" && test "$WORKER_DIGEST" != "None"
+
+          {
+            echo "API_IMAGE=$API_IMAGE"
+            echo "WORKER_IMAGE=$WORKER_IMAGE"
+            echo "API_DIGEST=$API_DIGEST"
+            echo "WORKER_DIGEST=$WORKER_DIGEST"
+          } >> "$GITHUB_ENV"
+
+      - name: Configure AWS deployment credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::401696231252:role/mem9-node-prod-github-apply
+          role-session-name: mem9-node-production-deploy
+          aws-region: ${{ env.AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: Read current ECS release
+        run: |
+          API_PREVIOUS_TASK_DEFINITION=$(aws ecs describe-services \
+            --cluster mem9-node-prod-cluster \
+            --services mem9-node-prod-api \
+            --query 'services[0].taskDefinition' \
+            --output text \
+            --region "$AWS_REGION")
+          WORKER_PREVIOUS_TASK_DEFINITION=$(aws ecs describe-services \
+            --cluster mem9-node-prod-cluster \
+            --services mem9-node-prod-worker \
+            --query 'services[0].taskDefinition' \
+            --output text \
+            --region "$AWS_REGION")
+
+          test -n "$API_PREVIOUS_TASK_DEFINITION" && test "$API_PREVIOUS_TASK_DEFINITION" != "None"
+          test -n "$WORKER_PREVIOUS_TASK_DEFINITION" && test "$WORKER_PREVIOUS_TASK_DEFINITION" != "None"
+
+          {
+            echo "API_PREVIOUS_TASK_DEFINITION=$API_PREVIOUS_TASK_DEFINITION"
+            echo "WORKER_PREVIOUS_TASK_DEFINITION=$WORKER_PREVIOUS_TASK_DEFINITION"
+          } >> "$GITHUB_ENV"
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Write production variables
+        env:
+          TF_VARS: ${{ secrets.TF_VARS }}
+        run: |
+          test -n "$TF_VARS"
+          printf '%s\n' "$TF_VARS" > "$TF_WORKING_DIR/production.auto.tfvars"
+
+      - name: Initialize Terraform
+        run: |
+          terraform -chdir="$TF_WORKING_DIR" init \
+            -input=false \
+            -backend-config="bucket=$TF_STATE_BUCKET" \
+            -backend-config="key=mem9-node/production/terraform.tfstate" \
+            -backend-config="region=$AWS_REGION" \
+            -backend-config="encrypt=true" \
+            -backend-config="kms_key_id=$TF_STATE_KMS_KEY_ARN" \
+            -backend-config="use_lockfile=true"
+
+      - name: Plan production release
+        run: |
+          terraform -chdir="$TF_WORKING_DIR" plan \
+            -input=false \
+            -var="release_id=$GITHUB_SHA" \
+            -var="api_image=$API_IMAGE" \
+            -var="worker_image=$WORKER_IMAGE" \
+            -out=tfplan
+
+      - name: Summarize Terraform plan
+        run: |
+          PLAN_JSON=$(mktemp)
+          terraform -chdir="$TF_WORKING_DIR" show -json tfplan > "$PLAN_JSON"
+
+          ADD_COUNT=$(jq '[.resource_changes[]? | select(.change.actions | index("create"))] | length' "$PLAN_JSON")
+          CHANGE_COUNT=$(jq '[.resource_changes[]? | select(.change.actions | index("update"))] | length' "$PLAN_JSON")
+          DESTROY_COUNT=$(jq '[.resource_changes[]? | select(.change.actions | index("delete"))] | length' "$PLAN_JSON")
+
+          {
+            echo "## Production plan"
+            echo
+            echo "- Release: \`$GITHUB_SHA\`"
+            echo "- API image: \`$API_IMAGE\`"
+            echo "- Worker image: \`$WORKER_IMAGE\`"
+            echo "- Terraform: **$ADD_COUNT add**, **$CHANGE_COUNT change**, **$DESTROY_COUNT destroy**"
+            echo "- Database migration: not run"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record pre-deployment restore point
+        run: |
+          jq -n \
+            --arg release "$GITHUB_SHA" \
+            --arg previousApiTaskDefinition "$API_PREVIOUS_TASK_DEFINITION" \
+            --arg previousWorkerTaskDefinition "$WORKER_PREVIOUS_TASK_DEFINITION" \
+            --arg workflowActor "$GITHUB_ACTOR" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg runId "$GITHUB_RUN_ID" \
+            --arg preparedAt "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            '{
+              release: $release,
+              previousApiTaskDefinition: $previousApiTaskDefinition,
+              previousWorkerTaskDefinition: $previousWorkerTaskDefinition,
+              workflowActor: $workflowActor,
+              repository: $repository,
+              runId: $runId,
+              preparedAt: $preparedAt,
+              status: "prepared"
+            }' > restore-point.json
+
+      - name: Upload pre-deployment restore point
+        id: upload-restore-point
+        uses: actions/upload-artifact@v7
+        with:
+          name: production-restore-point-${{ github.sha }}-${{ github.run_id }}
+          path: restore-point.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Apply production release
+        run: terraform -chdir="$TF_WORKING_DIR" apply -input=false -auto-approve tfplan
+
+      - name: Wait for ECS services
+        run: |
+          ECS_CLUSTER=$(terraform -chdir="$TF_WORKING_DIR" output -raw ecs_cluster_name)
+          API_SERVICE=$(terraform -chdir="$TF_WORKING_DIR" output -raw api_service_name)
+          WORKER_SERVICE=$(terraform -chdir="$TF_WORKING_DIR" output -raw worker_service_name)
+
+          aws ecs wait services-stable \
+            --cluster "$ECS_CLUSTER" \
+            --services "$API_SERVICE" "$WORKER_SERVICE" \
+            --region "$AWS_REGION"
+
+      - name: Record successful release
+        run: |
+          API_TASK_DEFINITION=$(terraform -chdir="$TF_WORKING_DIR" output -raw api_task_definition_arn)
+          WORKER_TASK_DEFINITION=$(terraform -chdir="$TF_WORKING_DIR" output -raw worker_task_definition_arn)
+
+          jq -n \
+            --arg release "$GITHUB_SHA" \
+            --arg apiImage "$API_IMAGE" \
+            --arg apiDigest "$API_DIGEST" \
+            --arg workerImage "$WORKER_IMAGE" \
+            --arg workerDigest "$WORKER_DIGEST" \
+            --arg apiTaskDefinition "$API_TASK_DEFINITION" \
+            --arg workerTaskDefinition "$WORKER_TASK_DEFINITION" \
+            --arg previousApiTaskDefinition "$API_PREVIOUS_TASK_DEFINITION" \
+            --arg previousWorkerTaskDefinition "$WORKER_PREVIOUS_TASK_DEFINITION" \
+            --arg workflowActor "$GITHUB_ACTOR" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg runId "$GITHUB_RUN_ID" \
+            --arg deployedAt "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            '{
+              release: $release,
+              apiImage: $apiImage,
+              apiDigest: $apiDigest,
+              workerImage: $workerImage,
+              workerDigest: $workerDigest,
+              apiTaskDefinition: $apiTaskDefinition,
+              workerTaskDefinition: $workerTaskDefinition,
+              previousApiTaskDefinition: $previousApiTaskDefinition,
+              previousWorkerTaskDefinition: $previousWorkerTaskDefinition,
+              workflowActor: $workflowActor,
+              repository: $repository,
+              runId: $runId,
+              deployedAt: $deployedAt,
+              status: "deployed"
+            }' > release.json
+
+          {
+            echo
+            echo "## Production deployed"
+            echo
+            echo "- API task definition: \`$API_TASK_DEFINITION\`"
+            echo "- Worker task definition: \`$WORKER_TASK_DEFINITION\`"
+            echo "- ECS services: stable"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload release record
+        uses: actions/upload-artifact@v7
+        with:
+          name: production-release-${{ github.sha }}-${{ github.run_id }}
+          path: release.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Delete pre-deployment restore point
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESTORE_POINT_ARTIFACT_ID: ${{ steps.upload-restore-point.outputs.artifact-id }}
+        run: |
+          test -n "$RESTORE_POINT_ARTIFACT_ID"
+          gh api --method DELETE \
+            "/repos/$GITHUB_REPOSITORY/actions/artifacts/$RESTORE_POINT_ARTIFACT_ID"
+
+      - name: Keep the latest 30 task definition revisions
+        env:
+          TASK_DEFINITION_RETENTION: "30"
+        run: |
+          for family in mem9-node-prod-api mem9-node-prod-worker; do
+            aws ecs list-task-definitions \
+              --family-prefix "$family" \
+              --status ACTIVE \
+              --sort DESC \
+              --region "$AWS_REGION" \
+              --query 'taskDefinitionArns[]' \
+              --output text \
+              | tr '\t' '\n' \
+              | grep "/$family:" \
+              | tail -n "+$((TASK_DEFINITION_RETENTION + 1))" \
+              | while read -r task_definition; do
+                  if [ -n "$task_definition" ]; then
+                    aws ecs deregister-task-definition \
+                      --task-definition "$task_definition" \
+                      --region "$AWS_REGION" > /dev/null
+                  fi
+                done
+          done
+
+      - name: Keep the latest 30 release records
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --paginate "/repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" \
+            --jq '.artifacts[]
+              | select(.expired == false)
+              | select(.name | startswith("production-release-"))
+              | [.created_at, (.id | tostring)]
+              | @tsv' \
+            | sort -r \
+            | tail -n +31 \
+            | cut -f2 \
+            | while read -r artifact_id; do
+                if [ -n "$artifact_id" ]; then
+                  gh api --method DELETE "/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id"
+                fi
+              done

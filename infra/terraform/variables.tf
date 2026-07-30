@@ -8,6 +8,36 @@ variable "name_prefix" {
   default = "mem9-analysis"
 }
 
+variable "release_id" {
+  description = "Git commit SHA that groups the API and worker task definitions into one release."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[0-9a-f]{40}$", var.release_id))
+    error_message = "release_id must be a full 40-character lowercase Git commit SHA."
+  }
+}
+
+variable "api_image" {
+  description = "Immutable API ECR image URI tagged with the release Git commit SHA."
+  type        = string
+
+  validation {
+    condition     = can(regex(":[0-9a-f]{40}$", var.api_image))
+    error_message = "api_image must end with a full 40-character lowercase Git commit SHA tag."
+  }
+}
+
+variable "worker_image" {
+  description = "Immutable worker ECR image URI tagged with the release Git commit SHA."
+  type        = string
+
+  validation {
+    condition     = can(regex(":[0-9a-f]{40}$", var.worker_image))
+    error_message = "worker_image must end with a full 40-character lowercase Git commit SHA tag."
+  }
+}
+
 variable "api_alb_idle_timeout_seconds" {
   type    = number
   default = 120

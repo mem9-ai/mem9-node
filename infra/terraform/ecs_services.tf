@@ -2,7 +2,7 @@ resource "aws_ecs_service" "api" {
   name            = "${var.name_prefix}-api"
   cluster         = aws_ecs_cluster.this.id
   task_definition = aws_ecs_task_definition.api.arn
-  desired_count   = 4
+  desired_count   = 6
   launch_type     = "FARGATE"
 
   network_configuration {
