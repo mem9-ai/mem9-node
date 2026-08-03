@@ -3,10 +3,6 @@ run-name: Deploy ${{ github.sha }} to production
 
 on:
   workflow_dispatch:
-  # Temporary PR validation trigger. Remove before merging.
-  push:
-    branches:
-      - feat/ci
 
 permissions:
   contents: read
@@ -30,7 +26,7 @@ env:
 jobs:
   deploy:
     name: Build and deploy current main
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/ci'
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -46,8 +42,7 @@ jobs:
 
       - name: Verify release source
         run: |
-          test "$GITHUB_REF" = "refs/heads/main" || \
-            test "$GITHUB_REF" = "refs/heads/feat/ci"
+          test "$GITHUB_REF" = "refs/heads/main"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
 
       - name: Configure AWS image credentials

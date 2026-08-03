@@ -10,10 +10,6 @@ is no separately selected image SHA or saved intermediate Terraform plan.
 > job is disabled the same way. Remove those guards only after the prepared
 > images and Terraform plan have been verified.
 
-> The `feat/ci` push trigger and branch allowance are temporary so this PR can
-> run before merge. Remove both, together with the matching temporary AWS OIDC
-> branch trust, before merging to `main`.
-
 ## Workflows
 
 ### Pull-request checks
@@ -149,9 +145,16 @@ repo:mem9-ai/mem9-node:ref:refs/heads/main
   plan/apply permissions, ECS read/update permissions, and task-definition
   retention permissions.
 
-The apply role's old Environment-based subject must be changed before the new
-deployment and rollback workflows can assume it. The unused GitHub
-`production` Environment may remain or be deleted after verification.
+Terraform's S3 bucket refresh also requires these two read-only actions on the
+application payload bucket:
+
+```text
+s3:GetAccelerateConfiguration
+s3:GetReplicationConfiguration
+```
+
+Both role trust policies currently use the `main` branch subject shown above.
+The unused GitHub `production` Environment may remain or be deleted.
 
 ## Retention
 
