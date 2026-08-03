@@ -10,6 +10,10 @@ is no separately selected image SHA or saved intermediate Terraform plan.
 > job is disabled the same way. Remove those guards only after the prepared
 > images and Terraform plan have been verified.
 
+> The `feat/ci` push trigger and branch allowance are temporary so this PR can
+> run before merge. Remove both, together with the matching temporary AWS OIDC
+> branch trust, before merging to `main`.
+
 ## Workflows
 
 ### Pull-request checks
