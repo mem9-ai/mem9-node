@@ -1122,11 +1122,17 @@ describe('deep analysis report processor service', () => {
       createConfig() as never,
     );
 
+    const errorSpy = jest
+      .spyOn(processor['logger'], 'error')
+      .mockImplementation(() => undefined);
+
     await processor.process({
       messageType: 'deep_report',
       reportId: 'dar_trim_failure',
       traceId: 'trace_trim_failure',
     });
+
+    expect(errorSpy).toHaveBeenCalled();
 
     expect(repository.updateDeepAnalysisReport).toHaveBeenLastCalledWith(
       'dar_trim_failure',

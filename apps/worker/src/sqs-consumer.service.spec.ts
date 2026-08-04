@@ -128,6 +128,9 @@ describe('sqs consumer service', () => {
       } as never,
       createConfig(),
     );
+    const errorSpy = jest
+      .spyOn(consumer['logger'], 'error')
+      .mockImplementation(() => undefined);
     const setIntervalSpy = jest.spyOn(global, 'setInterval');
 
     consumer['running'] = true;
@@ -140,6 +143,7 @@ describe('sqs consumer service', () => {
     expect(Sentry.captureException).toHaveBeenCalledWith(
       expect.any(SyntaxError),
     );
+    expect(errorSpy).toHaveBeenCalled();
   });
 
   it('keeps consuming after one processor failure', async () => {
@@ -205,6 +209,9 @@ describe('sqs consumer service', () => {
       } as never,
       createConfig(),
     );
+    const errorSpy = jest
+      .spyOn(consumer['logger'], 'error')
+      .mockImplementation(() => undefined);
 
     consumer['running'] = true;
     await consumer['consumeBatchLoop']();
@@ -214,6 +221,7 @@ describe('sqs consumer service', () => {
     expect(queue.deleteMessage).toHaveBeenCalledWith('rh_2');
     expect(Sentry.captureException).toHaveBeenCalledTimes(1);
     expect(Sentry.captureException).toHaveBeenCalledWith(expect.any(Error));
+    expect(errorSpy).toHaveBeenCalled();
   });
 
   it('dispatches memory analysis report llm messages', async () => {
