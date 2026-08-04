@@ -199,9 +199,6 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Record pre-deployment restore point
-        # Temporary guard: keep the complete release path for validation, but
-        # do not run any step after the Terraform plan until it is approved.
-        if: ${{ false }}
         run: |
           jq -n \
             --arg release "$GITHUB_SHA" \
@@ -223,7 +220,6 @@ jobs:
             }' > restore-point.json
 
       - name: Upload pre-deployment restore point
-        if: ${{ false }}
         id: upload-restore-point
         uses: actions/upload-artifact@v7
         with:
@@ -233,11 +229,9 @@ jobs:
           retention-days: 90
 
       - name: Apply production release
-        if: ${{ false }}
         run: terraform -chdir="$TF_WORKING_DIR" apply -input=false -auto-approve tfplan
 
       - name: Wait for ECS services
-        if: ${{ false }}
         run: |
           ECS_CLUSTER=$(terraform -chdir="$TF_WORKING_DIR" output -raw ecs_cluster_name)
           API_SERVICE=$(terraform -chdir="$TF_WORKING_DIR" output -raw api_service_name)
@@ -249,7 +243,6 @@ jobs:
             --region "$AWS_REGION"
 
       - name: Record successful release
-        if: ${{ false }}
         run: |
           API_TASK_DEFINITION=$(terraform -chdir="$TF_WORKING_DIR" output -raw api_task_definition_arn)
           WORKER_TASK_DEFINITION=$(terraform -chdir="$TF_WORKING_DIR" output -raw worker_task_definition_arn)
@@ -295,7 +288,6 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload release record
-        if: ${{ false }}
         uses: actions/upload-artifact@v7
         with:
           name: production-release-${{ github.sha }}-${{ github.run_id }}
@@ -304,7 +296,6 @@ jobs:
           retention-days: 90
 
       - name: Delete pre-deployment restore point
-        if: ${{ false }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
@@ -315,7 +306,6 @@ jobs:
             "/repos/$GITHUB_REPOSITORY/actions/artifacts/$RESTORE_POINT_ARTIFACT_ID"
 
       - name: Keep the latest 30 task definition revisions
-        if: ${{ false }}
         env:
           TASK_DEFINITION_RETENTION: "30"
         run: |
@@ -340,7 +330,6 @@ jobs:
           done
 
       - name: Keep the latest 30 release records
-        if: ${{ false }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}

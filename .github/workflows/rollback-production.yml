@@ -20,8 +20,7 @@ env:
 jobs:
   rollback:
     name: Roll back to previous successful release
-    # Temporary guard: rollback becomes usable after CI owns a verified release.
-    if: github.ref == 'refs/heads/main' && false
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

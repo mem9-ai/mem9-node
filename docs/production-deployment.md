@@ -4,12 +4,6 @@ Production is released manually from the current `main` commit. Image builds,
 Terraform plan/apply, and ECS deployment happen in one workflow run, so there
 is no separately selected image SHA or saved intermediate Terraform plan.
 
-> **Temporary validation guard:** the workflow currently stops after the
-> Terraform plan summary. Every step from the restore point through apply,
-> ECS update, release recording, and retention has `if: false`; the rollback
-> job is disabled the same way. Remove those guards only after the prepared
-> images and Terraform plan have been verified.
-
 ## Workflows
 
 ### Pull-request checks

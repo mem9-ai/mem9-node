@@ -53,8 +53,7 @@ Worker health: `http://127.0.0.1:3001/health/live`
 Pull requests run application and Terraform checks. Production is released
 manually from the current `main` commit; one workflow builds immutable API and
 worker images, applies Terraform, and waits for ECS. Rollback automatically
-selects the previous recorded task-definition pair. Apply and rollback are
-temporarily disabled while the workflow is validated. See [Production
+selects the previous recorded task-definition pair. See [Production
 deployment](docs/production-deployment.md) for setup and operating details.
 
 ## API Flow
