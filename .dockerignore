@@ -1,0 +1,23 @@
+# Source-control and CI metadata
+.git
+.github
+
+# Local dependencies, caches, logs, and build output
+**/node_modules
+.pnpm-store
+**/dist
+coverage
+logs
+*.log
+*.tsbuildinfo
+.DS_Store
+
+# Local environment and credential files
+.env
+.env.*
+.sentryclirc
+
+# Terraform configuration is not part of the application image. Excluding the
+# whole directory also keeps local variables, state, plans, and backups out of
+# the Docker build context.
+infra/terraform

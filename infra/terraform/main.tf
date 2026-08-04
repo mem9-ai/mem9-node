@@ -1,5 +1,7 @@
 terraform {
-  required_version = ">= 1.7.0"
+  required_version = ">= 1.10.0, < 2.0.0"
+
+  backend "s3" {}
 
   required_providers {
     aws = {
@@ -75,6 +77,12 @@ resource "aws_sqs_queue" "analysis_llm" {
 
 resource "aws_ecs_cluster" "this" {
   name = "${var.name_prefix}-cluster"
+
+  tags = {
+    component   = "node"
+    environment = "prod"
+    servicetype = "mem9"
+  }
 }
 
 resource "aws_cloudwatch_log_group" "api" {
