@@ -16,6 +16,7 @@ env:
   ECR_REGISTRY: 401696231252.dkr.ecr.ap-southeast-1.amazonaws.com
   API_REPOSITORY: mem9-node-prod-api
   WORKER_REPOSITORY: mem9-node-prod-worker
+  API_HEALTH_URL: https://napi.mem9.ai/health/ready
   TF_STATE_BUCKET: mem9-node-prod-terraform-state
   TF_STATE_KMS_KEY_ARN: arn:aws:kms:ap-southeast-1:401696231252:key/4cd4c7a1-c1a6-47ad-9205-548678b84d86
   TERRAFORM_VERSION: 1.15.4
@@ -241,6 +242,20 @@ jobs:
             --cluster "$ECS_CLUSTER" \
             --services "$API_SERVICE" "$WORKER_SERVICE" \
             --region "$AWS_REGION"
+
+      - name: Verify production API health
+        run: |
+          curl \
+            --fail-with-body \
+            --silent \
+            --show-error \
+            --retry 10 \
+            --retry-delay 5 \
+            --retry-all-errors \
+            --connect-timeout 5 \
+            --max-time 10 \
+            "$API_HEALTH_URL" \
+            | jq -e '.status == "ready"'
 
       - name: Record successful release
         run: |

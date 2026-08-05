@@ -78,6 +78,9 @@ describe('deep analysis source preparation service', () => {
         enqueueLlmMessage: jest.fn(),
       } as never,
     );
+    const errorSpy = jest
+      .spyOn(service['logger'], 'error')
+      .mockImplementation(() => undefined);
 
     await service.prepareAndEnqueue({
       reportId: 'dar_1',
@@ -94,5 +97,6 @@ describe('deep analysis source preparation service', () => {
         errorCode: 'DEEP_ANALYSIS_SOURCE_PREP_FAILED',
       }),
     );
+    expect(errorSpy).toHaveBeenCalled();
   });
 });

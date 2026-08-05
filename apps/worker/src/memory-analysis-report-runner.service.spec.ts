@@ -119,6 +119,9 @@ describe('MemoryAnalysisReportRunnerService', () => {
       repository as never,
       new FakeRedis() as never,
     );
+    const errorSpy = jest
+      .spyOn(runner['logger'], 'error')
+      .mockImplementation(() => undefined);
 
     await runner.generateReport(reportContext, 1, {
       createdAfter: '2026-06-01T00:00:00.000Z',
@@ -131,6 +134,7 @@ describe('MemoryAnalysisReportRunnerService', () => {
       failCode: 'QWEN_NOT_CONFIGURED',
       failReason: 'Qwen API key or model is not configured.',
     }));
+    expect(errorSpy).toHaveBeenCalled();
   });
 
   it('uses the cache version for period summary cache lookups and writes', async () => {

@@ -446,6 +446,9 @@ describe('memory analysis report service', () => {
         throw new Error('sqs down');
       }),
     });
+    const errorSpy = jest
+      .spyOn(service['logger'], 'error')
+      .mockImplementation(() => undefined);
 
     await expect(service.createReport(reportContext, {
       createdAfter: '2026-06-01T00:00:00.000Z',
@@ -459,6 +462,7 @@ describe('memory analysis report service', () => {
       reportStage: 'failed',
       failCode: 'MEMORY_ANALYSIS_QUEUE_ENQUEUE_FAILED',
     }));
+    expect(errorSpy).toHaveBeenCalled();
   });
 
   it('lists memory analysis reports by type', async () => {
