@@ -16,14 +16,14 @@ moved {
   to   = aws_vpc_security_group_ingress_rule.alb_https_in
 }
 
-import {
-  to = aws_vpc_security_group_ingress_rule.alb_http_redirect_in
-  id = "sgr-0b9e2034b2b1fb1fd"
+moved {
+  from = aws_vpc_security_group_ingress_rule.alb_https_in
+  to   = aws_vpc_security_group_ingress_rule.alb_https_in[0]
 }
 
-import {
-  to = aws_lb_listener.https
-  id = "arn:aws:elasticloadbalancing:ap-southeast-1:401696231252:listener/app/mem9-node-prod-alb/04df54f74e428044/cd982852312c563a"
+moved {
+  from = aws_lb_listener.https
+  to   = aws_lb_listener.https[0]
 }
 
 provider "aws" {
@@ -80,7 +80,7 @@ resource "aws_ecs_cluster" "this" {
 
   tags = {
     component   = "node"
-    environment = "prod"
+    environment = var.environment_name
     servicetype = "mem9"
   }
 }
@@ -193,6 +193,8 @@ resource "aws_vpc_security_group_ingress_rule" "alb_http_redirect_in" {
 }
 
 resource "aws_vpc_security_group_ingress_rule" "alb_https_in" {
+  count = var.environment_name == "prod" ? 1 : 0
+
   security_group_id = aws_security_group.alb.id
   cidr_ipv4         = "0.0.0.0/0"
   from_port         = 443
@@ -291,17 +293,24 @@ resource "aws_lb_listener" "http" {
   protocol          = "HTTP"
 
   default_action {
-    type = "redirect"
+    type             = var.environment_name == "prod" ? "redirect" : "forward"
+    target_group_arn = var.environment_name == "staging" ? aws_lb_target_group.api.arn : null
 
-    redirect {
-      port        = "443"
-      protocol    = "HTTPS"
-      status_code = "HTTP_301"
+    dynamic "redirect" {
+      for_each = var.environment_name == "prod" ? [1] : []
+
+      content {
+        port        = "443"
+        protocol    = "HTTPS"
+        status_code = "HTTP_301"
+      }
     }
   }
 }
 
 resource "aws_lb_listener" "https" {
+  count = var.environment_name == "prod" ? 1 : 0
+
   load_balancer_arn = aws_lb.api.arn
   port              = 443
   protocol          = "HTTPS"

@@ -8,6 +8,39 @@ variable "name_prefix" {
   default = "mem9-analysis"
 }
 
+variable "environment_name" {
+  description = "Deployment environment name used for resource tags."
+  type        = string
+  default     = "prod"
+
+  validation {
+    condition     = contains(["prod", "staging"], var.environment_name)
+    error_message = "environment_name must be either prod or staging."
+  }
+}
+
+variable "api_desired_count" {
+  description = "Desired number of API ECS tasks."
+  type        = number
+  default     = 6
+
+  validation {
+    condition     = var.api_desired_count >= 0 && floor(var.api_desired_count) == var.api_desired_count
+    error_message = "api_desired_count must be a non-negative integer."
+  }
+}
+
+variable "worker_desired_count" {
+  description = "Desired number of worker ECS tasks."
+  type        = number
+  default     = 2
+
+  validation {
+    condition     = var.worker_desired_count >= 0 && floor(var.worker_desired_count) == var.worker_desired_count
+    error_message = "worker_desired_count must be a non-negative integer."
+  }
+}
+
 variable "release_id" {
   description = "Git commit SHA that groups the API and worker task definitions into one release."
   type        = string
