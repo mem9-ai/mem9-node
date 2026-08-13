@@ -2,7 +2,7 @@ resource "aws_ecs_service" "api" {
   name            = "${var.name_prefix}-api"
   cluster         = aws_ecs_cluster.this.id
   task_definition = aws_ecs_task_definition.api.arn
-  desired_count   = 6
+  desired_count   = var.api_desired_count
   launch_type     = "FARGATE"
 
   network_configuration {
@@ -18,6 +18,7 @@ resource "aws_ecs_service" "api" {
   }
 
   depends_on = [
+    aws_lb_listener.http,
     aws_lb_listener.https
   ]
 }
@@ -26,7 +27,7 @@ resource "aws_ecs_service" "worker" {
   name            = "${var.name_prefix}-worker"
   cluster         = aws_ecs_cluster.this.id
   task_definition = aws_ecs_task_definition.worker.arn
-  desired_count   = 2
+  desired_count   = var.worker_desired_count
   launch_type     = "FARGATE"
 
   network_configuration {
