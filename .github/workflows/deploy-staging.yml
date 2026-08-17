@@ -1,7 +1,10 @@
 name: Deploy staging
-run-name: Deploy ${{ inputs.ref }} to staging
+run-name: Deploy ${{ inputs.ref || github.sha }} to staging
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       ref:
@@ -18,7 +21,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  SOURCE_REF: ${{ inputs.ref }}
+  SOURCE_REF: ${{ inputs.ref || github.sha }}
   AWS_REGION: ap-southeast-1
   ECR_REGISTRY: 401696231252.dkr.ecr.ap-southeast-1.amazonaws.com
   API_REPOSITORY: mem9-node-staging-api
@@ -41,17 +44,19 @@ jobs:
       id-token: write
 
     steps:
-      - name: Check out the selected commit
+      - name: Check out deployment source
         uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ env.SOURCE_REF }}
 
       - name: Verify selected source
         run: |
-          git fetch --no-tags --depth=1 origin main
-          if ! git diff --quiet FETCH_HEAD -- infra/terraform; then
-            echo "The selected ref changes infra/terraform. Merge reviewed Terraform changes to main before deploying." >&2
-            exit 1
+          if test "$GITHUB_EVENT_NAME" = "workflow_dispatch"; then
+            git fetch --no-tags --depth=1 origin main
+            if ! git diff --quiet FETCH_HEAD -- infra/terraform; then
+              echo "The selected ref changes infra/terraform. Merge reviewed Terraform changes to main before deploying." >&2
+              exit 1
+            fi
           fi
           echo "RELEASE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
