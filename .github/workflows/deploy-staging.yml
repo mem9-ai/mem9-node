@@ -2,9 +2,6 @@ name: Deploy staging
 run-name: Deploy ${{ inputs.ref || github.sha }} to staging
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
     inputs:
       ref:
