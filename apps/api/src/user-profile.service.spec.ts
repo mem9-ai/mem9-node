@@ -151,9 +151,9 @@ describe('user profile service', () => {
     const companionItems = result.items.filter((item) => item.kind === 'companion_style');
 
     expect(companionItems).toHaveLength(1);
-    expect(companionItems[0]!.title).toBe('目标导向陪伴');
-    expect(companionItems[0]!.summary).toContain('简洁直接');
-    expect(companionItems[0]!.summary).toContain('可执行建议');
+    expect(companionItems[0]!.title).toBe('Goal-oriented companionship');
+    expect(companionItems[0]!.summary).toContain('concise and direct');
+    expect(companionItems[0]!.summary).toContain('actionable advice');
     expect(companionItems.map((item) => `${item.title} ${item.summary}`).join(' ')).not.toContain('用户偏好助手直接给结论');
     expect(JSON.stringify(companionItems)).not.toContain('PRD');
     expect(JSON.stringify(companionItems)).not.toContain('Tag boost');
@@ -177,8 +177,8 @@ describe('user profile service', () => {
     const companionItems = result.items.filter((item) => item.kind === 'companion_style');
 
     expect(companionItems).toHaveLength(1);
-    expect(companionItems[0]!.title).toBe('目标导向陪伴');
-    expect(companionItems[0]!.summary).toContain('简洁直接');
+    expect(companionItems[0]!.title).toBe('Goal-oriented companionship');
+    expect(companionItems[0]!.summary).toContain('concise and direct');
     expect(JSON.stringify(companionItems)).not.toContain('zep-graph-demo');
     expect(JSON.stringify(companionItems)).not.toContain('README.md');
     expect(JSON.stringify(companionItems)).not.toContain('/Users/yj');
@@ -384,7 +384,7 @@ describe('user profile service', () => {
 
     const result = await service.getProfile(createContext());
 
-    expect(result.summary.text).toContain('不喜欢');
+    expect(result.summary.text).toContain('Dislikes');
     expect(result.summary.text).toContain('sugary drinks');
     expect(result.summary.text).not.toContain('User designed');
     expect(result.summary.text).not.toContain('initializing profiles');
@@ -409,5 +409,46 @@ describe('user profile service', () => {
     expect(result.summary.evidence).toHaveLength(0);
     expect(JSON.stringify(result.summary)).not.toContain('整体画像');
     expect(JSON.stringify(result.summary)).not.toContain('Letta/MemGPT');
+  });
+
+  it('formats profile output in the dominant memory language without changing source evidence', async () => {
+    const source = {
+      fetchProfileMemories: jest.fn(async () => [
+        memory('frontend', '用户是前端开发工程师，长期使用 React + TypeScript 做工程实践。', 'pinned'),
+        memory('ai', '用户长期关注 AI、用户画像、Memory、Agent 等方向。', 'insight'),
+        memory('style', '用户偏好助手直接给结论，建议具体、少说教。', 'insight'),
+        memory('constraint', '对机器人的约束：重要判断必须基于 facts 和 insights，不要编造。', 'fact'),
+        memory('priority', 'Current priority: continue improving English through sustained learning.', 'fact', {
+          title: 'Continue improving English',
+        }),
+        memory(
+          'english-context',
+          'The user consistently values systematic thinking, actionable plans, concise communication, reusable workflows, evidence-based decisions, and long-term progress across product and engineering work.',
+          'insight',
+        ),
+      ]),
+    } satisfies Pick<Mem9SourceService, 'fetchProfileMemories'>;
+    const service = new UserProfileService(source as unknown as Mem9SourceService);
+
+    const result = await service.getProfile(createContext());
+    const companion = result.items.find((item) => item.kind === 'companion_style');
+    const constraint = result.items.find((item) => item.kind === 'robot_constraint');
+    const priority = result.items.find((item) => item.kind === 'current_priority');
+
+    expect(result.summary.text).toContain('You are an AI product and frontend engineering practitioner');
+    expect(result.summary.text).not.toMatch(/[\u3400-\u9fff]/u);
+    expect(companion).toMatchObject({
+      title: 'Goal-oriented companionship',
+    });
+    expect(companion!.summary).toContain('Communication should be concise and direct');
+    expect(constraint).toMatchObject({
+      title: 'Avoid vague verbosity',
+    });
+    expect(constraint!.summary).toContain('Answers should be direct, structured');
+    expect(priority).toMatchObject({
+      title: 'Continue improving English',
+      summary: 'Current priority: continue improving English through sustained learning.',
+    });
+    expect(result.summary.evidence.some((item) => item.quote.includes('用户长期关注'))).toBe(true);
   });
 });

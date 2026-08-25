@@ -78,6 +78,8 @@ interface ProfileCandidate {
   evidence: UserProfileEvidence[];
 }
 
+type ProfileLanguage = 'zh' | 'en';
+
 @Injectable()
 export class UserProfileService {
   public constructor(private readonly source: Mem9SourceService) {}
@@ -86,6 +88,8 @@ export class UserProfileService {
     const memories = await this.source.fetchProfileMemories(context.rawApiKey);
     const activeMemories = memories.filter((memory) => this.isProfileMemory(memory));
     const items = this.buildItems(activeMemories);
+    const language = this.detectProfileLanguage(activeMemories);
+    const summary = this.buildSummary(activeMemories, items);
 
     return {
       generatedAt: new Date().toISOString(),
@@ -93,11 +97,110 @@ export class UserProfileService {
         memoryTypes: ['fact', 'insight', 'pinned'],
         memoryCount: activeMemories.length,
       },
-      summary: this.buildSummary(activeMemories, items),
+      summary: {
+        ...summary,
+        text: this.formatProfileOutput(summary.text, language),
+        message: summary.message
+          ? this.formatProfileOutput(summary.message, language)
+          : undefined,
+      },
       attributes: [],
       changes: [],
-      items,
+      items: items.map((item) => ({
+        ...item,
+        title: this.formatProfileOutput(item.title, language),
+        summary: this.formatProfileOutput(item.summary, language),
+      })),
     };
+  }
+
+  private detectProfileLanguage(memories: DeepAnalysisMemorySnapshot[]): ProfileLanguage {
+    const text = memories.map((memory) => memory.content).join(' ');
+    const hanCount = text.match(/[\u3400-\u9fff]/gu)?.length ?? 0;
+    const latinLetterCount = text.match(/[A-Za-z]/gu)?.length ?? 0;
+    return latinLetterCount > hanCount ? 'en' : 'zh';
+  }
+
+  private formatProfileOutput(value: string, language: ProfileLanguage): string {
+    if (language === 'zh' || !value) {
+      return value;
+    }
+
+    const replacements: Array<[string, string]> = [
+      ['你是一位AI 产品与前端工程实践者', 'You are an AI product and frontend engineering practitioner'],
+      ['你是一位前端工程实践者', 'You are a frontend engineering practitioner'],
+      ['你是一位AI 产品实践者', 'You are an AI product practitioner'],
+      ['你是一位目标驱动的长期成长型用户', 'You are a goal-driven person committed to long-term growth'],
+      ['你是一位', 'You are a '],
+      ['整体画像：', 'Overall profile: '],
+      ['偏好：', 'Preferences: '],
+      ['不喜欢：', 'Dislikes: '],
+      ['做事风格：', 'Work style: '],
+      ['长期特征：', 'Long-term traits: '],
+      ['当前优先处理事项', 'Current priority'],
+      ['当前优先事项', 'Current priority'],
+      ['喜欢的陪伴方式', 'Preferred companion style'],
+      ['对机器人的约束', 'AI constraint'],
+      ['长期陪伴信号', 'Long-term companionship signal'],
+      ['长期约束', 'Long-term constraint'],
+      ['目标驱动的长期成长型用户', 'goal-driven person committed to long-term growth'],
+      ['AI 产品与前端工程实践者', 'AI product and frontend engineering practitioner'],
+      ['前端工程实践者', 'frontend engineering practitioner'],
+      ['AI 产品实践者', 'AI product practitioner'],
+      ['AI、用户画像、Memory、Agent', 'AI, user profiles, Memory, and Agent'],
+      ['擅长系统化拆解并落地方案', 'systematically breaks down problems into actionable plans'],
+      ['习惯将复杂问题拆解为可落地方案', 'turns complex problems into actionable plans'],
+      ['偏好结构化、直接且可执行的协作方式', 'prefers structured, direct, and actionable collaboration'],
+      ['重视效率与可执行建议', 'values efficiency and actionable advice'],
+      ['擅长系统化思考', 'thinks systematically'],
+      ['目标驱动', 'goal-driven'],
+      ['AI Agent 与 Memory 学习', 'AI Agent and Memory learning'],
+      ['英语学习', 'English learning'],
+      ['健康管理', 'health management'],
+      ['家庭教育', 'family education'],
+      ['项目开发', 'project development'],
+      ['持续推进', 'continues pursuing '],
+      ['关注数据库', 'focuses on databases'],
+      ['关注', 'focuses on '],
+      ['你长期目标是', 'Your long-term goal is '],
+      ['你专业能力涉及', 'Your professional skills include '],
+      ['你兴趣上关注', 'Your interests include '],
+      ['你做事偏', 'Your work style is '],
+      ['你沟通偏', 'Your communication style is '],
+      ['，专业能力涉及', '; their professional skills include '],
+      ['，兴趣上关注', '; their interests include '],
+      ['，做事偏', '; their work style is '],
+      ['，沟通偏', '; their communication style is '],
+      ['目标导向陪伴', 'Goal-oriented companionship'],
+      ['用户偏好目标导向、主动跟进型陪伴，而非单纯情绪安慰型', 'They prefer goal-oriented, proactive follow-up rather than purely emotional comfort'],
+      ['希望通过制定计划、拆解任务、记录进展、定期提醒和复盘获得持续支持', 'They value planning, task breakdowns, progress tracking, regular reminders, and reviews'],
+      ['交流风格简洁直接，重视结构化输出、可执行建议和数据反馈', 'Communication should be concise and direct, with structured output, actionable advice, and data-informed feedback'],
+      ['期待 AI 记住目标并根据进度动态调整计划', 'AI should remember their goals and dynamically adjust plans based on progress'],
+      ['避免空泛冗长', 'Avoid vague verbosity'],
+      ['回答要直接、结构化、具体可执行，避免空泛建议、重复背景和说教式表达。', 'Answers should be direct, structured, specific, and actionable, while avoiding vague advice, repeated context, and lecturing.'],
+      ['基于证据回答', 'Ground answers in evidence'],
+      ['重要判断需基于已有 facts、insights 或明确证据，不要无依据推断。', 'Important judgments should be grounded in existing facts, insights, or explicit evidence rather than unsupported inference.'],
+      ['结合长期背景', 'Use long-term context'],
+      ['回答需结合用户在 AI、Memory、Agent、前端工程和相关产品设计中的长期背景。', 'Answers should use their long-term context in AI, Memory, Agent, frontend engineering, and related product design.'],
+      ['衔接长期目标', 'Connect long-term goals'],
+      ['涉及学习、健康、家庭教育等主题时，应衔接长期目标并避免只按单次问题处理。', 'When discussing learning, health, or family education, connect the answer to long-term goals instead of treating it as a one-off question.'],
+      ['当前没有可用于生成用户画像总结的记忆。', 'There are currently no memories available for generating a user profile summary.'],
+      ['当前记忆中稳定画像信号较少，已根据现有信息生成初步总结，但画像可能不稳定。', 'The current memories contain few stable profile signals, so this preliminary summary may not yet be reliable.'],
+      ['当前可用记忆信息较少，已根据现有记忆生成初步总结，但画像可能不稳定。', 'Few memories are currently available, so this preliminary summary may not yet be reliable.'],
+    ];
+
+    let formatted = value;
+    for (const [source, target] of replacements) {
+      formatted = formatted.replaceAll(source, target);
+    }
+
+    return formatted
+      .replaceAll('；', '; ')
+      .replaceAll('，', ', ')
+      .replaceAll('。', '.')
+      .replace(/\s+([,.;!?])/gu, '$1')
+      .replace(/\s{2,}/gu, ' ')
+      .trim();
   }
 
   private buildSummary(
