@@ -151,9 +151,9 @@ describe('user profile service', () => {
     const companionItems = result.items.filter((item) => item.kind === 'companion_style');
 
     expect(companionItems).toHaveLength(1);
-    expect(companionItems[0]!.title).toBe('目标导向陪伴');
-    expect(companionItems[0]!.summary).toContain('简洁直接');
-    expect(companionItems[0]!.summary).toContain('可执行建议');
+    expect(companionItems[0]!.title).toBe('Goal-oriented companionship');
+    expect(companionItems[0]!.summary).toContain('concise and direct');
+    expect(companionItems[0]!.summary).toContain('actionable advice');
     expect(companionItems.map((item) => `${item.title} ${item.summary}`).join(' ')).not.toContain('用户偏好助手直接给结论');
     expect(JSON.stringify(companionItems)).not.toContain('PRD');
     expect(JSON.stringify(companionItems)).not.toContain('Tag boost');
@@ -177,8 +177,8 @@ describe('user profile service', () => {
     const companionItems = result.items.filter((item) => item.kind === 'companion_style');
 
     expect(companionItems).toHaveLength(1);
-    expect(companionItems[0]!.title).toBe('目标导向陪伴');
-    expect(companionItems[0]!.summary).toContain('简洁直接');
+    expect(companionItems[0]!.title).toBe('Goal-oriented companionship');
+    expect(companionItems[0]!.summary).toContain('concise and direct');
     expect(JSON.stringify(companionItems)).not.toContain('zep-graph-demo');
     expect(JSON.stringify(companionItems)).not.toContain('README.md');
     expect(JSON.stringify(companionItems)).not.toContain('/Users/yj');
@@ -384,7 +384,7 @@ describe('user profile service', () => {
 
     const result = await service.getProfile(createContext());
 
-    expect(result.summary.text).toContain('不喜欢');
+    expect(result.summary.text).toContain('Dislikes');
     expect(result.summary.text).toContain('sugary drinks');
     expect(result.summary.text).not.toContain('User designed');
     expect(result.summary.text).not.toContain('initializing profiles');
@@ -409,5 +409,116 @@ describe('user profile service', () => {
     expect(result.summary.evidence).toHaveLength(0);
     expect(JSON.stringify(result.summary)).not.toContain('整体画像');
     expect(JSON.stringify(result.summary)).not.toContain('Letta/MemGPT');
+  });
+
+  it('formats profile output in the dominant memory language without changing source evidence', async () => {
+    const source = {
+      fetchProfileMemories: jest.fn(async () => [
+        memory('frontend', '用户是前端开发工程师，长期使用 React + TypeScript 做工程实践。', 'pinned'),
+        memory('ai', '用户长期关注 AI、用户画像、Memory、Agent 等方向。', 'insight'),
+        memory('style', '用户偏好助手直接给结论，建议具体、少说教。', 'insight'),
+        memory('constraint', '对机器人的约束：重要判断必须基于 facts 和 insights，不要编造。', 'fact'),
+        memory('priority', 'Current priority: continue improving English through sustained learning.', 'fact', {
+          title: 'Continue improving English',
+        }),
+        memory(
+          'english-context',
+          'The user consistently values systematic thinking, actionable plans, concise communication, reusable workflows, evidence-based decisions, and long-term progress across product and engineering work.',
+          'insight',
+        ),
+      ]),
+    } satisfies Pick<Mem9SourceService, 'fetchProfileMemories'>;
+    const service = new UserProfileService(source as unknown as Mem9SourceService);
+
+    const result = await service.getProfile(createContext());
+    const companion = result.items.find((item) => item.kind === 'companion_style');
+    const constraint = result.items.find((item) => item.kind === 'robot_constraint');
+    const priority = result.items.find((item) => item.kind === 'current_priority');
+
+    expect(result.summary.text).toContain('You are an AI product and frontend engineering practitioner');
+    expect(result.summary.text).not.toMatch(/[\u3400-\u9fff]/u);
+    expect(companion).toMatchObject({
+      title: 'Goal-oriented companionship',
+    });
+    expect(companion!.summary).toContain('Communication should be concise and direct');
+    expect(constraint).toMatchObject({
+      title: 'Avoid vague verbosity',
+    });
+    expect(constraint!.summary).toContain('Answers should be direct, structured');
+    expect(priority).toMatchObject({
+      title: 'Continue improving English',
+      summary: 'Current priority: continue improving English through sustained learning.',
+    });
+    expect(result.summary.evidence.some((item) => item.quote.includes('用户长期关注'))).toBe(true);
+  });
+
+  it('localizes source-derived item summaries to the dominant profile language', async () => {
+    const source = {
+      fetchProfileMemories: jest.fn(async () => [
+        memory('english-profile', 'The user is a frontend engineer who consistently values systematic thinking, direct communication, reusable workflows, and evidence-based decisions.', 'pinned'),
+        memory('english-context', 'The user has a long-term interest in AI, Memory, Agent systems, databases, and product engineering.', 'insight'),
+        memory('priority-zh', '当前优先事项：持续推进英语学习和健康管理。', 'fact', {
+          title: '英语学习和健康管理',
+        }),
+      ]),
+    } satisfies Pick<Mem9SourceService, 'fetchProfileMemories'>;
+    const service = new UserProfileService(source as unknown as Mem9SourceService);
+
+    const result = await service.getProfile(createContext());
+    const priority = result.items.find((item) => item.kind === 'current_priority');
+
+    expect(priority!.summary).toBe('Current priorities include English learning, health management.');
+    expect(priority!.summary).not.toMatch(/[\u3400-\u9fff]/u);
+    expect(priority!.evidence[0]!.quote).toContain('持续推进英语学习和健康管理');
+  });
+
+  it('does not count Han from Chinese memories toward Japanese dominance', async () => {
+    const source = {
+      fetchProfileMemories: jest.fn(async () => [
+        memory('profile-zh', '用户是一名前端开发工程师，长期关注人工智能、用户画像和长期记忆，习惯系统化思考并推进可执行方案。', 'pinned'),
+        memory('preference-zh', '用户长期偏好直接、简洁、结构化的沟通方式，重视明确结论和具体建议。', 'insight'),
+        memory('goal-zh', '用户持续推进英语学习、健康管理和家庭教育等长期目标。', 'insight'),
+        memory('style-ja', '簡潔な回答を好みます。', 'insight'),
+      ]),
+    } satisfies Pick<Mem9SourceService, 'fetchProfileMemories'>;
+    const service = new UserProfileService(source as unknown as Mem9SourceService);
+
+    const result = await service.getProfile(createContext());
+
+    expect(result.summary.text).toContain('你是一位');
+    expect(result.summary.text).not.toContain('あなたは');
+    expect(result.summary.message ?? '').not.toMatch(/[\u3040-\u30ff]/u);
+  });
+
+  it('uses Japanese templates when Japanese is the dominant memory language', async () => {
+    const source = {
+      fetchProfileMemories: jest.fn(async () => [
+        memory('frontend-ja', 'ユーザーはフロントエンド開発者で、ReactとTypeScriptを長期的に使用しています。', 'pinned'),
+        memory('ai-ja', 'AI、ユーザープロファイル、Memory、Agentに長期的な関心があります。', 'insight'),
+        memory('style-ja', 'ユーザーは目標志向の伴走を好み、計画作成、進捗のフォロー、簡潔で直接的な回答を重視します。', 'insight'),
+        memory('constraint-ja', 'AIへの制約：重要な判断はfactsとinsightsの根拠に基づき、曖昧で冗長な回答を避けます。', 'fact'),
+        memory('priority-ja', '現在の優先事項：英語学習と健康管理を継続します。', 'fact', {
+          title: '英語学習と健康管理',
+        }),
+      ]),
+    } satisfies Pick<Mem9SourceService, 'fetchProfileMemories'>;
+    const service = new UserProfileService(source as unknown as Mem9SourceService);
+
+    const result = await service.getProfile(createContext());
+    const companion = result.items.find((item) => item.kind === 'companion_style');
+    const constraintTitles = result.items
+      .filter((item) => item.kind === 'robot_constraint')
+      .map((item) => item.title);
+
+    expect(result.summary.text).toContain('あなたはAIプロダクトとフロントエンドエンジニアリングの実践者です');
+    expect(result.summary.text).not.toContain('You are');
+    expect(result.summary.text).not.toContain('你是一位');
+    expect(companion).toMatchObject({ title: '目標志向の伴走' });
+    expect(companion!.summary).toContain('簡潔で直接的な対話');
+    expect(constraintTitles).toEqual(expect.arrayContaining([
+      '曖昧で冗長な回答を避ける',
+      '根拠に基づいて回答する',
+    ]));
+    expect(result.summary.evidence.some((item) => item.quote.includes('ユーザープロファイル'))).toBe(true);
   });
 });
