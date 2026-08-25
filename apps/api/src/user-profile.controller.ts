@@ -19,7 +19,10 @@ export class UserProfileController {
   public constructor(private readonly service: UserProfileService) {}
 
   @Get()
-  @ApiOperation({ summary: 'Build the user profile page model from facts and insights' })
+  @ApiOperation({
+    summary: 'Build the user profile page model from facts and insights',
+    description: 'Generated `summary.text`, `summary.message`, `items[].title`, and `items[].summary` follow the dominant language of the source memories. English persona summaries address the user directly with `You are ...`. Evidence quotes preserve the original memory text.',
+  })
   public getProfile(@CurrentContext() context: Mem9RequestContext) {
     return this.service.getProfile(context);
   }
