@@ -210,6 +210,8 @@ const PROFILE_TEXT: Record<
     unstableSummary: string;
     sparseSummary: string;
     itemLabels: Record<UserProfileItemKind, string>;
+    itemSummaries: Record<UserProfileItemKind, string>;
+    currentPriorities: (plans: string[]) => string;
     companion: {
       signal: string;
       title: string;
@@ -245,6 +247,12 @@ const PROFILE_TEXT: Record<
     sparseSummary:
       '当前可用记忆信息较少，已根据现有记忆生成初步总结，但画像可能不稳定。',
     itemLabels: ITEM_KIND_LABELS,
+    itemSummaries: {
+      current_priority: '这是由用户画像记忆支持的当前优先事项。',
+      companion_style: '这是由用户画像记忆支持的偏好陪伴方式。',
+      robot_constraint: '这是由用户画像记忆支持的 AI 约束。',
+    },
+    currentPriorities: (plans) => `当前优先事项包括${plans.join('、')}。`,
     companion: {
       signal: '长期陪伴信号',
       title: '目标导向陪伴',
@@ -289,6 +297,16 @@ const PROFILE_TEXT: Record<
       companion_style: 'Preferred companion style',
       robot_constraint: 'AI constraint',
     },
+    itemSummaries: {
+      current_priority:
+        'This is a current priority supported by the profile memories.',
+      companion_style:
+        'This is a preferred companion style supported by the profile memories.',
+      robot_constraint:
+        'This is an AI constraint supported by the profile memories.',
+    },
+    currentPriorities: (plans) =>
+      `Current priorities include ${plans.join(', ')}.`,
     companion: {
       signal: 'Long-term companionship signal',
       title: 'Goal-oriented companionship',
@@ -335,6 +353,15 @@ const PROFILE_TEXT: Record<
       companion_style: '好ましい伴走スタイル',
       robot_constraint: 'AIへの重要な制約',
     },
+    itemSummaries: {
+      current_priority:
+        'ユーザープロファイルのメモリに基づく現在の優先事項です。',
+      companion_style:
+        'ユーザープロファイルのメモリに基づく好ましい伴走スタイルです。',
+      robot_constraint: 'ユーザープロファイルのメモリに基づくAIへの制約です。',
+    },
+    currentPriorities: (plans) =>
+      `現在の優先事項には${plans.join('、')}が含まれます。`,
     companion: {
       signal: '長期的な伴走の手がかり',
       title: '目標志向の伴走',
@@ -417,14 +444,40 @@ export class UserProfileService {
   private detectProfileLanguage(
     memories: DeepAnalysisMemorySnapshot[],
   ): ProfileLanguage {
-    const text = memories.map((memory) => memory.content).join(' ');
+    const scores: Record<ProfileLanguage, number> = { zh: 0, en: 0, ja: 0 };
+
+    for (const memory of memories) {
+      const language = this.detectTextLanguage(memory.content);
+      scores[language] += this.languageWeight(memory.content, language);
+    }
+
+    return (
+      (Object.keys(scores) as ProfileLanguage[]).sort(
+        (left, right) => scores[right] - scores[left],
+      )[0] ?? 'zh'
+    );
+  }
+
+  private detectTextLanguage(text: string): ProfileLanguage {
     const hanCount = text.match(/[\u3400-\u9fff]/gu)?.length ?? 0;
     const kanaCount = text.match(/[\u3040-\u30ff\u31f0-\u31ff]/gu)?.length ?? 0;
     const latinLetterCount = text.match(/[A-Za-z]/gu)?.length ?? 0;
-    if (kanaCount > 0 && kanaCount + hanCount > latinLetterCount) {
+
+    if (kanaCount > 0) {
       return 'ja';
     }
     return latinLetterCount > hanCount ? 'en' : 'zh';
+  }
+
+  private languageWeight(text: string, language: ProfileLanguage): number {
+    const hanCount = text.match(/[\u3400-\u9fff]/gu)?.length ?? 0;
+    const kanaCount = text.match(/[\u3040-\u30ff\u31f0-\u31ff]/gu)?.length ?? 0;
+    const latinLetterCount = text.match(/[A-Za-z]/gu)?.length ?? 0;
+
+    if (language === 'ja') {
+      return Math.max(hanCount + kanaCount, 1);
+    }
+    return Math.max(language === 'en' ? latinLetterCount : hanCount, 1);
   }
 
   private buildSummary(
@@ -743,27 +796,33 @@ export class UserProfileService {
     signals: PersonaSummarySignals,
     text: string,
   ): void {
+    signals.longTermPlans.push(...this.detectPlanSignals(text));
+  }
+
+  private detectPlanSignals(text: string): PersonaPlan[] {
+    const plans: PersonaPlan[] = [];
     if (/(英语|KET|CET|六级|单词|备考|英語|単語|試験対策)/iu.test(text)) {
-      signals.longTermPlans.push('english_learning');
+      plans.push('english_learning');
     }
     if (/(健康|减脂|饮食|步数|运动|睡眠|減量|食事|歩数|運動)/iu.test(text)) {
-      signals.longTermPlans.push('health_management');
+      plans.push('health_management');
     }
     if (/(家庭教育|孩子|女儿|亲子|子ども|娘|親子)/iu.test(text)) {
-      signals.longTermPlans.push('family_education');
+      plans.push('family_education');
     }
     if (
       /(AI Agent|Agent|Memory|长期记忆|長期記憶)/iu.test(text) &&
       /(学习|深入|关注|推进|研究|学習|深める|関心|推進)/iu.test(text)
     ) {
-      signals.longTermPlans.push('ai_memory_learning');
+      plans.push('ai_memory_learning');
     }
     if (
       /(TiDB Cloud|项目开发|开发|プロジェクト開発|開発)/iu.test(text) &&
       /(推进|持续|长期|工作|推進|継続|長期|仕事)/iu.test(text)
     ) {
-      signals.longTermPlans.push('project_development');
+      plans.push('project_development');
     }
+    return this.uniqueStrings(plans);
   }
 
   private collectStyleSignals(
@@ -1008,7 +1067,7 @@ export class UserProfileService {
           .map((candidate) => ({
             kind,
             title: candidate.title,
-            summary: candidate.summary,
+            summary: this.localizeItemSummary(candidate, kind, language),
             importance: Math.round(candidate.importance),
             evidenceCount: candidate.evidence.length,
             evidence: candidate.evidence.slice(0, ITEM_EVIDENCE_LIMIT),
@@ -1017,6 +1076,27 @@ export class UserProfileService {
     }
 
     return items;
+  }
+
+  private localizeItemSummary(
+    candidate: ProfileCandidate,
+    kind: UserProfileItemKind,
+    language: ProfileLanguage,
+  ): string {
+    if (this.detectTextLanguage(candidate.summary) === language) {
+      return candidate.summary;
+    }
+
+    if (kind === 'current_priority') {
+      const plans = this.detectPlanSignals(
+        `${candidate.title} ${candidate.summary}`,
+      ).map((plan) => PERSONA_TEXT[language].plans[plan]);
+      if (plans.length > 0) {
+        return PROFILE_TEXT[language].currentPriorities(plans);
+      }
+    }
+
+    return PROFILE_TEXT[language].itemSummaries[kind];
   }
 
   private synthesizeItemCandidates(

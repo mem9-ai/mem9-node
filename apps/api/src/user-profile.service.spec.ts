@@ -452,6 +452,44 @@ describe('user profile service', () => {
     expect(result.summary.evidence.some((item) => item.quote.includes('用户长期关注'))).toBe(true);
   });
 
+  it('localizes source-derived item summaries to the dominant profile language', async () => {
+    const source = {
+      fetchProfileMemories: jest.fn(async () => [
+        memory('english-profile', 'The user is a frontend engineer who consistently values systematic thinking, direct communication, reusable workflows, and evidence-based decisions.', 'pinned'),
+        memory('english-context', 'The user has a long-term interest in AI, Memory, Agent systems, databases, and product engineering.', 'insight'),
+        memory('priority-zh', '当前优先事项：持续推进英语学习和健康管理。', 'fact', {
+          title: '英语学习和健康管理',
+        }),
+      ]),
+    } satisfies Pick<Mem9SourceService, 'fetchProfileMemories'>;
+    const service = new UserProfileService(source as unknown as Mem9SourceService);
+
+    const result = await service.getProfile(createContext());
+    const priority = result.items.find((item) => item.kind === 'current_priority');
+
+    expect(priority!.summary).toBe('Current priorities include English learning, health management.');
+    expect(priority!.summary).not.toMatch(/[\u3400-\u9fff]/u);
+    expect(priority!.evidence[0]!.quote).toContain('持续推进英语学习和健康管理');
+  });
+
+  it('does not count Han from Chinese memories toward Japanese dominance', async () => {
+    const source = {
+      fetchProfileMemories: jest.fn(async () => [
+        memory('profile-zh', '用户是一名前端开发工程师，长期关注人工智能、用户画像和长期记忆，习惯系统化思考并推进可执行方案。', 'pinned'),
+        memory('preference-zh', '用户长期偏好直接、简洁、结构化的沟通方式，重视明确结论和具体建议。', 'insight'),
+        memory('goal-zh', '用户持续推进英语学习、健康管理和家庭教育等长期目标。', 'insight'),
+        memory('style-ja', '簡潔な回答を好みます。', 'insight'),
+      ]),
+    } satisfies Pick<Mem9SourceService, 'fetchProfileMemories'>;
+    const service = new UserProfileService(source as unknown as Mem9SourceService);
+
+    const result = await service.getProfile(createContext());
+
+    expect(result.summary.text).toContain('你是一位');
+    expect(result.summary.text).not.toContain('あなたは');
+    expect(result.summary.message ?? '').not.toMatch(/[\u3040-\u30ff]/u);
+  });
+
   it('uses Japanese templates when Japanese is the dominant memory language', async () => {
     const source = {
       fetchProfileMemories: jest.fn(async () => [
