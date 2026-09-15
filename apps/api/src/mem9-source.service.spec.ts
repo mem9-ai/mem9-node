@@ -236,6 +236,51 @@ describe('mem9 source service', () => {
     ]);
   });
 
+  it('bounds hanging optional profile searches with a short timeout and no retries', async () => {
+    jest.useFakeTimers();
+    try {
+      const recentMemory = {
+        id: 'recent',
+        content: '最近的一条画像记忆',
+        created_at: '2026-06-27T00:00:00.000Z',
+        memory_type: 'insight',
+      };
+      const fetchMock = jest.fn((url: string, init?: RequestInit) => {
+        if (!url.includes('q=')) {
+          return Promise.resolve(createResponse(200, {
+            memories: [recentMemory],
+            total: 1,
+            limit: 50,
+            offset: 0,
+          }));
+        }
+
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            reject(Object.assign(new Error('This operation was aborted'), {
+              name: 'AbortError',
+            }));
+          }, { once: true });
+        });
+      });
+      global.fetch = fetchMock as typeof fetch;
+      const service = new Mem9SourceService(createConfig({
+        mem9SourceFetchRetries: 2,
+        mem9SourceRequestTimeoutMs: 10_000,
+      }));
+
+      const resultPromise = service.fetchProfileMemories('space-key');
+      await jest.advanceTimersByTimeAsync(1_500);
+
+      await expect(resultPromise).resolves.toEqual([
+        expect.objectContaining({ id: 'recent' }),
+      ]);
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('limits delete concurrency', async () => {
     let inFlight = 0;
     let maxInFlight = 0;

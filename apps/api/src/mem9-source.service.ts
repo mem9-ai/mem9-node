@@ -68,8 +68,10 @@ interface Mem9DeleteSessionMessageEditResponse {
 interface FetchPageOptions {
   createdAfter?: string;
   createdBefore?: string;
+  fetchRetries?: number;
   memoryType?: string;
   query?: string;
+  requestTimeoutMs?: number;
 }
 
 export interface Mem9MemoryPage {
@@ -129,6 +131,7 @@ export interface DeleteSessionMessageEditResult {
   reverted: boolean;
 }
 const PROFILE_MEMORY_PAGE_SIZE = 50;
+const PROFILE_MEMORY_SEARCH_TIMEOUT_MS = 1_500;
 const PROFILE_MEMORY_SEARCH_QUERIES = [
   'current priority plan goal task focus career 当前 优先 近期 计划 目标 任务',
   'preferred companion communication response style preference 陪伴 回应 沟通 建议 偏好',
@@ -242,8 +245,10 @@ export class Mem9SourceService {
       Promise.all(
         PROFILE_MEMORY_SEARCH_QUERIES.map((query) =>
           this.fetchPage(apiKey, pageSize, 0, {
+            fetchRetries: 0,
             memoryType: 'fact,insight,pinned',
             query,
+            requestTimeoutMs: PROFILE_MEMORY_SEARCH_TIMEOUT_MS,
           }).catch(() => null),
         ),
       ),
@@ -474,6 +479,8 @@ export class Mem9SourceService {
         headers: this.buildHeaders(apiKey),
       },
       isSuccess: (value) => value.ok,
+      requestTimeoutMs: options.requestTimeoutMs,
+      fetchRetries: options.fetchRetries,
     });
 
     if (response?.ok !== true) {
@@ -516,20 +523,24 @@ export class Mem9SourceService {
     init,
     isSuccess,
     allowNonRetryableFailure = false,
+    requestTimeoutMs = this.config.analysis.mem9SourceRequestTimeoutMs,
+    fetchRetries = this.config.analysis.mem9SourceFetchRetries,
   }: {
     url: string;
     init: RequestInit;
     isSuccess: (response: Response) => boolean;
     allowNonRetryableFailure?: boolean;
+    requestTimeoutMs?: number;
+    fetchRetries?: number;
   }): Promise<Response | null> {
-    const maxAttempts = this.config.analysis.mem9SourceFetchRetries + 1;
+    const maxAttempts = fetchRetries + 1;
     let attempt = 0;
 
     while (attempt < maxAttempts) {
       const controller = new AbortController();
       const timeout = setTimeout(
         () => controller.abort(),
-        this.config.analysis.mem9SourceRequestTimeoutMs,
+        requestTimeoutMs,
       );
 
       try {
@@ -560,7 +571,7 @@ export class Mem9SourceService {
             details: {
               reason: error instanceof Error ? error.message : String(error),
               timeoutMs: error instanceof Error && error.name === 'AbortError'
-                ? this.config.analysis.mem9SourceRequestTimeoutMs
+                ? requestTimeoutMs
                 : undefined,
               url: this.redactUrl(url),
             },
