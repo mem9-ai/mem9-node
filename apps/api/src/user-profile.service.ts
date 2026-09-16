@@ -245,7 +245,7 @@ const PROFILE_TEXT: Record<
     unstableSummary:
       '当前记忆中稳定画像信号较少，已根据现有信息生成初步总结，但画像可能不稳定。',
     sparseSummary:
-      '当前可用记忆信息较少，已根据现有记忆生成初步总结，但画像可能不稳定。',
+      '当前记忆中可识别的画像信号较少，已根据现有记忆生成初步总结，但画像可能不稳定。',
     itemLabels: ITEM_KIND_LABELS,
     itemSummaries: {
       current_priority: '这是由用户画像记忆支持的当前优先事项。',
@@ -291,7 +291,7 @@ const PROFILE_TEXT: Record<
     unstableSummary:
       'The current memories contain few stable profile signals, so this preliminary summary may not yet be reliable.',
     sparseSummary:
-      'Few memories are currently available, so this preliminary summary may not yet be reliable.',
+      'Few recognizable profile signals are currently available, so this preliminary summary may not yet be reliable.',
     itemLabels: {
       current_priority: 'Current priority',
       companion_style: 'Preferred companion style',
@@ -347,7 +347,7 @@ const PROFILE_TEXT: Record<
     unstableSummary:
       '安定したプロファイル情報が少ないため、この暫定的な要約はまだ不安定な可能性があります。',
     sparseSummary:
-      '利用可能なメモリが少ないため、この暫定的な要約はまだ不安定な可能性があります。',
+      '認識できるプロファイル情報が少ないため、この暫定的な要約はまだ不安定な可能性があります。',
     itemLabels: {
       current_priority: '現在の優先事項',
       companion_style: '好ましい伴走スタイル',

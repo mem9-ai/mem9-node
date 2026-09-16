@@ -122,34 +122,70 @@ describe('mem9 source service', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('fetches only the first small page for profile memories', async () => {
-    const fetchMock = jest.fn().mockResolvedValue(
-      createResponse(200, {
+  it('combines recent and targeted profile memories without duplicates', async () => {
+    const fetchMock = jest.fn()
+      .mockResolvedValueOnce(createResponse(200, {
         memories: [
           {
             id: 'm1',
-            content: '长期目标：通过英语六级',
-            created_at: '2026-06-26T00:00:00.000Z',
+            content: '最近的一条普通记忆',
+            created_at: '2026-06-27T00:00:00.000Z',
             memory_type: 'insight',
           },
         ],
         total: 500,
         limit: 50,
         offset: 0,
-      }),
-    );
+      }))
+      .mockResolvedValueOnce(createResponse(200, {
+        memories: [
+          {
+            id: 'm2',
+            content: '长期目标：通过英语六级',
+            created_at: '2026-06-26T00:00:00.000Z',
+            memory_type: 'insight',
+          },
+        ],
+        total: 1,
+        limit: 50,
+        offset: 0,
+      }))
+      .mockResolvedValueOnce(createResponse(200, {
+        memories: [
+          {
+            id: 'm1',
+            content: '最近的一条普通记忆',
+            created_at: '2026-06-27T00:00:00.000Z',
+            memory_type: 'insight',
+          },
+        ],
+        total: 1,
+        limit: 50,
+        offset: 0,
+      }))
+      .mockResolvedValueOnce(createResponse(200, {
+        memories: [],
+        total: 0,
+        limit: 50,
+        offset: 0,
+      }));
     global.fetch = fetchMock as typeof fetch;
     const service = new Mem9SourceService(createConfig({
       mem9SourcePageSize: 200,
     }));
 
-    await service.fetchProfileMemories('space-key');
+    const result = await service.fetchProfileMemories('space-key');
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
     expect(fetchMock).toHaveBeenCalledWith(
       expect.stringContaining('limit=50'),
       expect.any(Object),
     );
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('q=current+priority+plan+goal+task+focus+career'),
+      expect.any(Object),
+    );
+    expect(result.map((memory) => memory.id)).toEqual(['m1', 'm2']);
   });
 
   it('returns timeout diagnostics when source fetch is aborted', async () => {
@@ -167,9 +203,82 @@ describe('mem9 source service', () => {
       details: {
         reason: 'This operation was aborted',
         timeoutMs: 25,
-        url: expect.stringContaining('/memories?'),
       },
     });
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/memories?'),
+      expect.any(Object),
+    );
+  });
+
+  it('keeps recent profile memories when optional targeted searches fail', async () => {
+    const recentMemory = {
+      id: 'recent',
+      content: '最近的一条画像记忆',
+      created_at: '2026-06-27T00:00:00.000Z',
+      memory_type: 'insight',
+    };
+    const fetchMock = jest.fn()
+      .mockResolvedValueOnce(createResponse(200, {
+        memories: [recentMemory],
+        total: 1,
+        limit: 50,
+        offset: 0,
+      }))
+      .mockRejectedValue(new Error('optional search unavailable'));
+    global.fetch = fetchMock as typeof fetch;
+    const service = new Mem9SourceService(createConfig({
+      mem9SourceFetchRetries: 0,
+    }));
+
+    await expect(service.fetchProfileMemories('space-key')).resolves.toEqual([
+      expect.objectContaining({ id: 'recent' }),
+    ]);
+  });
+
+  it('bounds hanging optional profile searches with a short timeout and no retries', async () => {
+    jest.useFakeTimers();
+    try {
+      const recentMemory = {
+        id: 'recent',
+        content: '最近的一条画像记忆',
+        created_at: '2026-06-27T00:00:00.000Z',
+        memory_type: 'insight',
+      };
+      const fetchMock = jest.fn((url: string, init?: RequestInit) => {
+        if (!url.includes('q=')) {
+          return Promise.resolve(createResponse(200, {
+            memories: [recentMemory],
+            total: 1,
+            limit: 50,
+            offset: 0,
+          }));
+        }
+
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            reject(Object.assign(new Error('This operation was aborted'), {
+              name: 'AbortError',
+            }));
+          }, { once: true });
+        });
+      });
+      global.fetch = fetchMock as typeof fetch;
+      const service = new Mem9SourceService(createConfig({
+        mem9SourceFetchRetries: 2,
+        mem9SourceRequestTimeoutMs: 10_000,
+      }));
+
+      const resultPromise = service.fetchProfileMemories('space-key');
+      await jest.advanceTimersByTimeAsync(1_500);
+
+      await expect(resultPromise).resolves.toEqual([
+        expect.objectContaining({ id: 'recent' }),
+      ]);
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('limits delete concurrency', async () => {
