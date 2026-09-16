@@ -27,6 +27,15 @@ export class AnalysisJobsController {
     return this.service.createJob(context, dto);
   }
 
+  @Post('analysis-jobs/from-source')
+  @ApiOperation({ summary: 'Create an analysis job and load its memories from the mem9 source' })
+  public createJobFromSource(
+    @CurrentContext() context: Mem9RequestContext,
+    @Body() dto: CreateAnalysisJobDto,
+  ) {
+    return this.service.createJobFromSource(context, dto);
+  }
+
   @Put('analysis-jobs/:jobId/batches/:batchIndex')
   @ApiOperation({ summary: 'Upload one memories batch and enqueue it for processing' })
   public uploadBatch(

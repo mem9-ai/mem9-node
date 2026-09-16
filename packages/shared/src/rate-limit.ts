@@ -6,6 +6,11 @@ import { redisKeys } from './redis-keys';
 import { RedisService } from './redis.service';
 import { dayWindow, minuteWindow, ttlUntilNextDay, ttlUntilNextMinute } from './time';
 
+export interface RateLimitCost {
+  minute: number;
+  day: number;
+}
+
 @Injectable()
 export class RateLimitWindowService {
   public constructor(private readonly redis: RedisService) {}
@@ -13,28 +18,36 @@ export class RateLimitWindowService {
   public async consume(
     fingerprintHex: string,
     policy: Pick<RateLimitPolicy, 'rpmLimit' | 'dailyLimit'>,
-    cost: number,
+    cost: number | RateLimitCost,
     now = new Date(),
   ): Promise<void> {
+    const normalizedCost = typeof cost === 'number'
+      ? { minute: cost, day: cost }
+      : cost;
     const minuteKey = redisKeys.rateLimitMinute(fingerprintHex, minuteWindow(now));
     const dayKey = redisKeys.rateLimitDay(fingerprintHex, dayWindow(now));
     const results = (await this.redis
       .multi()
-      .incrby(minuteKey, cost)
+      .incrby(minuteKey, normalizedCost.minute)
       .expire(minuteKey, ttlUntilNextMinute(now))
-      .incrby(dayKey, cost)
+      .incrby(dayKey, normalizedCost.day)
       .expire(dayKey, ttlUntilNextDay(now))
       .exec()) as [Error | null, number][] | null;
     const minuteCount = results?.[0]?.[1] ?? 0;
     const dayCount = results?.[2]?.[1] ?? 0;
 
     if (minuteCount > policy.rpmLimit || dayCount > policy.dailyLimit) {
+      const limit = dayCount > policy.dailyLimit ? 'day' : 'minute';
       throw new AppError('Rate limit exceeded', {
         statusCode: 429,
         code: 'RATE_LIMIT_EXCEEDED',
         details: {
           minuteCount,
           dayCount,
+          limit,
+          retryAfterSeconds: limit === 'day'
+            ? ttlUntilNextDay(now)
+            : ttlUntilNextMinute(now),
         },
       });
     }

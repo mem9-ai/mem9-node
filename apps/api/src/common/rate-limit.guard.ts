@@ -25,13 +25,23 @@ export class RateLimitGuard implements CanActivate {
 
     const subject = await this.repository.ensureApiKeySubject(fingerprint);
     const policy = await this.repository.getRateLimitPolicy(subject.planCode);
-    await this.rateLimitWindowService.consume(fingerprintHex, policy, this.resolveCost(request.url, request.method));
+    await this.rateLimitWindowService.consume(fingerprintHex, policy, this.resolveCost(request));
     return true;
   }
 
-  private resolveCost(url: string, method: string): number {
+  private resolveCost(request: Mem9FastifyRequest): number | { minute: number; day: number } {
+    const { method, url } = request;
+
     if (method === 'PUT' && url.includes('/batches/')) {
       return 3;
+    }
+
+    if (method === 'POST' && url.endsWith('/analysis-jobs/from-source')) {
+      const expectedTotalBatches = this.readExpectedTotalBatches(request.body);
+      return {
+        minute: 2,
+        day: 2 + expectedTotalBatches * 3,
+      };
     }
 
     if (method === 'POST' && url.endsWith('/analysis-jobs')) {
@@ -39,5 +49,16 @@ export class RateLimitGuard implements CanActivate {
     }
 
     return 1;
+  }
+
+  private readExpectedTotalBatches(body: unknown): number {
+    if (!body || typeof body !== 'object' || !('expectedTotalBatches' in body)) {
+      return 0;
+    }
+
+    const value = (body as { expectedTotalBatches?: unknown }).expectedTotalBatches;
+    return typeof value === 'number' && Number.isInteger(value) && value > 0
+      ? value
+      : 0;
   }
 }

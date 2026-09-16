@@ -29,6 +29,7 @@ import { AnalysisJobsService } from './analysis-jobs.service';
 import { ApiKeyGuard } from './common/api-key.guard';
 import { AppExceptionFilter } from './common/app-exception.filter';
 import { RateLimitGuard } from './common/rate-limit.guard';
+import { Mem9SourceService } from './mem9-source.service';
 
 const TEST_QWEN_MODEL = 'test-qwen-model';
 
@@ -561,6 +562,12 @@ describe('analysis jobs integration', () => {
           },
         },
         {
+          provide: Mem9SourceService,
+          useValue: {
+            fetchAllMemories: jest.fn(async () => []),
+          },
+        },
+        {
           provide: RateLimitWindowService,
           useValue: {
             consume: jest.fn(async () => undefined),
@@ -588,7 +595,9 @@ describe('analysis jobs integration', () => {
   });
 
   afterAll(async () => {
-    await app.close();
+    if (app) {
+      await app.close();
+    }
   });
 
   it('creates a job, uploads a batch, and returns updates after a simulated worker merge', async () => {

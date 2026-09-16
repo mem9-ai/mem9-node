@@ -17,6 +17,7 @@ import {
   GoVerifyService,
   RedisProgressStore,
   RedisService,
+  RateLimitWindowService,
   S3PayloadStorageService,
   SqsQueueService,
   TaxonomyCacheService,
@@ -24,13 +25,16 @@ import {
   gzipJson,
   sha256Hex,
 } from '@mem9/shared';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import { AnalysisJobStatus } from '@prisma/client';
 
 import type { Mem9RequestContext } from './common/request-context';
 import type { CreateAnalysisJobDto } from './dto/create-analysis-job.dto';
 import type { UploadAnalysisBatchDto } from './dto/upload-analysis-batch.dto';
+import { Mem9SourceService } from './mem9-source.service';
 
 const MAX_FACET_STATS = 50;
+const SOURCE_BATCH_MINUTE_COST = 3;
 
 function compareFacetValues(left: string, right: string): number {
   if (left < right) {
@@ -60,6 +64,7 @@ export function buildFacetStats(
 
 @Injectable()
 export class AnalysisJobsService {
+  private readonly logger = new Logger(AnalysisJobsService.name);
   private readonly progressStore: RedisProgressStore;
 
   public constructor(
@@ -69,9 +74,27 @@ export class AnalysisJobsService {
     private readonly queue: SqsQueueService,
     private readonly taxonomyCacheService: TaxonomyCacheService,
     private readonly goVerifyService: GoVerifyService,
+    private readonly source: Mem9SourceService,
+    private readonly rateLimitWindowService: RateLimitWindowService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {
     this.progressStore = new RedisProgressStore(redis, config.analysis.jobResultTtlSeconds);
+  }
+
+  public async createJobFromSource(
+    context: Mem9RequestContext,
+    dto: CreateAnalysisJobDto,
+  ): Promise<CreateAnalysisJobResponse> {
+    const response = await this.createJob(context, dto);
+    const schedule = typeof setImmediate === 'function'
+      ? setImmediate
+      : (callback: () => void) => setTimeout(callback, 0);
+
+    schedule(() => {
+      void this.prepareSourceJob(context, response.jobId, dto);
+    });
+
+    return response;
   }
 
   public async createJob(
@@ -141,6 +164,13 @@ export class AnalysisJobsService {
     dto: UploadAnalysisBatchDto,
   ) {
     const job = await this.repository.getOwnedJob(jobId, context.apiKeyFingerprint);
+
+    if (job.status === AnalysisJobStatus.CANCELLED) {
+      throw new AppError('Analysis job was cancelled', {
+        statusCode: 409,
+        code: 'ANALYSIS_JOB_CANCELLED',
+      });
+    }
 
     if (batchIndex < 1 || batchIndex > job.expectedTotalBatches) {
       throw new AppError('Batch index is out of range', {
@@ -345,5 +375,125 @@ export class AnalysisJobsService {
         confidence: processedMemories === 0 ? 0 : Number((count / processedMemories).toFixed(2)),
       }))
       .sort((left, right) => right.count - left.count || compareCategoryPriority(left.category, right.category));
+  }
+
+  private async prepareSourceJob(
+    context: Mem9RequestContext,
+    jobId: string,
+    dto: CreateAnalysisJobDto,
+  ): Promise<void> {
+    try {
+      const sourceMemories = await this.source.fetchAllMemories(context.rawApiKey);
+      const job = await this.repository.getOwnedJob(
+        jobId,
+        context.apiKeyFingerprint,
+      );
+
+      if (job.status === AnalysisJobStatus.CANCELLED) {
+        return;
+      }
+
+      const subject = await this.repository.ensureApiKeySubject(
+        context.apiKeyFingerprint,
+      );
+      const policy = await this.repository.getRateLimitPolicy(subject.planCode);
+
+      const rangeStart = Date.parse(dto.dateRange.start);
+      const rangeEnd = Date.parse(dto.dateRange.end);
+      const memories = sourceMemories.filter((memory) => {
+        const createdAt = Date.parse(memory.createdAt);
+        return Number.isFinite(createdAt) && createdAt >= rangeStart && createdAt <= rangeEnd;
+      });
+      const batches = Array.from(
+        { length: Math.ceil(memories.length / dto.batchSize) },
+        (_, index) => memories.slice(index * dto.batchSize, (index + 1) * dto.batchSize),
+      );
+
+      if (
+        memories.length !== dto.expectedTotalMemories ||
+        batches.length !== dto.expectedTotalBatches
+      ) {
+        throw new AppError('Analysis source changed while the job was starting', {
+          statusCode: 409,
+          code: 'ANALYSIS_SOURCE_CHANGED',
+          details: {
+            expectedTotalMemories: dto.expectedTotalMemories,
+            actualTotalMemories: memories.length,
+            expectedTotalBatches: dto.expectedTotalBatches,
+            actualTotalBatches: batches.length,
+          },
+        });
+      }
+
+      for (const [offset, batch] of batches.entries()) {
+        await this.consumeSourceBatchMinuteCost(
+          context.apiKeyFingerprintHex,
+          policy,
+        );
+        await this.uploadBatch(context, jobId, offset + 1, {
+          memoryCount: batch.length,
+          memories: batch.map((memory) => ({
+            id: memory.id,
+            content: memory.content,
+            createdAt: memory.createdAt,
+            metadata: memory.metadata ?? {},
+          })),
+        });
+      }
+
+      await this.finalizeJob(context, jobId);
+    } catch (error) {
+      const errorCode = error instanceof AppError
+        ? error.code
+        : 'ANALYSIS_SOURCE_PREPARATION_FAILED';
+      const errorMessage = error instanceof Error
+        ? error.message
+        : 'Failed to prepare analysis source';
+
+      const updated = await this.repository.markJobFailed(
+        jobId,
+        errorCode,
+        errorMessage.slice(0, 512),
+      );
+
+      if (updated.status === AnalysisJobStatus.CANCELLED) {
+        return;
+      }
+
+      this.logger.error(
+        `Failed to prepare source-backed analysis job ${jobId}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+    }
+  }
+
+  private async consumeSourceBatchMinuteCost(
+    fingerprintHex: string,
+    policy: Parameters<RateLimitWindowService['consume']>[1],
+  ): Promise<void> {
+    while (true) {
+      try {
+        await this.rateLimitWindowService.consume(
+          fingerprintHex,
+          policy,
+          { minute: SOURCE_BATCH_MINUTE_COST, day: 0 },
+        );
+        return;
+      } catch (error) {
+        const retryAfterSeconds = error instanceof AppError &&
+          error.code === 'RATE_LIMIT_EXCEEDED' &&
+          error.details?.limit === 'minute'
+          ? Number(error.details.retryAfterSeconds)
+          : Number.NaN;
+
+        if (!Number.isFinite(retryAfterSeconds) || retryAfterSeconds <= 0) {
+          throw error;
+        }
+
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, retryAfterSeconds * 1000 + 250);
+        });
+      }
+    }
   }
 }
