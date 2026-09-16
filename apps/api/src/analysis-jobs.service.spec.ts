@@ -27,6 +27,11 @@ describe('analysis jobs service', () => {
   it('loads source memories on the server and uploads normalized batches', async () => {
     const repository = {
       getOwnedJob: jest.fn(async () => ({ status: 'UPLOADING' })),
+      ensureApiKeySubject: jest.fn(async () => ({ planCode: 'default' })),
+      getRateLimitPolicy: jest.fn(async () => ({
+        rpmLimit: 120,
+        dailyLimit: 10000,
+      })),
       markJobFailed: jest.fn(),
     };
     const source = {
@@ -39,6 +44,9 @@ describe('analysis jobs service', () => {
         },
       ]),
     };
+    const rateLimitWindowService = {
+      consume: jest.fn(async () => undefined),
+    };
     const service = new AnalysisJobsService(
       repository as never,
       {} as never,
@@ -47,6 +55,7 @@ describe('analysis jobs service', () => {
       {} as never,
       {} as never,
       source as never,
+      rateLimitWindowService as never,
       { analysis: { jobResultTtlSeconds: 3600 } } as never,
     );
     jest.spyOn(service, 'createJob').mockResolvedValue({
@@ -98,6 +107,11 @@ describe('analysis jobs service', () => {
     await new Promise<void>((resolve) => setImmediate(resolve));
 
     expect(source.fetchAllMemories).toHaveBeenCalledWith('space-key');
+    expect(rateLimitWindowService.consume).toHaveBeenCalledWith(
+      '00',
+      expect.objectContaining({ rpmLimit: 120 }),
+      { minute: 3, day: 0 },
+    );
     expect(uploadBatch).toHaveBeenCalledWith(
       expect.objectContaining({ requestId: 'req-1' }),
       'aj_source',
@@ -137,6 +151,7 @@ describe('analysis jobs service', () => {
       {} as never,
       {} as never,
       source as never,
+      {} as never,
       { analysis: { jobResultTtlSeconds: 3600 } } as never,
     );
     jest.spyOn(service, 'createJob').mockResolvedValue({

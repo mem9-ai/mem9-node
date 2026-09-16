@@ -17,6 +17,7 @@ import {
   GoVerifyService,
   RedisProgressStore,
   RedisService,
+  RateLimitWindowService,
   S3PayloadStorageService,
   SqsQueueService,
   TaxonomyCacheService,
@@ -33,6 +34,7 @@ import type { UploadAnalysisBatchDto } from './dto/upload-analysis-batch.dto';
 import { Mem9SourceService } from './mem9-source.service';
 
 const MAX_FACET_STATS = 50;
+const SOURCE_BATCH_MINUTE_COST = 3;
 
 function compareFacetValues(left: string, right: string): number {
   if (left < right) {
@@ -73,6 +75,7 @@ export class AnalysisJobsService {
     private readonly taxonomyCacheService: TaxonomyCacheService,
     private readonly goVerifyService: GoVerifyService,
     private readonly source: Mem9SourceService,
+    private readonly rateLimitWindowService: RateLimitWindowService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {
     this.progressStore = new RedisProgressStore(redis, config.analysis.jobResultTtlSeconds);
@@ -390,6 +393,11 @@ export class AnalysisJobsService {
         return;
       }
 
+      const subject = await this.repository.ensureApiKeySubject(
+        context.apiKeyFingerprint,
+      );
+      const policy = await this.repository.getRateLimitPolicy(subject.planCode);
+
       const rangeStart = Date.parse(dto.dateRange.start);
       const rangeEnd = Date.parse(dto.dateRange.end);
       const memories = sourceMemories.filter((memory) => {
@@ -418,6 +426,10 @@ export class AnalysisJobsService {
       }
 
       for (const [offset, batch] of batches.entries()) {
+        await this.consumeSourceBatchMinuteCost(
+          context.apiKeyFingerprintHex,
+          policy,
+        );
         await this.uploadBatch(context, jobId, offset + 1, {
           memoryCount: batch.length,
           memories: batch.map((memory) => ({
@@ -452,6 +464,36 @@ export class AnalysisJobsService {
         `Failed to prepare source-backed analysis job ${jobId}`,
         error instanceof Error ? error.stack : undefined,
       );
+    }
+  }
+
+  private async consumeSourceBatchMinuteCost(
+    fingerprintHex: string,
+    policy: Parameters<RateLimitWindowService['consume']>[1],
+  ): Promise<void> {
+    while (true) {
+      try {
+        await this.rateLimitWindowService.consume(
+          fingerprintHex,
+          policy,
+          { minute: SOURCE_BATCH_MINUTE_COST, day: 0 },
+        );
+        return;
+      } catch (error) {
+        const retryAfterSeconds = error instanceof AppError &&
+          error.code === 'RATE_LIMIT_EXCEEDED' &&
+          error.details?.limit === 'minute'
+          ? Number(error.details.retryAfterSeconds)
+          : Number.NaN;
+
+        if (!Number.isFinite(retryAfterSeconds) || retryAfterSeconds <= 0) {
+          throw error;
+        }
+
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, retryAfterSeconds * 1000 + 250);
+        });
+      }
     }
   }
 }

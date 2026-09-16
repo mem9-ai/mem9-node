@@ -6,6 +6,11 @@ import { redisKeys } from './redis-keys';
 import { RedisService } from './redis.service';
 import { dayWindow, minuteWindow, ttlUntilNextDay, ttlUntilNextMinute } from './time';
 
+export interface RateLimitCost {
+  minute: number;
+  day: number;
+}
+
 @Injectable()
 export class RateLimitWindowService {
   public constructor(private readonly redis: RedisService) {}
@@ -13,16 +18,19 @@ export class RateLimitWindowService {
   public async consume(
     fingerprintHex: string,
     policy: Pick<RateLimitPolicy, 'rpmLimit' | 'dailyLimit'>,
-    cost: number,
+    cost: number | RateLimitCost,
     now = new Date(),
   ): Promise<void> {
+    const normalizedCost = typeof cost === 'number'
+      ? { minute: cost, day: cost }
+      : cost;
     const minuteKey = redisKeys.rateLimitMinute(fingerprintHex, minuteWindow(now));
     const dayKey = redisKeys.rateLimitDay(fingerprintHex, dayWindow(now));
     const results = (await this.redis
       .multi()
-      .incrby(minuteKey, cost)
+      .incrby(minuteKey, normalizedCost.minute)
       .expire(minuteKey, ttlUntilNextMinute(now))
-      .incrby(dayKey, cost)
+      .incrby(dayKey, normalizedCost.day)
       .expire(dayKey, ttlUntilNextDay(now))
       .exec()) as [Error | null, number][] | null;
     const minuteCount = results?.[0]?.[1] ?? 0;
