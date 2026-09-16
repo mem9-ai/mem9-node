@@ -1,6 +1,56 @@
 import { BatchProcessorService } from './batch-processor.service';
 
 describe('batch processor service', () => {
+  it('skips batches belonging to a cancelled job', async () => {
+    const repository = {
+      getJob: jest.fn(async () => ({
+        id: 'aj_cancelled',
+        status: 'CANCELLED',
+        expectedTotalBatches: 1,
+        completedBatches: 0,
+        taxonomyVersion: 'v1',
+      })),
+      getBatch: jest.fn(async () => ({
+        id: 'ajb_1',
+        status: 'QUEUED',
+        memoryCount: 1,
+      })),
+      markBatchRunning: jest.fn(),
+    };
+    const redis = {
+      set: jest.fn(async () => 'OK'),
+      get: jest.fn(async (key: string) => (key.startsWith('lock:') ? 'lock_1' : null)),
+      del: jest.fn(async () => 1),
+    };
+    const storage = {
+      getObjectBuffer: jest.fn(),
+    };
+    const processor = new BatchProcessorService(
+      repository as never,
+      redis as never,
+      storage as never,
+      {} as never,
+    );
+
+    await processor.process(
+      {
+        jobId: 'aj_cancelled',
+        batchIndex: 1,
+        payloadObjectKey: 'analysis-jobs/aj_cancelled/batches/1.json.gz',
+        payloadHash: 'hash',
+        memoryCount: 1,
+        pipelineVersion: 'v1',
+        taxonomyVersion: 'v1',
+        llmEnabled: false,
+        traceId: 'trace_1',
+      },
+      1,
+    );
+
+    expect(repository.markBatchRunning).not.toHaveBeenCalled();
+    expect(storage.getObjectBuffer).not.toHaveBeenCalled();
+  });
+
   it('skips already succeeded batches without touching S3', async () => {
     const repository = {
       getJob: jest.fn(async () => ({

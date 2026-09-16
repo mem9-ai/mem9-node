@@ -25,6 +25,7 @@ import {
   sha256Hex,
 } from '@mem9/shared';
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { AnalysisJobStatus } from '@prisma/client';
 
 import type { Mem9RequestContext } from './common/request-context';
 import type { CreateAnalysisJobDto } from './dto/create-analysis-job.dto';
@@ -160,6 +161,13 @@ export class AnalysisJobsService {
     dto: UploadAnalysisBatchDto,
   ) {
     const job = await this.repository.getOwnedJob(jobId, context.apiKeyFingerprint);
+
+    if (job.status === AnalysisJobStatus.CANCELLED) {
+      throw new AppError('Analysis job was cancelled', {
+        statusCode: 409,
+        code: 'ANALYSIS_JOB_CANCELLED',
+      });
+    }
 
     if (batchIndex < 1 || batchIndex > job.expectedTotalBatches) {
       throw new AppError('Batch index is out of range', {
@@ -373,6 +381,15 @@ export class AnalysisJobsService {
   ): Promise<void> {
     try {
       const sourceMemories = await this.source.fetchAllMemories(context.rawApiKey);
+      const job = await this.repository.getOwnedJob(
+        jobId,
+        context.apiKeyFingerprint,
+      );
+
+      if (job.status === AnalysisJobStatus.CANCELLED) {
+        return;
+      }
+
       const rangeStart = Date.parse(dto.dateRange.start);
       const rangeEnd = Date.parse(dto.dateRange.end);
       const memories = sourceMemories.filter((memory) => {
@@ -421,14 +438,19 @@ export class AnalysisJobsService {
         ? error.message
         : 'Failed to prepare analysis source';
 
-      this.logger.error(
-        `Failed to prepare source-backed analysis job ${jobId}`,
-        error instanceof Error ? error.stack : undefined,
-      );
-      await this.repository.markJobFailed(
+      const updated = await this.repository.markJobFailed(
         jobId,
         errorCode,
         errorMessage.slice(0, 512),
+      );
+
+      if (updated.status === AnalysisJobStatus.CANCELLED) {
+        return;
+      }
+
+      this.logger.error(
+        `Failed to prepare source-backed analysis job ${jobId}`,
+        error instanceof Error ? error.stack : undefined,
       );
     }
   }

@@ -260,13 +260,24 @@ export class AnalysisRepository {
   }
 
   public async markJobFinalized(jobId: string): Promise<AnalysisJob> {
-    return this.prisma.analysisJob.update({
-      where: { id: jobId },
+    await this.prisma.analysisJob.updateMany({
+      where: {
+        id: jobId,
+        status: {
+          in: [
+            AnalysisJobStatus.UPLOADING,
+            AnalysisJobStatus.PROCESSING,
+            AnalysisJobStatus.PARTIAL,
+          ],
+        },
+      },
       data: {
         status: AnalysisJobStatus.PROCESSING,
         startedAt: new Date(),
       },
     });
+
+    return this.getJob(jobId);
   }
 
   public async markJobFailed(
@@ -274,8 +285,17 @@ export class AnalysisRepository {
     errorCode: string,
     errorMessage: string,
   ): Promise<AnalysisJob> {
-    return this.prisma.analysisJob.update({
-      where: { id: jobId },
+    await this.prisma.analysisJob.updateMany({
+      where: {
+        id: jobId,
+        status: {
+          in: [
+            AnalysisJobStatus.UPLOADING,
+            AnalysisJobStatus.PROCESSING,
+            AnalysisJobStatus.PARTIAL,
+          ],
+        },
+      },
       data: {
         status: AnalysisJobStatus.FAILED,
         completedAt: new Date(),
@@ -283,6 +303,8 @@ export class AnalysisRepository {
         lastErrorMessage: errorMessage,
       },
     });
+
+    return this.getJob(jobId);
   }
 
   public async cancelJob(jobId: string): Promise<AnalysisJob> {
@@ -345,8 +367,11 @@ export class AnalysisRepository {
           errorMessage: null,
         },
       }),
-      this.prisma.analysisJob.update({
-        where: { id: data.jobId },
+      this.prisma.analysisJob.updateMany({
+        where: {
+          id: data.jobId,
+          status: { not: AnalysisJobStatus.CANCELLED },
+        },
         data: {
           status: data.finalStatus,
           startedAt: new Date(),
@@ -394,8 +419,11 @@ export class AnalysisRepository {
           errorMessage: data.errorMessage,
         },
       }),
-      this.prisma.analysisJob.update({
-        where: { id: data.jobId },
+      this.prisma.analysisJob.updateMany({
+        where: {
+          id: data.jobId,
+          status: { not: AnalysisJobStatus.CANCELLED },
+        },
         data: {
           status: jobStatus,
           failedBatches: data.retryable ? undefined : { increment: 1 },

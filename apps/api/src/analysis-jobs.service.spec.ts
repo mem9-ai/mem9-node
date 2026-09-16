@@ -26,6 +26,7 @@ describe('analysis jobs service', () => {
 
   it('loads source memories on the server and uploads normalized batches', async () => {
     const repository = {
+      getOwnedJob: jest.fn(async () => ({ status: 'UPLOADING' })),
       markJobFailed: jest.fn(),
     };
     const source = {
@@ -113,5 +114,69 @@ describe('analysis jobs service', () => {
     );
     expect(finalizeJob).toHaveBeenCalled();
     expect(repository.markJobFailed).not.toHaveBeenCalled();
+  });
+
+  it('does not finalize source preparation after the job is cancelled', async () => {
+    const repository = {
+      getOwnedJob: jest.fn(async () => ({ status: 'CANCELLED' })),
+      markJobFailed: jest.fn(async () => ({ status: 'CANCELLED' })),
+    };
+    const source = {
+      fetchAllMemories: jest.fn(async () => [{
+        id: 'mem-1',
+        content: 'memory',
+        createdAt: '2026-03-01T00:00:00.000Z',
+        metadata: {},
+      }]),
+    };
+    const service = new AnalysisJobsService(
+      repository as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      source as never,
+      { analysis: { jobResultTtlSeconds: 3600 } } as never,
+    );
+    jest.spyOn(service, 'createJob').mockResolvedValue({
+      jobId: 'aj_cancelled',
+      status: 'UPLOADING',
+      expectedTotalBatches: 1,
+      uploadConcurrency: 3,
+      pollAfterMs: 1500,
+    });
+    const uploadBatch = jest.spyOn(service, 'uploadBatch');
+    const finalizeJob = jest.spyOn(service, 'finalizeJob');
+
+    await service.createJobFromSource(
+      {
+        apiKeyFingerprint: Buffer.alloc(32),
+        apiKeyFingerprintHex: '00',
+        rawApiKey: 'space-key',
+        requestId: 'req-1',
+      },
+      {
+        dateRange: {
+          start: '2026-03-01T00:00:00.000Z',
+          end: '2026-03-02T00:00:00.000Z',
+        },
+        expectedTotalMemories: 1,
+        expectedTotalBatches: 1,
+        batchSize: 100,
+        options: {
+          lang: 'zh-CN',
+          taxonomyVersion: 'v3',
+          llmEnabled: true,
+          includeItems: true,
+          includeSummary: true,
+        },
+      },
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(uploadBatch).not.toHaveBeenCalled();
+    expect(repository.markJobFailed).not.toHaveBeenCalled();
+    expect(finalizeJob).not.toHaveBeenCalled();
   });
 });

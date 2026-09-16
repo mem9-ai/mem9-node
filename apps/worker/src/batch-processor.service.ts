@@ -44,6 +44,10 @@ export class BatchProcessorService {
       const job = await this.repository.getJob(message.jobId);
       const batch = await this.repository.getBatch(message.jobId, message.batchIndex);
 
+      if (job.status === AnalysisJobStatus.CANCELLED) {
+        return;
+      }
+
       if (batch === null) {
         throw new AppError('Analysis batch does not exist', {
           statusCode: 404,
