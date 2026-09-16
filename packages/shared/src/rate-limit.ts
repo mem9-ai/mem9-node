@@ -29,12 +29,17 @@ export class RateLimitWindowService {
     const dayCount = results?.[2]?.[1] ?? 0;
 
     if (minuteCount > policy.rpmLimit || dayCount > policy.dailyLimit) {
+      const limit = dayCount > policy.dailyLimit ? 'day' : 'minute';
       throw new AppError('Rate limit exceeded', {
         statusCode: 429,
         code: 'RATE_LIMIT_EXCEEDED',
         details: {
           minuteCount,
           dayCount,
+          limit,
+          retryAfterSeconds: limit === 'day'
+            ? ttlUntilNextDay(now)
+            : ttlUntilNextMinute(now),
         },
       });
     }

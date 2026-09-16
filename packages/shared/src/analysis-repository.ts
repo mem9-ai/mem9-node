@@ -269,6 +269,22 @@ export class AnalysisRepository {
     });
   }
 
+  public async markJobFailed(
+    jobId: string,
+    errorCode: string,
+    errorMessage: string,
+  ): Promise<AnalysisJob> {
+    return this.prisma.analysisJob.update({
+      where: { id: jobId },
+      data: {
+        status: AnalysisJobStatus.FAILED,
+        completedAt: new Date(),
+        lastErrorCode: errorCode,
+        lastErrorMessage: errorMessage,
+      },
+    });
+  }
+
   public async cancelJob(jobId: string): Promise<AnalysisJob> {
     return this.prisma.analysisJob.update({
       where: { id: jobId },

@@ -24,11 +24,12 @@ import {
   gzipJson,
   sha256Hex,
 } from '@mem9/shared';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 
 import type { Mem9RequestContext } from './common/request-context';
 import type { CreateAnalysisJobDto } from './dto/create-analysis-job.dto';
 import type { UploadAnalysisBatchDto } from './dto/upload-analysis-batch.dto';
+import { Mem9SourceService } from './mem9-source.service';
 
 const MAX_FACET_STATS = 50;
 
@@ -60,6 +61,7 @@ export function buildFacetStats(
 
 @Injectable()
 export class AnalysisJobsService {
+  private readonly logger = new Logger(AnalysisJobsService.name);
   private readonly progressStore: RedisProgressStore;
 
   public constructor(
@@ -69,9 +71,26 @@ export class AnalysisJobsService {
     private readonly queue: SqsQueueService,
     private readonly taxonomyCacheService: TaxonomyCacheService,
     private readonly goVerifyService: GoVerifyService,
+    private readonly source: Mem9SourceService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {
     this.progressStore = new RedisProgressStore(redis, config.analysis.jobResultTtlSeconds);
+  }
+
+  public async createJobFromSource(
+    context: Mem9RequestContext,
+    dto: CreateAnalysisJobDto,
+  ): Promise<CreateAnalysisJobResponse> {
+    const response = await this.createJob(context, dto);
+    const schedule = typeof setImmediate === 'function'
+      ? setImmediate
+      : (callback: () => void) => setTimeout(callback, 0);
+
+    schedule(() => {
+      void this.prepareSourceJob(context, response.jobId, dto);
+    });
+
+    return response;
   }
 
   public async createJob(
@@ -345,5 +364,72 @@ export class AnalysisJobsService {
         confidence: processedMemories === 0 ? 0 : Number((count / processedMemories).toFixed(2)),
       }))
       .sort((left, right) => right.count - left.count || compareCategoryPriority(left.category, right.category));
+  }
+
+  private async prepareSourceJob(
+    context: Mem9RequestContext,
+    jobId: string,
+    dto: CreateAnalysisJobDto,
+  ): Promise<void> {
+    try {
+      const sourceMemories = await this.source.fetchAllMemories(context.rawApiKey);
+      const rangeStart = Date.parse(dto.dateRange.start);
+      const rangeEnd = Date.parse(dto.dateRange.end);
+      const memories = sourceMemories.filter((memory) => {
+        const createdAt = Date.parse(memory.createdAt);
+        return Number.isFinite(createdAt) && createdAt >= rangeStart && createdAt <= rangeEnd;
+      });
+      const batches = Array.from(
+        { length: Math.ceil(memories.length / dto.batchSize) },
+        (_, index) => memories.slice(index * dto.batchSize, (index + 1) * dto.batchSize),
+      );
+
+      if (
+        memories.length !== dto.expectedTotalMemories ||
+        batches.length !== dto.expectedTotalBatches
+      ) {
+        throw new AppError('Analysis source changed while the job was starting', {
+          statusCode: 409,
+          code: 'ANALYSIS_SOURCE_CHANGED',
+          details: {
+            expectedTotalMemories: dto.expectedTotalMemories,
+            actualTotalMemories: memories.length,
+            expectedTotalBatches: dto.expectedTotalBatches,
+            actualTotalBatches: batches.length,
+          },
+        });
+      }
+
+      for (const [offset, batch] of batches.entries()) {
+        await this.uploadBatch(context, jobId, offset + 1, {
+          memoryCount: batch.length,
+          memories: batch.map((memory) => ({
+            id: memory.id,
+            content: memory.content,
+            createdAt: memory.createdAt,
+            metadata: memory.metadata ?? {},
+          })),
+        });
+      }
+
+      await this.finalizeJob(context, jobId);
+    } catch (error) {
+      const errorCode = error instanceof AppError
+        ? error.code
+        : 'ANALYSIS_SOURCE_PREPARATION_FAILED';
+      const errorMessage = error instanceof Error
+        ? error.message
+        : 'Failed to prepare analysis source';
+
+      this.logger.error(
+        `Failed to prepare source-backed analysis job ${jobId}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      await this.repository.markJobFailed(
+        jobId,
+        errorCode,
+        errorMessage.slice(0, 512),
+      );
+    }
   }
 }

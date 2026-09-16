@@ -89,6 +89,41 @@ describe('rate limit window service', () => {
         1,
         new Date('2026-03-01T00:00:10.000Z'),
       ),
-    ).rejects.toThrow('Rate limit exceeded');
+    ).rejects.toMatchObject({
+      message: 'Rate limit exceeded',
+      details: {
+        limit: 'minute',
+        retryAfterSeconds: 50,
+      },
+    });
+  });
+
+  it('reports the day reset without treating it as a minute retry', async () => {
+    const service = new RateLimitWindowService(new FakeRedis() as never);
+    const policy = {
+      rpmLimit: 10,
+      dailyLimit: 1,
+    };
+
+    await service.consume(
+      'abc',
+      policy,
+      1,
+      new Date('2026-03-01T00:00:00.000Z'),
+    );
+
+    await expect(
+      service.consume(
+        'abc',
+        policy,
+        1,
+        new Date('2026-03-01T00:01:00.000Z'),
+      ),
+    ).rejects.toMatchObject({
+      details: {
+        limit: 'day',
+        retryAfterSeconds: 86_340,
+      },
+    });
   });
 });
