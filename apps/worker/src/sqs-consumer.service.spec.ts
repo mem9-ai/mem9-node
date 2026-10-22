@@ -61,6 +61,7 @@ function createConfig(overrides?: Partial<AppConfig['sqs']>): AppConfig {
     goVerify: {
       mode: 'noop',
       baseUrl: 'http://127.0.0.1:8080',
+      timeoutMs: 3000,
       sharedSecret: 'local-secret',
     },
     sqs: {

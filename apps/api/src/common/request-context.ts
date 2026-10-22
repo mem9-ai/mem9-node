@@ -1,5 +1,6 @@
 import type { ExecutionContext } from '@nestjs/common';
 import { createParamDecorator } from '@nestjs/common';
+import type { ApiKeySubject } from '@prisma/client';
 import type { FastifyRequest } from 'fastify';
 
 export interface Mem9RequestContext {
@@ -11,6 +12,7 @@ export interface Mem9RequestContext {
 
 export interface Mem9FastifyRequest extends FastifyRequest {
   mem9Context?: Mem9RequestContext;
+  mem9ApiKeySubject?: ApiKeySubject;
 }
 
 export const CurrentContext = createParamDecorator(

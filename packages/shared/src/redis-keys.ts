@@ -32,6 +32,9 @@ export const redisKeys = {
   rateLimitPolicy(planCode: string): string {
     return `rlp:${planCode}`;
   },
+  apiKeyVerification(fingerprintHex: string): string {
+    return `akv:${fingerprintHex}`;
+  },
   memoryAnalysisPeriodCache(
     fingerprintHex: string,
     periodKey: string,

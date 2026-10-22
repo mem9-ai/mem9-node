@@ -100,8 +100,9 @@ const envSchema = z
     MAX_BATCH_MEMORIES: z.coerce.number().int().positive().default(100),
     MAX_BATCH_BYTES: z.coerce.number().int().positive().default(524288),
     MAX_MEMORIES_PER_REQUEST: z.coerce.number().int().positive().default(100),
-    GO_VERIFY_MODE: z.enum(['noop', 'remote']).default('noop'),
+    GO_VERIFY_MODE: z.enum(['noop', 'remote']).default('remote'),
     GO_VERIFY_BASE_URL: z.string().url().default('http://127.0.0.1:8080'),
+    GO_VERIFY_TIMEOUT_MS: z.coerce.number().int().positive().default(3000),
     GO_INTERNAL_SHARED_SECRET: z.string().min(8).default('local-secret'),
     LOG_LEVEL: z
       .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace'])
@@ -142,6 +143,13 @@ const envSchema = z
         message:
           'AWS_SESSION_TOKEN requires AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY',
         path: ['AWS_SESSION_TOKEN'],
+      });
+    }
+    if (env.NODE_ENV === 'production' && env.GO_VERIFY_MODE === 'noop') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'GO_VERIFY_MODE=noop is not allowed in production',
+        path: ['GO_VERIFY_MODE'],
       });
     }
   });
@@ -203,6 +211,7 @@ export interface AppConfig {
   goVerify: {
     mode: AppEnv['GO_VERIFY_MODE'];
     baseUrl: string;
+    timeoutMs: number;
     sharedSecret: string;
   };
   sqs: {
@@ -275,6 +284,7 @@ export function loadConfig(
     goVerify: {
       mode: env.GO_VERIFY_MODE,
       baseUrl: env.GO_VERIFY_BASE_URL,
+      timeoutMs: env.GO_VERIFY_TIMEOUT_MS,
       sharedSecret: env.GO_INTERNAL_SHARED_SECRET,
     },
     sqs: {

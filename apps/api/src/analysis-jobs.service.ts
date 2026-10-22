@@ -14,7 +14,6 @@ import {
   AnalysisRepository,
   AppError,
   compareCategoryPriority,
-  GoVerifyService,
   RedisProgressStore,
   RedisService,
   RateLimitWindowService,
@@ -73,7 +72,6 @@ export class AnalysisJobsService {
     private readonly storage: S3PayloadStorageService,
     private readonly queue: SqsQueueService,
     private readonly taxonomyCacheService: TaxonomyCacheService,
-    private readonly goVerifyService: GoVerifyService,
     private readonly source: Mem9SourceService,
     private readonly rateLimitWindowService: RateLimitWindowService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
@@ -101,7 +99,7 @@ export class AnalysisJobsService {
     context: Mem9RequestContext,
     dto: CreateAnalysisJobDto,
   ): Promise<CreateAnalysisJobResponse> {
-    const subject = await this.repository.ensureApiKeySubject(context.apiKeyFingerprint);
+    const subject = await this.repository.getActiveApiKeySubject(context.apiKeyFingerprint);
     const policy = await this.repository.getRateLimitPolicy(subject.planCode);
 
     if (dto.expectedTotalBatches > policy.maxBatchesPerJob) {
@@ -119,8 +117,6 @@ export class AnalysisJobsService {
         code: 'MAX_ACTIVE_JOBS_EXCEEDED',
       });
     }
-
-    await this.goVerifyService.verify();
 
     const pipelineConfig = await this.repository.getPipelineConfig(this.config.analysis.pipelineVersion);
     const taxonomy = await this.taxonomyCacheService.getResponse(dto.options.taxonomyVersion);
@@ -393,7 +389,7 @@ export class AnalysisJobsService {
         return;
       }
 
-      const subject = await this.repository.ensureApiKeySubject(
+      const subject = await this.repository.getActiveApiKeySubject(
         context.apiKeyFingerprint,
       );
       const policy = await this.repository.getRateLimitPolicy(subject.planCode);

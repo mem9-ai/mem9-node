@@ -17,6 +17,7 @@ import { LoggerModule } from 'nestjs-pino';
 
 import { AnalysisJobsController } from './analysis-jobs.controller';
 import { AnalysisJobsService } from './analysis-jobs.service';
+import { ApiKeyAuthService } from './common/api-key-auth.service';
 import { ApiKeyGuard } from './common/api-key.guard';
 import { HealthService } from './common/health.service';
 import { RateLimitGuard } from './common/rate-limit.guard';
@@ -88,6 +89,7 @@ const appConfig = loadConfig();
     MemoryAnalysisService,
     UserProfileService,
     ApiKeyGuard,
+    ApiKeyAuthService,
     RateLimitGuard,
     HealthService,
     {
