@@ -1,3 +1,10 @@
+locals {
+  go_verify_base_url = coalesce(
+    var.go_verify_base_url,
+    trimsuffix(var.mem9_source_api_base_url, "/v1alpha2/mem9s"),
+  )
+}
+
 resource "aws_ecs_task_definition" "api" {
   family                   = "${var.name_prefix}-api"
   requires_compatibilities = ["FARGATE"]
@@ -72,7 +79,8 @@ resource "aws_ecs_task_definition" "api" {
         { name = "DEFAULT_BATCH_SIZE", value = "100" },
         { name = "MAX_BATCH_MEMORIES", value = "100" },
         { name = "MAX_BATCH_BYTES", value = "1048576" },
-        { name = "GO_VERIFY_MODE", value = "noop" },
+        { name = "GO_VERIFY_MODE", value = "remote" },
+        { name = "GO_VERIFY_BASE_URL", value = local.go_verify_base_url },
         { name = "LOG_LEVEL", value = "info" },
         { name = "REDIS_URL", value = "redis://${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379" }
       ]
@@ -165,7 +173,8 @@ resource "aws_ecs_task_definition" "worker" {
         { name = "SQS_ANALYSIS_LLM_QUEUE_URL", value = aws_sqs_queue.analysis_llm.url },
         { name = "JOB_RESULT_TTL_SECONDS", value = "86400" },
         { name = "LOG_LEVEL", value = "info" },
-        { name = "GO_VERIFY_MODE", value = "noop" },
+        { name = "GO_VERIFY_MODE", value = "remote" },
+        { name = "GO_VERIFY_BASE_URL", value = local.go_verify_base_url },
         { name = "REDIS_URL", value = "redis://${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379" }
       ]
 

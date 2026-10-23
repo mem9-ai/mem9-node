@@ -141,6 +141,11 @@ variable "mem9_source_api_base_url" {
   type = string
 }
 
+variable "go_verify_base_url" {
+  type    = string
+  default = null
+}
+
 variable "mem9_source_request_timeout_ms" {
   type    = number
   default = 10000

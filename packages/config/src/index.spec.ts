@@ -72,6 +72,43 @@ describe('loadConfig', () => {
     );
   });
 
+  it('defaults API key verification to remote with a short timeout', () => {
+    const config = loadConfig(baseEnv);
+
+    expect(config.goVerify.mode).toBe('remote');
+    expect(config.goVerify.timeoutMs).toBe(3000);
+  });
+
+  it('rejects noop API key verification in production', () => {
+    expect(() =>
+      loadConfig({
+        ...baseEnv,
+        NODE_ENV: 'production',
+        GO_VERIFY_MODE: 'noop',
+      }),
+    ).toThrow(/GO_VERIFY_MODE/);
+  });
+
+  it('allows remote API key verification in production', () => {
+    const config = loadConfig({
+      ...baseEnv,
+      NODE_ENV: 'production',
+      GO_VERIFY_MODE: 'remote',
+      GO_VERIFY_BASE_URL: 'https://api.mem9.example',
+      GO_VERIFY_TIMEOUT_MS: '1500',
+    });
+
+    expect(config.goVerify.mode).toBe('remote');
+    expect(config.goVerify.baseUrl).toBe('https://api.mem9.example');
+    expect(config.goVerify.timeoutMs).toBe(1500);
+  });
+
+  it('still allows noop verification for local development', () => {
+    const config = loadConfig({ ...baseEnv, GO_VERIFY_MODE: 'noop' });
+
+    expect(config.goVerify.mode).toBe('noop');
+  });
+
   it('exposes mem9 source hardening defaults', () => {
     const config = loadConfig(baseEnv);
 

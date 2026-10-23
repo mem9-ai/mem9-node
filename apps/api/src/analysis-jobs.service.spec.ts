@@ -27,7 +27,7 @@ describe('analysis jobs service', () => {
   it('loads source memories on the server and uploads normalized batches', async () => {
     const repository = {
       getOwnedJob: jest.fn(async () => ({ status: 'UPLOADING' })),
-      ensureApiKeySubject: jest.fn(async () => ({ planCode: 'default' })),
+      getActiveApiKeySubject: jest.fn(async () => ({ planCode: 'default' })),
       getRateLimitPolicy: jest.fn(async () => ({
         rpmLimit: 120,
         dailyLimit: 10000,
@@ -49,7 +49,6 @@ describe('analysis jobs service', () => {
     };
     const service = new AnalysisJobsService(
       repository as never,
-      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -145,7 +144,6 @@ describe('analysis jobs service', () => {
     };
     const service = new AnalysisJobsService(
       repository as never,
-      {} as never,
       {} as never,
       {} as never,
       {} as never,

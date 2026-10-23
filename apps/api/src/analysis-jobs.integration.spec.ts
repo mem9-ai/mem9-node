@@ -7,6 +7,7 @@ import type {
 } from '@mem9/contracts';
 import {
   AnalysisRepository,
+  deriveApiKeyFingerprint,
   GoVerifyService,
   RateLimitWindowService,
   RedisProgressStore,
@@ -26,6 +27,7 @@ import request from 'supertest';
 
 import { AnalysisJobsController } from './analysis-jobs.controller';
 import { AnalysisJobsService } from './analysis-jobs.service';
+import { ApiKeyAuthService } from './common/api-key-auth.service';
 import { ApiKeyGuard } from './common/api-key.guard';
 import { AppExceptionFilter } from './common/app-exception.filter';
 import { RateLimitGuard } from './common/rate-limit.guard';
@@ -91,7 +93,14 @@ class FakeRedis {
   private readonly lists = new Map<string, string[]>();
   private readonly sets = new Map<string, Set<string>>();
 
-  public async set(key: string, value: string): Promise<string> {
+  public async set(
+    key: string,
+    value: string,
+    mode?: 'EX',
+    ttl?: number,
+  ): Promise<string> {
+    void mode;
+    void ttl;
     this.values.set(key, value);
     return 'OK';
   }
@@ -271,29 +280,65 @@ class FakeRedis {
 
 class FakeRepository {
   public readonly jobs = new Map<string, FakeJob>();
-  public readonly subjects = new Map<string, { planCode: string }>();
-
-  public async ensureApiKeySubject(fingerprint: Buffer) {
-    const key = fingerprint.toString('hex');
-    if (!this.subjects.has(key)) {
-      this.subjects.set(key, { planCode: 'default' });
+  public readonly subjects = new Map<
+    string,
+    {
+      id: string;
+      status: 'ACTIVE' | 'DISABLED' | 'PENDING';
+      planCode: string;
+      lastSeenAt: Date | null;
+      lastVerifyAt: Date | null;
+      createdAt: Date;
+      updatedAt: Date;
     }
+  >();
 
-    return {
-      id: 'aks_1',
+  public async findApiKeySubject(fingerprint: Buffer) {
+    return this.subjects.get(fingerprint.toString('hex')) ?? null;
+  }
+
+  public async recordVerifiedApiKeySubject(fingerprint: Buffer, verifiedAt: Date) {
+    const key = fingerprint.toString('hex');
+    const existing = this.subjects.get(key);
+    const subject = {
+      id: existing?.id ?? 'aks_1',
       apiKeyFingerprint: new Uint8Array(
         fingerprint.buffer.slice(
           fingerprint.byteOffset,
           fingerprint.byteOffset + fingerprint.byteLength,
         ) as ArrayBuffer,
       ),
-      status: 'ACTIVE',
-      planCode: 'default',
-      lastSeenAt: new Date(),
-      lastVerifyAt: null,
-      createdAt: new Date(),
+      status: existing?.status ?? 'ACTIVE',
+      planCode: existing?.planCode ?? 'default',
+      lastSeenAt: verifiedAt,
+      lastVerifyAt: verifiedAt,
+      createdAt: existing?.createdAt ?? new Date(),
       updatedAt: new Date(),
     };
+    this.subjects.set(key, subject);
+    return subject;
+  }
+
+  public async markApiKeySubjectSeen(id: string) {
+    for (const [key, subject] of this.subjects.entries()) {
+      if (subject.id === id) {
+        this.subjects.set(key, {
+          ...subject,
+          lastSeenAt: new Date(),
+          updatedAt: new Date(),
+        });
+      }
+    }
+  }
+
+  public async getActiveApiKeySubject(fingerprint: Buffer) {
+    const subject = this.subjects.get(fingerprint.toString('hex'));
+
+    if (subject === undefined) {
+      throw new Error('API key subject not found');
+    }
+
+    return subject;
   }
 
   public async getRateLimitPolicy() {
@@ -457,6 +502,7 @@ describe('analysis jobs integration', () => {
       providers: [
         AnalysisJobsService,
         ApiKeyGuard,
+        ApiKeyAuthService,
         RateLimitGuard,
         {
           provide: APP_CONFIG,
@@ -515,6 +561,7 @@ describe('analysis jobs integration', () => {
             goVerify: {
               mode: 'noop',
               baseUrl: 'http://127.0.0.1:8080',
+              timeoutMs: 3000,
               sharedSecret: 'test-secret',
             },
             sqs: {
@@ -554,9 +601,8 @@ describe('analysis jobs integration', () => {
         {
           provide: GoVerifyService,
           useValue: {
-            verify: jest.fn(async () => ({
-              status: 'ACTIVE',
-              planCode: 'default',
+            verify: jest.fn(async (rawApiKey: string) => ({
+              status: rawApiKey === 'mem9-secret' ? 'ACTIVE' : 'INVALID',
               verifiedAt: new Date(),
             })),
           },
@@ -742,6 +788,92 @@ describe('analysis jobs integration', () => {
     expect(updatesBody.events).toHaveLength(1);
     expect(updatesBody.completedBatchResults).toHaveLength(1);
     expect(updatesBody.aggregate.tagCounts.priority).toBe(53);
+  });
+
+  describe('API key authentication (AUTHENTICATION_BYPASS regression)', () => {
+    // Fixture contract: the GoVerifyService mock returns ACTIVE only for
+    // 'mem9-secret' and INVALID for every other key; FakeRepository.subjects is
+    // keyed by fingerprint hex and stores { status, planCode }.
+    const fingerprintHexOf = (rawKey: string) =>
+      deriveApiKeyFingerprint(process.env.APP_PEPPER!, rawKey).toString('hex');
+
+    it('rejects a request without x-mem9-api-key', async () => {
+      const response = await request(app.getHttpServer())
+        .get('/v1/taxonomy?version=v1')
+        .expect(401);
+
+      expect((response.body as { code: string }).code).toBe('API_KEY_REQUIRED');
+    });
+
+    it('rejects a forged key with 401 and provisions no tenant row', async () => {
+      const repository: FakeRepository = app.get(AnalysisRepository);
+      const { verify }: { verify: jest.Mock } = app.get(GoVerifyService);
+
+      const response = await request(app.getHttpServer())
+        .post('/v1/analysis-jobs')
+        .set('x-mem9-api-key', 'forged-key-123')
+        .send({})
+        .expect(401);
+
+      expect((response.body as { code: string }).code).toBe('API_KEY_INVALID');
+      expect(verify).toHaveBeenCalledWith('forged-key-123');
+      expect(repository.subjects.has(fingerprintHexOf('forged-key-123'))).toBe(false);
+      expect([...repository.jobs.values()].some((job) =>
+        Buffer.from(job.apiKeyFingerprint).toString('hex') === fingerprintHexOf('forged-key-123'),
+      )).toBe(false);
+    });
+
+    it('rotating forged keys never yields a fresh tenant', async () => {
+      const repository: FakeRepository = app.get(AnalysisRepository);
+      const before = repository.subjects.size;
+
+      for (const key of ['rot-1', 'rot-2', 'rot-3']) {
+        await request(app.getHttpServer())
+          .get('/v1/taxonomy?version=v1')
+          .set('x-mem9-api-key', key)
+          .expect(401);
+      }
+
+      expect(repository.subjects.size).toBe(before);
+    });
+
+    it('rejects a malformed key without calling upstream', async () => {
+      const { verify }: { verify: jest.Mock } = app.get(GoVerifyService);
+      verify.mockClear();
+
+      const response = await request(app.getHttpServer())
+        .get('/v1/taxonomy?version=v1')
+        .set('x-mem9-api-key', 'k'.repeat(300))
+        .expect(401);
+
+      expect((response.body as { code: string }).code).toBe('API_KEY_INVALID');
+      expect(verify).not.toHaveBeenCalled();
+    });
+
+    it('revokes a locally DISABLED key on the next request', async () => {
+      const repository: FakeRepository = app.get(AnalysisRepository);
+
+      await request(app.getHttpServer())
+        .get('/v1/taxonomy?version=v1')
+        .set('x-mem9-api-key', 'mem9-secret')
+        .expect(200);
+
+      const hex = fingerprintHexOf('mem9-secret');
+      const original = repository.subjects.get(hex);
+      expect(original).toBeDefined();
+      repository.subjects.set(hex, { ...original!, status: 'DISABLED' });
+
+      try {
+        const response = await request(app.getHttpServer())
+          .get('/v1/taxonomy?version=v1')
+          .set('x-mem9-api-key', 'mem9-secret')
+          .expect(403);
+
+        expect((response.body as { code: string }).code).toBe('API_KEY_DISABLED');
+      } finally {
+        repository.subjects.set(hex, original!);
+      }
+    });
   });
 
   it('returns taxonomy responses with dynamic categories for v3', async () => {

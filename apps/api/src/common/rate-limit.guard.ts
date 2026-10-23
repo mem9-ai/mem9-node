@@ -13,17 +13,23 @@ export class RateLimitGuard implements CanActivate {
 
   public async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<Mem9FastifyRequest>();
-    const fingerprint = request.mem9Context?.apiKeyFingerprint;
     const fingerprintHex = request.mem9Context?.apiKeyFingerprintHex;
+    const subject = request.mem9ApiKeySubject;
 
-    if (fingerprint === undefined || fingerprintHex === undefined) {
-      throw new AppError('Missing API key context', {
+    if (subject === undefined || fingerprintHex === undefined) {
+      throw new AppError('Missing authenticated API key subject', {
         statusCode: 401,
         code: 'API_KEY_REQUIRED',
       });
     }
 
-    const subject = await this.repository.ensureApiKeySubject(fingerprint);
+    if (subject.status !== 'ACTIVE') {
+      throw new AppError('API key subject is not active', {
+        statusCode: 403,
+        code: 'API_KEY_DISABLED',
+      });
+    }
+
     const policy = await this.repository.getRateLimitPolicy(subject.planCode);
     await this.rateLimitWindowService.consume(fingerprintHex, policy, this.resolveCost(request));
     return true;

@@ -42,29 +42,58 @@ export class AnalysisRepository {
 
   public constructor(private readonly prisma: PrismaService) {}
 
-  public async ensureApiKeySubject(fingerprint: Buffer): Promise<ApiKeySubject> {
-    const existing = await this.prisma.apiKeySubject.findUnique({
+  public async findApiKeySubject(fingerprint: Buffer): Promise<ApiKeySubject | null> {
+    return this.prisma.apiKeySubject.findUnique({
       where: { apiKeyFingerprint: toPrismaBytes(fingerprint) },
     });
+  }
 
-    if (existing !== null) {
-      return this.prisma.apiKeySubject.update({
-        where: { id: existing.id },
-        data: {
-          lastSeenAt: new Date(),
-        },
-      });
-    }
-
-    return this.prisma.apiKeySubject.create({
-      data: {
+  public async recordVerifiedApiKeySubject(
+    fingerprint: Buffer,
+    verifiedAt: Date,
+  ): Promise<ApiKeySubject> {
+    return this.prisma.apiKeySubject.upsert({
+      where: { apiKeyFingerprint: toPrismaBytes(fingerprint) },
+      create: {
         id: createPrefixedId('aks'),
         apiKeyFingerprint: toPrismaBytes(fingerprint),
         status: ApiKeySubjectStatus.ACTIVE,
         planCode: 'default',
-        lastSeenAt: new Date(),
+        lastSeenAt: verifiedAt,
+        lastVerifyAt: verifiedAt,
+      },
+      update: {
+        lastSeenAt: verifiedAt,
+        lastVerifyAt: verifiedAt,
       },
     });
+  }
+
+  public async markApiKeySubjectSeen(id: string): Promise<void> {
+    await this.prisma.apiKeySubject.update({
+      where: { id },
+      data: { lastSeenAt: new Date() },
+    });
+  }
+
+  public async getActiveApiKeySubject(fingerprint: Buffer): Promise<ApiKeySubject> {
+    const subject = await this.findApiKeySubject(fingerprint);
+
+    if (subject === null) {
+      throw new AppError('API key subject not found', {
+        statusCode: 401,
+        code: 'API_KEY_REQUIRED',
+      });
+    }
+
+    if (subject.status !== ApiKeySubjectStatus.ACTIVE) {
+      throw new AppError('API key subject is not active', {
+        statusCode: 403,
+        code: 'API_KEY_DISABLED',
+      });
+    }
+
+    return subject;
   }
 
   public async getRateLimitPolicy(planCode: string): Promise<RateLimitPolicy> {
