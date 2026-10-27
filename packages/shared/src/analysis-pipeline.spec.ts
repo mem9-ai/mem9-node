@@ -203,3 +203,56 @@ describe('analysis pipeline', () => {
     expect(filteredTokens).toEqual(['ai', 'agent', '记忆', '系统', '稳定']);
   });
 });
+
+describe('taxonomy ReDoS protection', () => {
+  it('releases evicted native regex objects when rule sets change repeatedly', () => {
+    const memory = normalizeMemory({
+      id: 'cache-churn',
+      content: 'cache_1',
+      metadata: {},
+      createdAt: '2026-01-01T00:00:00Z',
+    });
+
+    for (let index = 0; index < 20000; index += 1) {
+      classifyMemory(memory, [{
+        ...rules[0]!,
+        matchType: 'regex',
+        pattern: `cache_${index % 513}$`,
+      }], 'en-US');
+    }
+    expect(classifyMemory(memory, [{ ...rules[0]!, matchType: 'regex', pattern: 'cache_1$' }], 'en-US').confidence).toBe(1);
+  }, 15000);
+
+  it('preserves long content and includes its tail in deduplication and classification', () => {
+    const prefix = 'Historical context '.repeat(1000);
+    const memory = normalizeMemory({
+      id: 'large',
+      content: `${prefix}\nEngineer`,
+      metadata: {},
+      createdAt: '2026-01-01T00:00:00Z',
+    });
+    const otherMemory = normalizeMemory({
+      ...memory,
+      content: `${prefix}\nDesigner`,
+      createdAt: memory.createdAt.toISOString(),
+    });
+
+    expect(memory.content).toBe(`${prefix}\nEngineer`);
+    expect(memory.normalizedContent).toBe(`${prefix.toLowerCase()}engineer`);
+    expect(memory.contentHash).toBe(sha256Hex(memory.normalizedContent));
+    expect(memory.contentHash).not.toBe(otherMemory.contentHash);
+    expect(classifyMemory(memory, [{
+      ...rules[0]!,
+      matchType: 'regex',
+      pattern: 'engineer$',
+    }], 'en-US').confidence).toBe(1);
+  });
+  it('handles nested-quantifier and repeated-prefix non-matches without backtracking', () => {
+    const start = Date.now();
+    for (const [pattern, content] of [['(a+)+$', `${'a'.repeat(22000)}!`], ['比较.*方案', '比较'.repeat(11000)]]) {
+      const memory = normalizeMemory({ id: 'adversarial', content: content!, metadata: {}, createdAt: '2026-01-01T00:00:00Z' });
+      expect(() => classifyMemory(memory, [{ ...rules[0]!, matchType: 'regex', pattern: pattern! }], 'zh-CN')).not.toThrow();
+    }
+    expect(Date.now() - start).toBeLessThan(2000);
+  });
+});

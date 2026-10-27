@@ -190,6 +190,86 @@ describe('deep analysis report processor service', () => {
     jest.restoreAllMocks();
   });
 
+  it('completes historical long-content reports without deduplicating different suffixes', async () => {
+    jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    const prefix = 'Review dashboards and preserve detailed rollout decisions. '.repeat(240);
+    expect(prefix.length).toBeGreaterThan(12000);
+    const memories = [
+      { id: 'mem_1', content: `${prefix}The final decision is to deploy.` },
+      { id: 'mem_2', content: `${prefix}The final decision is to wait.` },
+      { id: 'mem_3', content: `${prefix}The final decision is to deploy.` },
+      { id: 'mem_4', content: 'Prefer structured summaries.' },
+    ].map((memory, index) => ({
+      ...memory,
+      createdAt: `2026-03-${20 + index}T00:00:00Z`,
+      updatedAt: `2026-03-${20 + index}T00:00:00Z`,
+      memoryType: 'insight',
+      tags: ['rollout'],
+      metadata: null,
+    }));
+    const repository = {
+      getDeepAnalysisReport: jest.fn().mockResolvedValue({
+        id: 'dar_long',
+        status: 'QUEUED',
+        lang: 'en',
+        sourceSnapshotObjectKey: 'deep-analysis/reports/dar_long/source.json.gz',
+        internalComment: null,
+      }),
+      updateDeepAnalysisReport: jest.fn(),
+    };
+    const storage = {
+      getObjectBuffer: jest.fn().mockResolvedValue(gzipJson({
+        fetchedAt: '2026-03-28T00:00:00Z',
+        memoryCount: memories.length,
+        memories,
+      })),
+      putJson: jest.fn(),
+    };
+    const qwen = {
+      getConfiguredModel: jest.fn(() => TEST_QWEN_MODEL),
+      createJson: jest.fn()
+        .mockResolvedValueOnce(createChunkResult())
+        .mockResolvedValueOnce(createSynthesisResult()),
+    };
+    const processor = new DeepAnalysisReportProcessorService(
+      repository as never,
+      storage as never,
+      qwen as never,
+      createConfig(),
+    );
+
+    await processor.process({
+      messageType: 'deep_report',
+      reportId: 'dar_long',
+      traceId: 'trace_long',
+    });
+
+    expect(storage.putJson).toHaveBeenCalledTimes(1);
+    const [reportObjectKey, report] = storage.putJson.mock.calls[0] as [string, unknown];
+    expect(reportObjectKey).toBe('deep-analysis/reports/dar_long/report.json');
+    expect(report).toMatchObject({
+      overview: {
+        memoryCount: 4,
+        deduplicatedMemoryCount: 3,
+      },
+      quality: {
+        duplicateMemoryCount: 1,
+        duplicateClusters: [{
+          canonicalMemoryId: 'mem_1',
+          duplicateMemoryIds: ['mem_3'],
+        }],
+      },
+    });
+    expect(repository.updateDeepAnalysisReport).toHaveBeenLastCalledWith(
+      'dar_long',
+      expect.objectContaining({ status: 'COMPLETED', progressPercent: 100 }),
+    );
+    expect(repository.updateDeepAnalysisReport).not.toHaveBeenCalledWith(
+      'dar_long',
+      expect.objectContaining({ status: 'FAILED' }),
+    );
+  });
+
   it('builds a completed report with cleaned themes, entities, duplicate counts, and usage audit', async () => {
     const logSpy = jest
       .spyOn(Logger.prototype, 'log')
