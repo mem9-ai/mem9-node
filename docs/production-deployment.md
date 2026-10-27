@@ -32,16 +32,22 @@ branch in GitHub Actions. The workflow:
 6. Reads the currently deployed API and worker task definitions for rollback.
 7. Initializes the KMS-encrypted S3 Terraform backend.
 8. Creates a local `tfplan` in the same runner.
-9. Uploads a temporary restore point containing the task-definition pair that
+9. Rejects changes outside the API/worker ECS task definitions and services,
+   service deletion/replacement, and task-definition deletion without replacement.
+   The guard logs only changed resource addresses and actions.
+10. Uploads a temporary restore point containing the task-definition pair that
    is currently online, then immediately applies the plan.
-10. Waits for both ECS services to become stable.
-11. Uploads a release record containing the SHA, image pair, task-definition
+11. Waits for both ECS services to become stable.
+12. Uploads a release record containing the SHA, image pair, task-definition
     pair, and previous task-definition pair.
-12. Deletes the temporary restore point after the successful release record is
+13. Deletes the temporary restore point after the successful release record is
     safely uploaded. Failed runs keep their restore point for recovery.
 
 Terraform owns the ECS task definitions and the ECS services' task-definition
 references. Normal deployment must not call `aws ecs update-service` directly.
+Infrastructure changes or drift outside those four ECS resources require a
+separately reviewed infrastructure rollout; the production release stops before
+recording a restore point or applying such a plan.
 
 The workflow does not use a GitHub Environment. The **Run workflow** action is
 the production release decision. The job-level branch check and both AWS role

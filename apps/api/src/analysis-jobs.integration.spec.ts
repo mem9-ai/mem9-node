@@ -9,6 +9,7 @@ import {
   AnalysisRepository,
   deriveApiKeyFingerprint,
   GoVerifyService,
+  gunzipJson,
   RateLimitWindowService,
   RedisProgressStore,
   RedisService,
@@ -788,6 +789,48 @@ describe('analysis jobs integration', () => {
     expect(updatesBody.events).toHaveLength(1);
     expect(updatesBody.completedBatchResults).toHaveLength(1);
     expect(updatesBody.aggregate.tagCounts.priority).toBe(53);
+  });
+
+  it.each([
+    { label: 'accepts long memories within the batch byte limit', content: 'Historical context '.repeat(1000), status: 200 },
+    { label: 'rejects oversized batches before storage or enqueue', content: '记'.repeat(180000), status: 413 },
+  ])('$label', async ({ content, status }) => {
+    const createResponse = await request(app.getHttpServer())
+      .post('/v1/analysis-jobs')
+      .set('x-mem9-api-key', 'mem9-secret')
+      .send({
+        dateRange: { start: '2026-03-01T00:00:00Z', end: '2026-03-31T23:59:59Z' },
+        expectedTotalMemories: 1,
+        expectedTotalBatches: 1,
+        batchSize: 1,
+        options: { lang: 'en-US', taxonomyVersion: 'v1', llmEnabled: false, includeItems: true, includeSummary: true },
+      })
+      .expect(201);
+    const { jobId } = createResponse.body as CreateAnalysisJobResponse;
+    const storage = jest.spyOn(app.get(S3PayloadStorageService), 'putCompressedJson');
+    const enqueue = jest.spyOn(app.get(SqsQueueService), 'enqueueBatch');
+    storage.mockClear();
+    enqueue.mockClear();
+
+    const response = await request(app.getHttpServer())
+      .put(`/v1/analysis-jobs/${jobId}/batches/1`)
+      .set('x-mem9-api-key', 'mem9-secret')
+      .send({
+        memoryCount: 1,
+        memories: [{ id: 'historical-long', content, createdAt: '2026-03-01T00:00:00Z', metadata: {} }],
+      })
+      .expect(status);
+
+    if (status === 200) {
+      expect(storage).toHaveBeenCalledTimes(1);
+      expect(enqueue).toHaveBeenCalledTimes(1);
+      const stored = gunzipJson<{ memories: { content: string }[] }>(storage.mock.calls[0]![1]);
+      expect(stored.memories[0]?.content).toBe(content);
+    } else {
+      expect((response.body as { code: string }).code).toBe('MAX_BATCH_BYTES_EXCEEDED');
+      expect(storage).not.toHaveBeenCalled();
+      expect(enqueue).not.toHaveBeenCalled();
+    }
   });
 
   describe('API key authentication (AUTHENTICATION_BYPASS regression)', () => {

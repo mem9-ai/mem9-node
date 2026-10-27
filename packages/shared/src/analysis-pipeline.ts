@@ -5,6 +5,7 @@ import type {
   MemoryInput,
   TaxonomyRuleDefinition,
 } from '@mem9/contracts';
+import { RE2 } from 're2-wasm';
 
 import { sha256Hex } from './hash';
 import {
@@ -227,6 +228,11 @@ function tokenize(text: string, lang: string): string[] {
 }
 
 export function normalizeMemory(memory: MemoryInput): NormalizedMemory {
+  if (typeof memory.content !== 'string') {
+    throw new TypeError('Memory content must be a string');
+  }
+  // Keep complete historical content for classification and deduplication.
+  // Upload size limits belong at the batch boundary, not in shared normalization.
   const normalizedContent = memory.content.replace(/\s+/g, ' ').trim().toLowerCase();
 
   return {
@@ -239,6 +245,23 @@ export function normalizeMemory(memory: MemoryInput): NormalizedMemory {
   };
 }
 
+const regexCache = new Map<string, RE2>();
+function safeRegex(pattern: string): RE2 {
+  const existing = regexCache.get(pattern);
+  if (existing) return existing;
+  // No fallback to RegExp for unsupported syntax.
+  const compiled = new RE2(pattern, 'iu');
+  if (regexCache.size >= 512) {
+    const oldest = regexCache.entries().next().value;
+    if (oldest) {
+      regexCache.delete(oldest[0]);
+      oldest[1].dispose();
+    }
+  }
+  regexCache.set(pattern, compiled);
+  return compiled;
+}
+
 function matchesRule(content: string, rule: TaxonomyRuleDefinition): boolean {
   switch (rule.matchType) {
     case 'keyword':
@@ -246,7 +269,7 @@ function matchesRule(content: string, rule: TaxonomyRuleDefinition): boolean {
     case 'phrase':
       return content.includes(rule.pattern.toLowerCase());
     case 'regex':
-      return new RegExp(rule.pattern, 'iu').test(content);
+      return safeRegex(rule.pattern).test(content);
     default:
       return false;
   }

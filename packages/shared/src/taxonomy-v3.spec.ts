@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { RE2 } from 're2-wasm';
+
 const TAXONOMY_SQL_PATH = path.resolve(__dirname, '../../../prisma/taxonomy-v3.sql');
 const HIGH_VALUE_REGEX_CATEGORIES = new Set([
   'policy',
@@ -60,6 +62,12 @@ function parseSqlRules() {
 }
 
 describe('taxonomy v3 sql', () => {
+  it('compiles every shipped regex with the non-backtracking engine', () => {
+    for (const rule of parseSqlRules().filter((entry) => entry.matchType === 'regex')) {
+      const compiled = new RE2(rule.pattern, 'iu');
+      compiled.dispose();
+    }
+  });
   it('keeps every category within the expanded rule-count band', () => {
     const rules = parseSqlRules();
     const counts = new Map<string, number>();

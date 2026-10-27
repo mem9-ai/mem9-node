@@ -199,6 +199,30 @@ jobs:
             echo "- Database migration: not run"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Guard production release scope
+        run: |
+          PLAN_JSON=$(mktemp)
+          trap 'rm -f "$PLAN_JSON"' EXIT
+          terraform -chdir="$TF_WORKING_DIR" show -json tfplan > "$PLAN_JSON"
+
+          jq '[
+            .resource_changes[]?
+            | select(.change.actions != ["no-op"] and .change.actions != ["read"])
+            | {address, actions: .change.actions}
+          ]' "$PLAN_JSON"
+
+          jq -e 'all(.resource_changes[]?;
+            .change.actions == ["no-op"] or .change.actions == ["read"] or
+            (
+              (.address == "aws_ecs_task_definition.api" or .address == "aws_ecs_task_definition.worker")
+              and ((.change.actions | index("delete")) == null or (.change.actions | index("create")) != null)
+            ) or
+            (
+              (.address == "aws_ecs_service.api" or .address == "aws_ecs_service.worker")
+              and (.change.actions | index("delete")) == null
+            )
+          )' "$PLAN_JSON" > /dev/null
+
       - name: Record pre-deployment restore point
         run: |
           jq -n \
