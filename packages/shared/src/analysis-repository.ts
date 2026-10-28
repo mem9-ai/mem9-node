@@ -708,6 +708,35 @@ export class AnalysisRepository {
     }
   }
 
+  public async failRejectedDeepAnalysisEnqueue(
+    reportId: string,
+    fingerprint: Buffer,
+  ): Promise<boolean> {
+    const now = new Date();
+    const result = await this.prisma.deepAnalysisReport.updateMany({
+      where: {
+        id: reportId,
+        apiKeyFingerprint: toPrismaBytes(fingerprint),
+        deletedAt: null,
+        status: DeepAnalysisReportStatus.QUEUED,
+        stage: DeepAnalysisReportStage.PREPROCESS,
+        executionToken: null,
+        executionDeadlineAt: null,
+        leaseExpiresAt: { gt: now },
+      },
+      data: {
+        status: DeepAnalysisReportStatus.FAILED,
+        completedAt: now,
+        errorCode: 'DEEP_ANALYSIS_ENQUEUE_REJECTED',
+        errorMessage: 'The report could not be queued. Please create a new report.',
+        executionToken: null,
+        leaseExpiresAt: null,
+        executionDeadlineAt: null,
+      },
+    });
+    return result.count === 1;
+  }
+
   public async expireStaleDeepAnalysisReports(now = new Date()): Promise<number> {
     // Null leases belong to pre-migration work. Reconcile those only after all
     // old binaries have stopped; age alone cannot establish abandonment.

@@ -163,6 +163,41 @@ describe('deep analysis recovery conditional updates', () => {
     jest.useRealTimers();
   });
 
+  it('fails a rejected queued send immediately while retaining quota history', async () => {
+    const report = makeReport({ stage: 'PREPROCESS' });
+    const { repository } = setup(report);
+    await expect(repository.failRejectedDeepAnalysisEnqueue(report.id, fingerprint)).resolves.toBe(true);
+    expect(report).toMatchObject({
+      status: 'FAILED', errorCode: 'DEEP_ANALYSIS_ENQUEUE_REJECTED',
+      executionToken: null, leaseExpiresAt: null, executionDeadlineAt: null,
+      requestedAt: now, requestDayKey: '2026-10-28@UTC#dar_report',
+    });
+  });
+
+  it('does not fail a worker that claimed before rejection was recorded', async () => {
+    const report = makeReport({ stage: 'PREPROCESS' });
+    const { repository, delayNextUpdate } = setup(report);
+    const release = delayNextUpdate();
+    const failure = repository.failRejectedDeepAnalysisEnqueue(report.id, fingerprint);
+    const token = await repository.claimDeepAnalysisExecution(report.id, fingerprint, 'worker');
+    release();
+    await expect(failure).resolves.toBe(false);
+    expect(report.status).toBe('PREPARING');
+    expect(report.executionToken).toBe(token);
+  });
+
+  it.each([
+    { stage: 'FETCH_SOURCE' }, { deletedAt: now }, { leaseExpiresAt: now },
+    { status: 'COMPLETED' }, { status: 'FAILED' },
+    { apiKeyFingerprint: new Uint8Array(otherFingerprint) },
+  ] as Partial<DeepAnalysisReport>[])('does not overwrite ineligible queued rejection state: %j', async (overrides) => {
+    const report = makeReport({ stage: 'PREPROCESS', ...overrides });
+    const before = { ...report };
+    const { repository } = setup(report);
+    await expect(repository.failRejectedDeepAnalysisEnqueue(report.id, fingerprint)).resolves.toBe(false);
+    expect(report).toEqual(before);
+  });
+
   it.each(['source', 'worker'] as const)(
     'allows only one %s claimant and assigns its bounded deadline',
     async (phase) => {

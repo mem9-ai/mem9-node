@@ -62,6 +62,9 @@ Source preparation hands the persisted snapshot to the queued-worker state
 before sending SQS. An ambiguous send does not overwrite a worker that already
 claimed the report; it is resolved by delivery or queue-wait expiry. The raw API
 key stays in API memory and is not added to the queue or lease records.
+An explicit, nonretryable client rejection on the only SQS send attempt marks
+still-unclaimed queued work failed immediately. This releases the active slot,
+retains daily usage, and cannot overwrite a worker that won the claim race.
 
 Legacy active reports with null lease fields are intentionally excluded from
 automatic expiry. Reconcile them against worker/task/queue evidence once the old

@@ -1,3 +1,4 @@
+import { SQSServiceException } from '@aws-sdk/client-sqs';
 import { AppError, gunzipJson } from '@mem9/shared';
 
 import { DeepAnalysisSourcePreparationService } from './deep-analysis-source-preparation.service';
@@ -17,6 +18,7 @@ function setup() {
     renewDeepAnalysisExecution: jest.fn().mockResolvedValue(true),
     updateDeepAnalysisExecution: jest.fn().mockResolvedValue(undefined),
     handoffDeepAnalysisExecution: jest.fn().mockResolvedValue(undefined),
+    failRejectedDeepAnalysisEnqueue: jest.fn().mockResolvedValue(true),
     updateDeepAnalysisReport: jest.fn(),
   };
   const source = {
@@ -66,6 +68,34 @@ describe('deep analysis source preparation lease', () => {
       traceId: 'req_1',
     });
     expect(repository.updateDeepAnalysisReport).not.toHaveBeenCalled();
+  });
+
+  it('immediately fails a single definitively rejected send without retaining SDK error text', async () => {
+    const { service, repository, queue } = setup();
+    queue.enqueueLlmMessage.mockRejectedValue(new SQSServiceException({
+      name: 'AccessDeniedException',
+      $fault: 'client',
+      $metadata: { httpStatusCode: 403, attempts: 1 },
+      message: 'denied with test-only-key',
+    }));
+    await service.prepareAndEnqueue(input);
+    expect(repository.failRejectedDeepAnalysisEnqueue).toHaveBeenCalledWith('dar_1', fingerprint);
+    expect(JSON.stringify((service['logger'].error as jest.Mock).mock.calls)).not.toContain(input.rawApiKey);
+  });
+
+  it.each([
+    { httpStatusCode: 403, attempts: 2 },
+    { httpStatusCode: 403 },
+    { httpStatusCode: 408, attempts: 1 },
+    { httpStatusCode: 429, attempts: 1 },
+    { httpStatusCode: 500, attempts: 1 },
+  ])('preserves queued work when send outcome may be ambiguous: %j', async ($metadata) => {
+    const { service, repository, queue } = setup();
+    queue.enqueueLlmMessage.mockRejectedValue(new SQSServiceException({
+      name: 'SqsError', $fault: 'client', $metadata,
+    }));
+    await service.prepareAndEnqueue(input);
+    expect(repository.failRejectedDeepAnalysisEnqueue).not.toHaveBeenCalled();
   });
 
   it('records a source failure only through its own lease without retaining upstream error text', async () => {

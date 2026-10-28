@@ -1,3 +1,4 @@
+import { SQSServiceException } from '@aws-sdk/client-sqs';
 import {
   AnalysisRepository,
   AppError,
@@ -103,6 +104,27 @@ export class DeepAnalysisSourcePreparationService {
             throw error;
           }
           if (handedOff) {
+            // A single rejected request cannot have queued work. Retry attempts,
+            // transport failures and server failures can have ambiguous outcomes.
+            const status = error instanceof SQSServiceException
+              ? error.$metadata.httpStatusCode
+              : undefined;
+            if (error instanceof SQSServiceException &&
+                error.$metadata.attempts === 1 &&
+                error.$fault === 'client' &&
+                !error.$retryable &&
+                status !== undefined && status >= 400 && status < 500 &&
+                status !== 408 && status !== 429) {
+              await this.repository.failRejectedDeepAnalysisEnqueue(
+                input.reportId,
+                parseApiKeyFingerprint(input.apiKeyFingerprintHex),
+              );
+              this.logger.error(JSON.stringify({
+                event: 'deep_analysis_enqueue_rejected',
+                reportId: input.reportId,
+              }));
+              return;
+            }
             // SQS may have accepted an ambiguously failed send. Leave queued work
             // for the worker or the queue-wait expiry instead of retrying the model.
             this.logger.error(
