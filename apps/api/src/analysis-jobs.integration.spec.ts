@@ -791,6 +791,40 @@ describe('analysis jobs integration', () => {
     expect(updatesBody.aggregate.tagCounts.priority).toBe(53);
   });
 
+  it('enqueues the authenticated tenant fingerprint instead of a client-supplied value', async () => {
+    const createResponse = await request(app.getHttpServer())
+      .post('/v1/analysis-jobs')
+      .set('x-mem9-api-key', 'mem9-secret')
+      .send({
+        dateRange: { start: '2026-03-01T00:00:00Z', end: '2026-03-31T23:59:59Z' },
+        expectedTotalMemories: 1,
+        expectedTotalBatches: 1,
+        batchSize: 1,
+        options: { lang: 'en-US', taxonomyVersion: 'v1', llmEnabled: false, includeItems: true, includeSummary: true },
+      })
+      .expect(201);
+    const { jobId } = createResponse.body as CreateAnalysisJobResponse;
+    const enqueue = jest.spyOn(app.get(SqsQueueService), 'enqueueBatch');
+    enqueue.mockClear();
+
+    await request(app.getHttpServer())
+      .put(`/v1/analysis-jobs/${jobId}/batches/1`)
+      .set('x-mem9-api-key', 'mem9-secret')
+      .send({
+        apiKeyFingerprintHex: 'ff'.repeat(32),
+        memoryCount: 1,
+        memories: [{ id: 'tenant-bound-memory', content: 'Memory', createdAt: '2026-03-01T00:00:00Z', metadata: {} }],
+      })
+      .expect(200);
+
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({
+      apiKeyFingerprintHex: deriveApiKeyFingerprint(process.env.APP_PEPPER!, 'mem9-secret').toString('hex'),
+      jobId,
+      batchIndex: 1,
+    }));
+  });
+
   it.each([
     { label: 'accepts long memories within the batch byte limit', content: 'Historical context '.repeat(1000), status: 200 },
     { label: 'rejects oversized batches before storage or enqueue', content: '记'.repeat(180000), status: 413 },

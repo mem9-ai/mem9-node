@@ -35,6 +35,7 @@ describe('deep analysis source preparation service', () => {
 
     await service.prepareAndEnqueue({
       reportId: 'dar_1',
+      apiKeyFingerprintHex: '01'.repeat(32),
       sourceSnapshotObjectKey: 'deep-analysis/reports/snapshot_1/source.json.gz',
       rawApiKey: 'space-key',
       traceId: 'req_1',
@@ -56,6 +57,7 @@ describe('deep analysis source preparation service', () => {
     expect(queue.enqueueLlmMessage).toHaveBeenCalledWith({
       messageType: 'deep_report',
       reportId: 'dar_1',
+      apiKeyFingerprintHex: '01'.repeat(32),
       traceId: 'req_1',
     });
   });
@@ -84,6 +86,7 @@ describe('deep analysis source preparation service', () => {
 
     await service.prepareAndEnqueue({
       reportId: 'dar_1',
+      apiKeyFingerprintHex: '01'.repeat(32),
       sourceSnapshotObjectKey: 'deep-analysis/reports/snapshot_1/source.json.gz',
       rawApiKey: 'space-key',
       traceId: 'req_1',

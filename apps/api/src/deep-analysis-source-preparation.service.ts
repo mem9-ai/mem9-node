@@ -11,6 +11,7 @@ import { DeepAnalysisReportStage, DeepAnalysisReportStatus } from '@prisma/clien
 import { Mem9SourceService } from './mem9-source.service';
 
 interface PrepareSourceSnapshotInput {
+  apiKeyFingerprintHex: string;
   reportId: string;
   sourceSnapshotObjectKey: string;
   rawApiKey: string;
@@ -66,6 +67,7 @@ export class DeepAnalysisSourcePreparationService {
 
       await this.queue.enqueueLlmMessage({
         messageType: 'deep_report',
+        apiKeyFingerprintHex: input.apiKeyFingerprintHex,
         reportId: input.reportId,
         traceId: input.traceId,
       });

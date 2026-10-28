@@ -225,6 +225,7 @@ export class AnalysisJobsService {
       payloadObjectKey,
     });
     await this.queue.enqueueBatch({
+      apiKeyFingerprintHex: context.apiKeyFingerprintHex,
       jobId,
       batchIndex,
       payloadObjectKey,
