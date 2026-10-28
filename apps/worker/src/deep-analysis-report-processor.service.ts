@@ -18,9 +18,12 @@ import {
   AnalysisRepository,
   AppError,
   S3PayloadStorageService,
+  type DeepAnalysisExecutionLease,
   gunzipJson,
+  isDeepAnalysisExecutionLeaseLost,
   normalizeMemory,
   parseApiKeyFingerprint,
+  withDeepAnalysisExecutionLease,
 } from '@mem9/shared';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { DeepAnalysisReportStage, DeepAnalysisReportStatus, Prisma } from '@prisma/client';
@@ -1751,246 +1754,274 @@ export class DeepAnalysisReportProcessorService {
     }
     // Keep this outside the processing/error bookkeeping path: an unowned
     // message must not read a source snapshot or update the named report.
+    const fingerprint = parseApiKeyFingerprint(message.apiKeyFingerprintHex);
     const reportRecord = await this.repository.getOwnedDeepAnalysisReport(
       message.reportId,
-      parseApiKeyFingerprint(message.apiKeyFingerprintHex),
+      fingerprint,
     );
-    const internalComment = parseInternalComment(
-      reportRecord.internalComment,
-      this.qwen.getConfiguredModel(),
-    );
-    let chunkSummary: ChunkAnalysisSummary = {
-      totalChunks: 0,
-      successCount: 0,
-      failureCount: 0,
-    };
-    let currentStage: DeepAnalysisReportStage = DeepAnalysisReportStage.PREPROCESS;
-    let latestSynthesisReport: DeepAnalysisReportDocument | null = null;
-
-    if (reportRecord.status === DeepAnalysisReportStatus.COMPLETED) {
+    if (reportRecord.status === DeepAnalysisReportStatus.COMPLETED ||
+        reportRecord.status === DeepAnalysisReportStatus.FAILED) {
       return;
     }
 
-    appendInternalEvent(internalComment, 'info', currentStage, 'deep_analysis_process_started', {
-      reportId: reportRecord.id,
-      status: reportRecord.status,
-      lang: reportRecord.lang,
-    });
-    await this.repository.updateDeepAnalysisReport(reportRecord.id, {
-      status: DeepAnalysisReportStatus.PREPARING,
-      stage: DeepAnalysisReportStage.PREPROCESS,
-      progressPercent: 10,
-      startedAt: new Date(),
-      errorCode: null,
-      errorMessage: null,
-      internalComment: JSON.stringify(internalComment),
-    });
-
-    try {
-      const payloadBuffer = await this.storage.getObjectBuffer(reportRecord.sourceSnapshotObjectKey);
-      const payload = gunzipJson<SourceSnapshotPayload>(payloadBuffer);
-      const prepared = this.prepareMemories(payload.memories);
-      const memoryIds = new Set(payload.memories.map((memory) => memory.id));
-      const totalChunks = this.buildChunkCount(prepared.uniqueMemories.length);
-      const chunkConcurrency = this.buildChunkConcurrency(totalChunks);
-      currentStage = DeepAnalysisReportStage.CHUNK_ANALYSIS;
-      await this.repository.updateDeepAnalysisReport(reportRecord.id, {
-        status: DeepAnalysisReportStatus.ANALYZING,
-        stage: DeepAnalysisReportStage.CHUNK_ANALYSIS,
-        progressPercent: CHUNK_ANALYSIS_PROGRESS_START,
-      });
-      appendInternalEvent(internalComment, 'info', currentStage, 'deep_analysis_chunk_analysis_started', {
-        reportId: reportRecord.id,
-        memoryCount: payload.memories.length,
-        deduplicatedMemoryCount: prepared.deduplicatedCount,
-        totalChunks,
-        concurrency: chunkConcurrency,
-        model: this.qwen.getConfiguredModel(),
-        thinkingDisabled: true,
-      });
-      this.logInfo('deep_analysis_chunk_analysis_started', {
-        reportId: reportRecord.id,
-        memoryCount: payload.memories.length,
-        deduplicatedMemoryCount: prepared.deduplicatedCount,
-        totalChunks,
-        concurrency: chunkConcurrency,
-        model: this.qwen.getConfiguredModel(),
-        thinkingDisabled: true,
-      });
-      const chunkOutcome = await this.analyzeChunks(
-        reportRecord.id,
-        internalComment,
-        prepared.uniqueMemories,
+    await withDeepAnalysisExecutionLease(this.repository, reportRecord.id, fingerprint, 'worker', async (lease) => {
+      const internalComment = parseInternalComment(
+        reportRecord.internalComment,
+        this.qwen.getConfiguredModel(),
       );
-      chunkSummary = chunkOutcome.summary;
-      const chunkInsights = chunkOutcome.insights;
-      const corpusSignals = this.buildCorpusSignals(prepared, chunkInsights);
+      let chunkSummary: ChunkAnalysisSummary = {
+        totalChunks: 0,
+        successCount: 0,
+        failureCount: 0,
+      };
+      let currentStage: DeepAnalysisReportStage = DeepAnalysisReportStage.PREPROCESS;
+      let latestSynthesisReport: DeepAnalysisReportDocument | null = null;
 
-      currentStage = DeepAnalysisReportStage.GLOBAL_SYNTHESIS;
-      await this.repository.updateDeepAnalysisReport(reportRecord.id, {
-        status: DeepAnalysisReportStatus.SYNTHESIZING,
-        stage: DeepAnalysisReportStage.GLOBAL_SYNTHESIS,
-        progressPercent: 60,
-      });
-      appendInternalEvent(internalComment, 'info', currentStage, 'deep_analysis_global_synthesis_started', {
+      appendInternalEvent(internalComment, 'info', currentStage, 'deep_analysis_process_started', {
         reportId: reportRecord.id,
-        totalChunks: chunkSummary.totalChunks,
+        status: reportRecord.status,
+        lang: reportRecord.lang,
       });
-      this.logInfo('deep_analysis_global_synthesis_started', {
-        reportId: reportRecord.id,
-        totalChunks: chunkSummary.totalChunks,
-      });
-
-      const synthesisOutcome = await this.synthesizeReport(
-        reportRecord.id,
-        internalComment,
-        reportRecord.lang,
-        prepared,
-        chunkInsights,
-        corpusSignals,
-      );
-      const rawSynthesisReport = synthesisOutcome.fallbackUsed ? null : synthesisOutcome.report;
-      latestSynthesisReport = rawSynthesisReport;
-      const repairOutcome = rawSynthesisReport
-        ? this.normalizeAndRepairSynthesizedReport(
+      try {
+        await lease.update({
+          status: DeepAnalysisReportStatus.PREPARING,
+          stage: DeepAnalysisReportStage.PREPROCESS,
+          progressPercent: 10,
+          startedAt: new Date(),
+          errorCode: null,
+          errorMessage: null,
+          internalComment: JSON.stringify(internalComment),
+        });
+        await lease.assertActive();
+        const payloadBuffer = await this.storage.getObjectBuffer(reportRecord.sourceSnapshotObjectKey);
+        const payload = gunzipJson<SourceSnapshotPayload>(payloadBuffer);
+        const prepared = this.prepareMemories(payload.memories);
+        const memoryIds = new Set(payload.memories.map((memory) => memory.id));
+        const totalChunks = this.buildChunkCount(prepared.uniqueMemories.length);
+        const chunkConcurrency = this.buildChunkConcurrency(totalChunks);
+        currentStage = DeepAnalysisReportStage.CHUNK_ANALYSIS;
+        await lease.update({
+          status: DeepAnalysisReportStatus.ANALYZING,
+          stage: DeepAnalysisReportStage.CHUNK_ANALYSIS,
+          progressPercent: CHUNK_ANALYSIS_PROGRESS_START,
+        });
+        appendInternalEvent(internalComment, 'info', currentStage, 'deep_analysis_chunk_analysis_started', {
+          reportId: reportRecord.id,
+          memoryCount: payload.memories.length,
+          deduplicatedMemoryCount: prepared.deduplicatedCount,
+          totalChunks,
+          concurrency: chunkConcurrency,
+          model: this.qwen.getConfiguredModel(),
+          thinkingDisabled: true,
+        });
+        this.logInfo('deep_analysis_chunk_analysis_started', {
+          reportId: reportRecord.id,
+          memoryCount: payload.memories.length,
+          deduplicatedMemoryCount: prepared.deduplicatedCount,
+          totalChunks,
+          concurrency: chunkConcurrency,
+          model: this.qwen.getConfiguredModel(),
+          thinkingDisabled: true,
+        });
+        const chunkOutcome = await this.analyzeChunks(
+          lease,
           reportRecord.id,
-          rawSynthesisReport,
+          internalComment,
+          prepared.uniqueMemories,
+        );
+        chunkSummary = chunkOutcome.summary;
+        const chunkInsights = chunkOutcome.insights;
+        const corpusSignals = this.buildCorpusSignals(prepared, chunkInsights);
+
+        currentStage = DeepAnalysisReportStage.GLOBAL_SYNTHESIS;
+        await lease.update({
+          status: DeepAnalysisReportStatus.SYNTHESIZING,
+          stage: DeepAnalysisReportStage.GLOBAL_SYNTHESIS,
+          progressPercent: 60,
+        });
+        appendInternalEvent(internalComment, 'info', currentStage, 'deep_analysis_global_synthesis_started', {
+          reportId: reportRecord.id,
+          totalChunks: chunkSummary.totalChunks,
+        });
+        this.logInfo('deep_analysis_global_synthesis_started', {
+          reportId: reportRecord.id,
+          totalChunks: chunkSummary.totalChunks,
+        });
+
+        const synthesisOutcome = await this.synthesizeReport(
+          lease,
+          reportRecord.id,
+          internalComment,
           reportRecord.lang,
           prepared,
+          chunkInsights,
           corpusSignals,
-          memoryIds,
-          internalComment,
-        )
-        : null;
-      let report = repairOutcome?.report ?? synthesisOutcome.report;
-      appendInternalEvent(internalComment, 'info', currentStage, 'deep_analysis_global_synthesis_completed', {
-        reportId: reportRecord.id,
-        durationMs: synthesisOutcome.durationMs,
-        fallbackUsed: synthesisOutcome.fallbackUsed,
-        errorCode: synthesisOutcome.errorCode,
-      });
-      this.logInfo('deep_analysis_global_synthesis_completed', {
-        reportId: reportRecord.id,
-        durationMs: synthesisOutcome.durationMs,
-        fallbackUsed: synthesisOutcome.fallbackUsed,
-        errorCode: synthesisOutcome.errorCode,
-      });
-
-      currentStage = DeepAnalysisReportStage.VALIDATE;
-      await this.repository.updateDeepAnalysisReport(reportRecord.id, {
-        status: DeepAnalysisReportStatus.SYNTHESIZING,
-        stage: DeepAnalysisReportStage.VALIDATE,
-        progressPercent: 90,
-      });
-
-      try {
-        validateReport(
-          report,
-          memoryIds,
-          prepared.originalCount,
-          prepared.deduplicatedCount,
         );
-      } catch (error) {
-        appendRuntimeError(internalComment, currentStage, error, 'DEEP_ANALYSIS_REPORT_INVALID');
-        const rawPreview = serializeRawPreview(latestSynthesisReport ?? report);
-        if (rawPreview) {
-          appendRawResponse(internalComment, {
-            stage: currentStage,
-            reason: 'report_validation_failed',
-            source: 'parsed_report',
-            preview: rawPreview.preview,
-            truncated: rawPreview.truncated,
-          });
-        }
-        appendInternalEvent(internalComment, 'warn', currentStage, 'deep_analysis_validation_failed', {
+        const rawSynthesisReport = synthesisOutcome.fallbackUsed ? null : synthesisOutcome.report;
+        latestSynthesisReport = rawSynthesisReport;
+        const repairOutcome = rawSynthesisReport
+          ? this.normalizeAndRepairSynthesizedReport(
+            reportRecord.id,
+            rawSynthesisReport,
+            reportRecord.lang,
+            prepared,
+            corpusSignals,
+            memoryIds,
+            internalComment,
+          )
+          : null;
+        let report = repairOutcome?.report ?? synthesisOutcome.report;
+        appendInternalEvent(internalComment, 'info', currentStage, 'deep_analysis_global_synthesis_completed', {
           reportId: reportRecord.id,
-          errorCode: 'DEEP_ANALYSIS_REPORT_INVALID',
-          isTrimError: isTrimRuntimeError(error),
+          durationMs: synthesisOutcome.durationMs,
+          fallbackUsed: synthesisOutcome.fallbackUsed,
+          errorCode: synthesisOutcome.errorCode,
         });
-        this.logger.warn(`Validation failed for report ${reportRecord.id}; retrying with heuristic synthesis`);
-        report = this.buildHeuristicReport(reportRecord.lang, prepared, corpusSignals);
-        validateReport(
-          report,
-          memoryIds,
-          prepared.originalCount,
-          prepared.deduplicatedCount,
-        );
-      }
+        this.logInfo('deep_analysis_global_synthesis_completed', {
+          reportId: reportRecord.id,
+          durationMs: synthesisOutcome.durationMs,
+          fallbackUsed: synthesisOutcome.fallbackUsed,
+          errorCode: synthesisOutcome.errorCode,
+        });
 
-      const reportObjectKey = `deep-analysis/reports/${reportRecord.id}/report.json`;
-      await this.storage.putJson(reportObjectKey, report);
-      currentStage = DeepAnalysisReportStage.COMPLETE;
-      appendInternalEvent(internalComment, 'info', currentStage, 'deep_analysis_report_completed', {
-        reportId: reportRecord.id,
-        totalDurationMs: Date.now() - processStartedAt,
-        totalChunks: chunkSummary.totalChunks,
-        chunkSuccessCount: chunkSummary.successCount,
-        chunkFailureCount: chunkSummary.failureCount,
-      });
-      await this.repository.updateDeepAnalysisReport(reportRecord.id, {
-        status: DeepAnalysisReportStatus.COMPLETED,
-        stage: DeepAnalysisReportStage.COMPLETE,
-        progressPercent: 100,
-        completedAt: new Date(),
-        reportObjectKey,
-        previewJson: buildPreview(report) as unknown as Prisma.InputJsonValue,
-        internalComment: JSON.stringify(internalComment),
-      });
-      this.logInfo('deep_analysis_report_completed', {
-        reportId: reportRecord.id,
-        totalDurationMs: Date.now() - processStartedAt,
-        totalChunks: chunkSummary.totalChunks,
-        chunkSuccessCount: chunkSummary.successCount,
-        chunkFailureCount: chunkSummary.failureCount,
-      });
-    } catch (error) {
-      const errorCode = error instanceof AppError ? error.code : 'DEEP_ANALYSIS_PROCESSING_FAILED';
-      if (
-        latestSynthesisReport
-        && (currentStage === DeepAnalysisReportStage.GLOBAL_SYNTHESIS || currentStage === DeepAnalysisReportStage.VALIDATE)
-      ) {
-        const rawPreview = serializeRawPreview(latestSynthesisReport);
-        if (rawPreview) {
-          appendRawResponse(internalComment, {
-            stage: currentStage,
-            reason: 'report_processing_failed',
-            source: 'parsed_report',
-            preview: rawPreview.preview,
-            truncated: rawPreview.truncated,
+        currentStage = DeepAnalysisReportStage.VALIDATE;
+        await lease.update({
+          status: DeepAnalysisReportStatus.SYNTHESIZING,
+          stage: DeepAnalysisReportStage.VALIDATE,
+          progressPercent: 90,
+        });
+
+        try {
+          validateReport(
+            report,
+            memoryIds,
+            prepared.originalCount,
+            prepared.deduplicatedCount,
+          );
+        } catch (error) {
+          appendRuntimeError(internalComment, currentStage, error, 'DEEP_ANALYSIS_REPORT_INVALID');
+          const rawPreview = serializeRawPreview(latestSynthesisReport ?? report);
+          if (rawPreview) {
+            appendRawResponse(internalComment, {
+              stage: currentStage,
+              reason: 'report_validation_failed',
+              source: 'parsed_report',
+              preview: rawPreview.preview,
+              truncated: rawPreview.truncated,
+            });
+          }
+          appendInternalEvent(internalComment, 'warn', currentStage, 'deep_analysis_validation_failed', {
+            reportId: reportRecord.id,
+            errorCode: 'DEEP_ANALYSIS_REPORT_INVALID',
+            isTrimError: isTrimRuntimeError(error),
           });
+          this.logger.warn(`Validation failed for report ${reportRecord.id}; retrying with heuristic synthesis`);
+          report = this.buildHeuristicReport(reportRecord.lang, prepared, corpusSignals);
+          validateReport(
+            report,
+            memoryIds,
+            prepared.originalCount,
+            prepared.deduplicatedCount,
+          );
         }
-      }
-      appendRuntimeError(internalComment, currentStage, error, errorCode);
-      appendInternalEvent(internalComment, 'error', currentStage, 'deep_analysis_report_failed', {
-        reportId: reportRecord.id,
-        totalDurationMs: Date.now() - processStartedAt,
-        totalChunks: chunkSummary.totalChunks,
-        chunkSuccessCount: chunkSummary.successCount,
-        chunkFailureCount: chunkSummary.failureCount,
-        errorCode,
-        isTrimError: isTrimRuntimeError(error),
-      });
-      await this.repository.updateDeepAnalysisReport(reportRecord.id, {
-        status: DeepAnalysisReportStatus.FAILED,
-        stage: DeepAnalysisReportStage.VALIDATE,
-        progressPercent: 100,
-        completedAt: new Date(),
-        errorCode,
-        errorMessage: error instanceof Error ? error.message.slice(0, 512) : 'Deep analysis failed',
-        internalComment: JSON.stringify(internalComment),
-      });
-      this.logger.error(
-        JSON.stringify({
-          event: 'deep_analysis_report_failed',
+
+        const reportObjectKey = `deep-analysis/reports/${reportRecord.id}/attempts/${lease.token}/report.json`;
+        await lease.assertActive();
+        await this.storage.putJson(reportObjectKey, report);
+        currentStage = DeepAnalysisReportStage.COMPLETE;
+        appendInternalEvent(internalComment, 'info', currentStage, 'deep_analysis_report_completed', {
+          reportId: reportRecord.id,
+          totalDurationMs: Date.now() - processStartedAt,
+          totalChunks: chunkSummary.totalChunks,
+          chunkSuccessCount: chunkSummary.successCount,
+          chunkFailureCount: chunkSummary.failureCount,
+        });
+        try {
+          await lease.update({
+            status: DeepAnalysisReportStatus.COMPLETED,
+            stage: DeepAnalysisReportStage.COMPLETE,
+            progressPercent: 100,
+            completedAt: new Date(),
+            reportObjectKey,
+            previewJson: buildPreview(report) as unknown as Prisma.InputJsonValue,
+            internalComment: JSON.stringify(internalComment),
+          });
+        } catch (error) {
+          await this.deleteUnpublishedAttempt(reportRecord.id, fingerprint, reportObjectKey);
+          throw error;
+        }
+        this.logInfo('deep_analysis_report_completed', {
+          reportId: reportRecord.id,
+          totalDurationMs: Date.now() - processStartedAt,
+          totalChunks: chunkSummary.totalChunks,
+          chunkSuccessCount: chunkSummary.successCount,
+          chunkFailureCount: chunkSummary.failureCount,
+        });
+      } catch (error) {
+        if (isDeepAnalysisExecutionLeaseLost(error)) {
+          throw error;
+        }
+        const errorCode = error instanceof AppError ? error.code : 'DEEP_ANALYSIS_PROCESSING_FAILED';
+        if (
+          latestSynthesisReport
+          && (currentStage === DeepAnalysisReportStage.GLOBAL_SYNTHESIS || currentStage === DeepAnalysisReportStage.VALIDATE)
+        ) {
+          const rawPreview = serializeRawPreview(latestSynthesisReport);
+          if (rawPreview) {
+            appendRawResponse(internalComment, {
+              stage: currentStage,
+              reason: 'report_processing_failed',
+              source: 'parsed_report',
+              preview: rawPreview.preview,
+              truncated: rawPreview.truncated,
+            });
+          }
+        }
+        appendRuntimeError(internalComment, currentStage, error, errorCode);
+        appendInternalEvent(internalComment, 'error', currentStage, 'deep_analysis_report_failed', {
           reportId: reportRecord.id,
           totalDurationMs: Date.now() - processStartedAt,
           totalChunks: chunkSummary.totalChunks,
           chunkSuccessCount: chunkSummary.successCount,
           chunkFailureCount: chunkSummary.failureCount,
           errorCode,
-        }),
-        error instanceof Error ? error.stack : undefined,
-      );
+          isTrimError: isTrimRuntimeError(error),
+        });
+        await lease.update({
+          status: DeepAnalysisReportStatus.FAILED,
+          stage: DeepAnalysisReportStage.VALIDATE,
+          progressPercent: 100,
+          completedAt: new Date(),
+          errorCode,
+          errorMessage: error instanceof Error ? error.message.slice(0, 512) : 'Deep analysis failed',
+          internalComment: JSON.stringify(internalComment),
+        });
+        this.logger.error(
+          JSON.stringify({
+            event: 'deep_analysis_report_failed',
+            reportId: reportRecord.id,
+            totalDurationMs: Date.now() - processStartedAt,
+            totalChunks: chunkSummary.totalChunks,
+            chunkSuccessCount: chunkSummary.successCount,
+            chunkFailureCount: chunkSummary.failureCount,
+            errorCode,
+          }),
+          error instanceof Error ? error.stack : undefined,
+        );
+      }
+    });
+  }
+
+  private async deleteUnpublishedAttempt(reportId: string, fingerprint: Buffer, reportObjectKey: string): Promise<void> {
+    try {
+      // A database error may have happened after publication succeeded. Delete
+      // only this attempt's object after confirming it is not the saved result.
+      const latest = await this.repository.getOwnedDeepAnalysisReport(reportId, fingerprint);
+      if (latest.reportObjectKey !== reportObjectKey) {
+        await this.storage.deleteObject(reportObjectKey);
+      }
+    } catch {
+      this.logger.warn(`Could not reconcile unpublished report attempt for ${reportId}`);
     }
   }
 
@@ -2045,6 +2076,7 @@ export class DeepAnalysisReportProcessorService {
   }
 
   private async analyzeChunks(
+    lease: DeepAnalysisExecutionLease,
     reportId: string,
     internalComment: InternalCommentPayload,
     memories: PreparedMemory[],
@@ -2095,7 +2127,7 @@ export class DeepAnalysisReportProcessorService {
           errorCode: execution.result.requestMeta.errorCode,
           progressPercent,
         });
-        await this.repository.updateDeepAnalysisReport(reportId, {
+        await lease.update({
           progressPercent,
           internalComment: JSON.stringify(internalComment),
         });
@@ -2128,6 +2160,7 @@ export class DeepAnalysisReportProcessorService {
         chunkSize: chunk.length,
       });
       const chunkStartedAt = Date.now();
+      await lease.assertActive();
       const qwenInsight = await this.qwen.createJson<ChunkInsight>(
         'chunk_analysis',
         [
@@ -2722,6 +2755,7 @@ export class DeepAnalysisReportProcessorService {
   }
 
   private async synthesizeReport(
+    lease: DeepAnalysisExecutionLease,
     reportId: string,
     internalComment: InternalCommentPayload,
     lang: string,
@@ -2730,6 +2764,7 @@ export class DeepAnalysisReportProcessorService {
     corpusSignals: CorpusSignals,
   ): Promise<SynthesisOutcome> {
     const synthesisStartedAt = Date.now();
+    await lease.assertActive();
     const qwenReport = await this.qwen.createJson<DeepAnalysisReportDocument>(
       'global_synthesis',
       [
@@ -2761,7 +2796,7 @@ export class DeepAnalysisReportProcessorService {
       }),
     );
     this.appendModelCall(internalComment, 1, qwenReport);
-    await this.repository.updateDeepAnalysisReport(reportId, {
+    await lease.update({
       internalComment: JSON.stringify(internalComment),
     });
     const durationMs = Date.now() - synthesisStartedAt;

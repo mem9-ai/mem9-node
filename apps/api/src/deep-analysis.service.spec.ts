@@ -1,4 +1,5 @@
 import type { AppConfig } from '@mem9/config';
+import { AppError } from '@mem9/shared';
 
 import { DeepAnalysisService } from './deep-analysis.service';
 
@@ -109,7 +110,7 @@ function createService(overrides?: {
   };
 }) {
   const repository = {
-    findDeepAnalysisReportsByDayPrefix: jest.fn(async () => []),
+    findDeepAnalysisQuotaReports: jest.fn(async () => []),
     createDeepAnalysisReport: jest.fn(async () => ({
       id: 'dar_1',
       status: 'QUEUED',
@@ -200,7 +201,7 @@ function createService(overrides?: {
   };
 }
 
-function getCreateReportCall<T extends { requestDayKey: string }>(mockFn: unknown): T {
+function getCreateReportCall<T>(mockFn: unknown): T {
   const createDeepAnalysisReport = mockFn as jest.MockedFunction<
     (input: T) => Promise<unknown>
   >;
@@ -219,10 +220,95 @@ describe('deep analysis service', () => {
     jest.restoreAllMocks();
   });
 
+  it.each(['UTC', 'utc', 'Asia/Shanghai', 'Pacific/Kiritimati', 'America/Los_Angeles'])(
+    'does not allow timezone %s to select another quota bucket',
+    async (timezone) => {
+      const { service, repository, sourcePreparation } = createService({
+        repository: {
+          findDeepAnalysisQuotaReports: jest.fn(async () => [
+            { id: 'retained', status: 'COMPLETED' },
+            { id: 'deleted', status: 'COMPLETED', deletedAt: new Date() },
+            { id: 'failed', status: 'FAILED' },
+          ]),
+        },
+      });
+      const context = createContext();
+
+      await expect(service.createReport(context, { lang: 'en', timezone }))
+        .rejects.toMatchObject({ code: 'DEEP_ANALYSIS_DAILY_LIMIT' });
+      expect(repository.findDeepAnalysisQuotaReports).toHaveBeenCalledWith(context.apiKeyFingerprint);
+      expect(repository.createDeepAnalysisReport).not.toHaveBeenCalled();
+      expect(sourcePreparation.schedule).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not schedule work when another request consumes the quota after the preflight', async () => {
+    const { service, sourcePreparation } = createService({
+      repository: {
+        createDeepAnalysisReport: jest.fn(async () => {
+          throw new AppError('Daily report limit reached', {
+            statusCode: 409, code: 'DEEP_ANALYSIS_DAILY_LIMIT',
+          });
+        }),
+      },
+    });
+
+    await expect(service.createReport(createContext(), { lang: 'en', timezone: 'UTC' }))
+      .rejects.toMatchObject({ code: 'DEEP_ANALYSIS_DAILY_LIMIT' });
+    expect(sourcePreparation.schedule).not.toHaveBeenCalled();
+  });
+
+  it('does not accept quota bypass flags from the request body', async () => {
+    const { service, repository } = createService();
+    const dto = { lang: 'en', timezone: 'UTC', enforceQuota: false, bypassDailyLimit: true };
+
+    await service.createReport(createContext(), dto);
+    expect(repository.createDeepAnalysisReport).toHaveBeenCalledWith(expect.objectContaining({
+      enforceQuota: true, bypassDailyLimit: false,
+    }));
+  });
+
+  it('does not let a deleted report with a stale active status block all future requests', async () => {
+    const { service, repository } = createService({
+      repository: {
+        findDeepAnalysisQuotaReports: jest.fn(async () => [
+          { id: 'deleted-during-retry', status: 'PREPARING', deletedAt: new Date() },
+        ]),
+      },
+    });
+
+    await expect(service.createReport(createContext(), { lang: 'en', timezone: 'UTC' }))
+      .resolves.toMatchObject({ reportId: 'dar_1' });
+    expect(repository.createDeepAnalysisReport).toHaveBeenCalledTimes(1);
+  });
+
+  it('still counts deleted reports with stale active statuses against the daily limit', async () => {
+    const { service, sourcePreparation } = createService({
+      repository: {
+        findDeepAnalysisQuotaReports: jest.fn(async () => [
+          { id: 'deleted-during-retry', status: 'PREPARING', deletedAt: new Date() },
+          { id: 'completed', status: 'COMPLETED' },
+          { id: 'failed', status: 'FAILED' },
+        ]),
+      },
+    });
+
+    await expect(service.createReport(createContext(), { lang: 'en', timezone: 'UTC' }))
+      .rejects.toMatchObject({ code: 'DEEP_ANALYSIS_DAILY_LIMIT' });
+    expect(sourcePreparation.schedule).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid display timezone before reading upstream memories', async () => {
+    const { service, source } = createService();
+    await expect(service.createReport(createContext(), { lang: 'en', timezone: 'not-a-zone' }))
+      .rejects.toMatchObject({ code: 'INVALID_TIMEZONE' });
+    expect(source.countMemories).not.toHaveBeenCalled();
+  });
+
   it('returns an already-running error when a report exists for the same day in production', async () => {
     const { service, sourcePreparation } = createService({
       repository: {
-        findDeepAnalysisReportsByDayPrefix: jest.fn(async () => [
+        findDeepAnalysisQuotaReports: jest.fn(async () => [
           {
             id: 'dar_existing',
             status: 'PREPARING',
@@ -252,14 +338,13 @@ describe('deep analysis service', () => {
     const { service, repository } = createService({
       repository: {
         createDeepAnalysisReport: jest.fn(
-          async (input: { requestDayKey: string; memoryCount: number }) => ({
+          async (input: { memoryCount: number }) => ({
             id: 'dar_small',
             status: 'QUEUED',
             stage: 'FETCH_SOURCE',
             progressPercent: 0,
             requestedAt: new Date('2026-03-28T00:00:00Z'),
             memoryCount: input.memoryCount,
-            requestDayKey: input.requestDayKey,
           }),
         ),
       },
@@ -279,7 +364,9 @@ describe('deep analysis service', () => {
     });
     expect(repository.createDeepAnalysisReport).toHaveBeenCalledWith(
       expect.objectContaining({
-        requestDayKey: '2026-03-28@Asia/Shanghai',
+        enforceQuota: true,
+        bypassDailyLimit: false,
+        timezone: 'Asia/Shanghai',
         memoryCount: 0,
       }),
     );
@@ -292,7 +379,6 @@ describe('deep analysis service', () => {
       repository: {
         createDeepAnalysisReport: jest.fn(
           async (input: {
-            requestDayKey: string;
             memoryCount: number;
             sourceSnapshotObjectKey: string;
           }) => ({
@@ -303,7 +389,6 @@ describe('deep analysis service', () => {
             requestedAt: new Date('2026-03-28T00:00:00Z'),
             memoryCount: input.memoryCount,
             sourceSnapshotObjectKey: input.sourceSnapshotObjectKey,
-            requestDayKey: input.requestDayKey,
           }),
         ),
       },
@@ -326,7 +411,9 @@ describe('deep analysis service', () => {
     });
     expect(repository.createDeepAnalysisReport).toHaveBeenCalledWith(
       expect.objectContaining({
-        requestDayKey: '2026-03-28@Asia/Shanghai',
+        enforceQuota: true,
+        bypassDailyLimit: false,
+        timezone: 'Asia/Shanghai',
       }),
     );
     expect(sourcePreparation.schedule).toHaveBeenCalledWith(
@@ -339,12 +426,12 @@ describe('deep analysis service', () => {
     );
   });
 
-  it('uses the third daily slot for the third production run', async () => {
+  it('allows the third production run and enforces admission in the repository', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-28T00:00:00Z'));
 
     const { service, repository } = createService({
       repository: {
-        findDeepAnalysisReportsByDayPrefix: jest.fn(async () => [
+        findDeepAnalysisQuotaReports: jest.fn(async () => [
           {
             id: 'dar_2',
             status: 'COMPLETED',
@@ -355,14 +442,13 @@ describe('deep analysis service', () => {
           },
         ]),
         createDeepAnalysisReport: jest.fn(
-          async (input: { requestDayKey: string; memoryCount: number }) => ({
+          async (input: { memoryCount: number }) => ({
             id: 'dar_3',
             status: 'QUEUED',
             stage: 'FETCH_SOURCE',
             progressPercent: 0,
             requestedAt: new Date('2026-03-28T00:00:00Z'),
             memoryCount: input.memoryCount,
-            requestDayKey: input.requestDayKey,
           }),
         ),
       },
@@ -376,7 +462,8 @@ describe('deep analysis service', () => {
     expect(response.reportId).toBe('dar_3');
     expect(repository.createDeepAnalysisReport).toHaveBeenCalledWith(
       expect.objectContaining({
-        requestDayKey: '2026-03-28@Asia/Shanghai#3',
+        enforceQuota: true,
+        bypassDailyLimit: false,
       }),
     );
   });
@@ -384,7 +471,7 @@ describe('deep analysis service', () => {
   it('rejects the fourth production run on the same day', async () => {
     const { service, sourcePreparation } = createService({
       repository: {
-        findDeepAnalysisReportsByDayPrefix: jest.fn(async () => [
+        findDeepAnalysisQuotaReports: jest.fn(async () => [
           {
             id: 'dar_3',
             status: 'COMPLETED',
@@ -428,14 +515,13 @@ describe('deep analysis service', () => {
       },
       repository: {
         createDeepAnalysisReport: jest.fn(
-          async (input: { requestDayKey: string; memoryCount: number }) => ({
+          async (input: { memoryCount: number }) => ({
             id: 'dar_local',
             status: 'QUEUED',
             stage: 'FETCH_SOURCE',
             progressPercent: 0,
             requestedAt: new Date('2026-03-28T00:00:00Z'),
             memoryCount: input.memoryCount,
-            requestDayKey: input.requestDayKey,
           }),
         ),
       },
@@ -451,19 +537,19 @@ describe('deep analysis service', () => {
 
     expect(response.reportId).toBe('dar_local');
     expect(
-      repository.findDeepAnalysisReportsByDayPrefix,
+      repository.findDeepAnalysisQuotaReports,
     ).not.toHaveBeenCalled();
     const devCreateInput = getCreateReportCall<{
-      requestDayKey: string;
+      enforceQuota: boolean;
+      bypassDailyLimit: boolean;
       memoryCount: number;
     }>(repository.createDeepAnalysisReport);
-    expect(devCreateInput.requestDayKey).toMatch(
-      /^2026-03-28@Asia\/Shanghai#dev-/,
-    );
+    expect(devCreateInput.enforceQuota).toBe(false);
+    expect(devCreateInput.bypassDailyLimit).toBe(false);
     expect(devCreateInput.memoryCount).toBe(12);
   });
 
-  it('allows production reruns for bypass fingerprints while keeping the same day prefix', async () => {
+  it('passes the server-configured bypass for an allowlisted fingerprint', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-28T00:00:00Z'));
 
     const context = createContext();
@@ -476,21 +562,20 @@ describe('deep analysis service', () => {
         },
       },
       repository: {
-        findDeepAnalysisReportsByDayPrefix: jest.fn(async () => [
+        findDeepAnalysisQuotaReports: jest.fn(async () => [
           {
             id: 'dar_old',
             status: 'COMPLETED',
           },
         ]),
         createDeepAnalysisReport: jest.fn(
-          async (input: { requestDayKey: string; memoryCount: number }) => ({
+          async (input: { memoryCount: number }) => ({
             id: 'dar_rerun',
             status: 'QUEUED',
             stage: 'FETCH_SOURCE',
             progressPercent: 0,
             requestedAt: new Date('2026-03-28T00:00:00Z'),
             memoryCount: input.memoryCount,
-            requestDayKey: input.requestDayKey,
           }),
         ),
       },
@@ -503,11 +588,11 @@ describe('deep analysis service', () => {
 
     expect(response.reportId).toBe('dar_rerun');
     const rerunCreateInput = getCreateReportCall<{
-      requestDayKey: string;
+      enforceQuota: boolean;
+      bypassDailyLimit: boolean;
     }>(repository.createDeepAnalysisReport);
-    expect(rerunCreateInput.requestDayKey).toMatch(
-      /^2026-03-28@Asia\/Shanghai#rerun-/,
-    );
+    expect(rerunCreateInput.enforceQuota).toBe(true);
+    expect(rerunCreateInput.bypassDailyLimit).toBe(true);
   });
 
   it('lists reports and loads report details from storage', async () => {

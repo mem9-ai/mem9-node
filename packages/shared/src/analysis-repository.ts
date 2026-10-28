@@ -18,6 +18,13 @@ import {
 } from '@prisma/client';
 
 import { AppError } from './errors';
+import {
+  DEEP_ANALYSIS_INITIAL_WAIT_MS,
+  DEEP_ANALYSIS_LEASE_MS,
+  DEEP_ANALYSIS_QUEUE_WAIT_MS,
+  DEEP_ANALYSIS_SOURCE_DEADLINE_MS,
+  DEEP_ANALYSIS_WORKER_DEADLINE_MS,
+} from './deep-analysis-lease';
 import { createPrefixedId } from './ids';
 import { PrismaService } from './prisma.service';
 
@@ -486,20 +493,25 @@ export class AnalysisRepository {
       where: {
         apiKeyFingerprint: toPrismaBytes(fingerprint),
         requestDayKey,
+        deletedAt: null,
       },
     });
   }
 
-  public async findDeepAnalysisReportsByDayPrefix(
+  public async findDeepAnalysisQuotaReports(
     fingerprint: Buffer,
-    requestDayKeyPrefix: string,
+    now = new Date(),
   ): Promise<DeepAnalysisReport[]> {
+    const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
     return this.prisma.deepAnalysisReport.findMany({
       where: {
         apiKeyFingerprint: toPrismaBytes(fingerprint),
-        requestDayKey: {
-          startsWith: requestDayKeyPrefix,
-        },
+        // Count retained usage regardless of its original timezone or deletion.
+        // A running report also blocks admission after its quota day has ended.
+        OR: [
+          { requestedAt: { gte: dayStart, lt: new Date(dayStart.getTime() + 86400000) } },
+          { deletedAt: null, status: { in: ['QUEUED', 'PREPARING', 'ANALYZING', 'SYNTHESIZING'] } },
+        ],
       },
       orderBy: {
         requestedAt: 'desc',
@@ -509,25 +521,216 @@ export class AnalysisRepository {
 
   public async createDeepAnalysisReport(data: {
     fingerprint: Buffer;
-    requestDayKey: string;
+    enforceQuota: boolean;
+    bypassDailyLimit: boolean;
     lang: string;
     timezone: string;
     memoryCount: number;
     sourceSnapshotObjectKey: string;
   }): Promise<DeepAnalysisReport> {
-    return this.prisma.deepAnalysisReport.create({
-      data: {
-        id: createPrefixedId('dar'),
-        apiKeyFingerprint: toPrismaBytes(data.fingerprint),
-        requestDayKey: data.requestDayKey,
-        lang: data.lang,
-        timezone: data.timezone,
-        memoryCount: data.memoryCount,
-        sourceSnapshotObjectKey: data.sourceSnapshotObjectKey,
+    return this.prisma.$transaction(async (tx) => {
+      const fingerprint = toPrismaBytes(data.fingerprint);
+      // Lock a stable owner row, including when this owner has no reports yet.
+      // Every API replica must hold this lock through quota checks and insertion.
+      const owners = await tx.$queryRaw<{ id: string }[]>(Prisma.sql`
+        SELECT id FROM ApiKeySubject
+        WHERE apiKeyFingerprint = ${fingerprint} AND status = 'ACTIVE'
+        FOR UPDATE
+      `);
+      if (owners.length !== 1) {
+        throw new AppError('API key subject is not active', {
+          statusCode: 403,
+          code: 'API_KEY_DISABLED',
+        });
+      }
+
+      // Use one admission timestamp after acquiring the lock, even across midnight.
+      const now = new Date();
+      const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+      if (data.enforceQuota) {
+        const running = await tx.deepAnalysisReport.findFirst({
+          where: {
+            apiKeyFingerprint: fingerprint,
+            deletedAt: null,
+            status: { in: ['QUEUED', 'PREPARING', 'ANALYZING', 'SYNTHESIZING'] },
+          },
+        });
+        if (running) {
+          throw new AppError('A deep analysis report is already running', {
+            statusCode: 409,
+            code: 'DEEP_ANALYSIS_ALREADY_RUNNING',
+            details: { reportId: running.id },
+          });
+        }
+
+        const count = await tx.deepAnalysisReport.count({
+          where: {
+            apiKeyFingerprint: fingerprint,
+            requestedAt: { gte: dayStart, lt: new Date(dayStart.getTime() + 86400000) },
+          },
+        });
+        if (!data.bypassDailyLimit && count >= 3) {
+          throw new AppError('Deep analysis can be executed at most 3 times per day', {
+            statusCode: 409,
+            code: 'DEEP_ANALYSIS_DAILY_LIMIT',
+            details: { maximumPerDay: 3 },
+          });
+        }
+      }
+
+      const id = createPrefixedId('dar');
+      return tx.deepAnalysisReport.create({
+        data: {
+          id,
+          apiKeyFingerprint: fingerprint,
+          // An opaque run ID avoids collisions with legacy timezone keys and deleted slots.
+          requestDayKey: `${now.toISOString().slice(0, 10)}@UTC#${id}`,
+          requestedAt: now,
+          leaseExpiresAt: new Date(now.getTime() + DEEP_ANALYSIS_INITIAL_WAIT_MS),
+          lang: data.lang,
+          timezone: data.timezone,
+          memoryCount: data.memoryCount,
+          sourceSnapshotObjectKey: data.sourceSnapshotObjectKey,
+          status: DeepAnalysisReportStatus.QUEUED,
+          stage: DeepAnalysisReportStage.FETCH_SOURCE,
+        },
+      });
+    });
+  }
+
+  public async claimDeepAnalysisExecution(
+    reportId: string,
+    fingerprint: Buffer,
+    phase: 'source' | 'worker',
+  ): Promise<string | null> {
+    const now = new Date();
+    const token = createPrefixedId('lease');
+    const result = await this.prisma.deepAnalysisReport.updateMany({
+      where: {
+        id: reportId,
+        apiKeyFingerprint: toPrismaBytes(fingerprint),
+        deletedAt: null,
         status: DeepAnalysisReportStatus.QUEUED,
-        stage: DeepAnalysisReportStage.FETCH_SOURCE,
+        stage: phase === 'source' ? DeepAnalysisReportStage.FETCH_SOURCE : DeepAnalysisReportStage.PREPROCESS,
+        executionToken: null,
+        leaseExpiresAt: { gt: now },
+      },
+      data: {
+        executionToken: token,
+        leaseExpiresAt: new Date(now.getTime() + DEEP_ANALYSIS_LEASE_MS),
+        executionDeadlineAt: new Date(now.getTime() + (phase === 'source'
+          ? DEEP_ANALYSIS_SOURCE_DEADLINE_MS : DEEP_ANALYSIS_WORKER_DEADLINE_MS)),
+        status: DeepAnalysisReportStatus.PREPARING,
+        startedAt: now,
       },
     });
+    return result.count === 1 ? token : null;
+  }
+
+  private deepAnalysisExecutionWhere(
+    reportId: string,
+    fingerprint: Buffer,
+    token: string,
+    now: Date,
+  ): Prisma.DeepAnalysisReportWhereInput {
+    return {
+      id: reportId,
+      apiKeyFingerprint: toPrismaBytes(fingerprint),
+      executionToken: token,
+      deletedAt: null,
+      status: { in: ['PREPARING', 'ANALYZING', 'SYNTHESIZING'] },
+      leaseExpiresAt: { gt: now },
+      executionDeadlineAt: { gt: now },
+    };
+  }
+
+  public async renewDeepAnalysisExecution(
+    reportId: string,
+    fingerprint: Buffer,
+    token: string,
+  ): Promise<boolean> {
+    const now = new Date();
+    const result = await this.prisma.deepAnalysisReport.updateMany({
+      where: this.deepAnalysisExecutionWhere(reportId, fingerprint, token, now),
+      data: { leaseExpiresAt: new Date(now.getTime() + DEEP_ANALYSIS_LEASE_MS) },
+    });
+    return result.count === 1;
+  }
+
+  public async updateDeepAnalysisExecution(
+    reportId: string,
+    fingerprint: Buffer,
+    token: string,
+    data: Prisma.DeepAnalysisReportUncheckedUpdateInput,
+  ): Promise<void> {
+    const status = typeof data.status === 'string' ? data.status : data.status?.set;
+    const terminal = status === 'COMPLETED' || status === 'FAILED';
+    const result = await this.prisma.deepAnalysisReport.updateMany({
+      where: this.deepAnalysisExecutionWhere(reportId, fingerprint, token, new Date()),
+      data: {
+        ...data,
+        ...(terminal ? { executionToken: null, leaseExpiresAt: null, executionDeadlineAt: null } : {}),
+      },
+    });
+    if (result.count !== 1) {
+      throw new AppError('Deep analysis execution lease is no longer valid', {
+        statusCode: 409, code: 'DEEP_ANALYSIS_LEASE_LOST',
+      });
+    }
+  }
+
+  public async handoffDeepAnalysisExecution(
+    reportId: string,
+    fingerprint: Buffer,
+    token: string,
+    memoryCount: number,
+  ): Promise<void> {
+    const now = new Date();
+    const result = await this.prisma.deepAnalysisReport.updateMany({
+      where: {
+        ...this.deepAnalysisExecutionWhere(reportId, fingerprint, token, now),
+        stage: DeepAnalysisReportStage.FETCH_SOURCE,
+      },
+      data: {
+        status: DeepAnalysisReportStatus.QUEUED,
+        stage: DeepAnalysisReportStage.PREPROCESS,
+        progressPercent: 10,
+        memoryCount,
+        executionToken: null,
+        executionDeadlineAt: null,
+        leaseExpiresAt: new Date(now.getTime() + DEEP_ANALYSIS_QUEUE_WAIT_MS),
+      },
+    });
+    if (result.count !== 1) {
+      throw new AppError('Deep analysis execution lease is no longer valid', {
+        statusCode: 409, code: 'DEEP_ANALYSIS_LEASE_LOST',
+      });
+    }
+  }
+
+  public async expireStaleDeepAnalysisReports(now = new Date()): Promise<number> {
+    // Null leases belong to pre-migration work. Reconcile those only after all
+    // old binaries have stopped; age alone cannot establish abandonment.
+    const result = await this.prisma.deepAnalysisReport.updateMany({
+      where: {
+        deletedAt: null,
+        status: { in: ['QUEUED', 'PREPARING', 'ANALYZING', 'SYNTHESIZING'] },
+        OR: [
+          { leaseExpiresAt: { lte: now } },
+          { executionDeadlineAt: { lte: now } },
+        ],
+      },
+      data: {
+        status: DeepAnalysisReportStatus.FAILED,
+        completedAt: now,
+        errorCode: 'DEEP_ANALYSIS_INTERRUPTED',
+        errorMessage: 'Report processing was interrupted or exceeded its execution deadline. Please create a new report.',
+        executionToken: null,
+        leaseExpiresAt: null,
+        executionDeadlineAt: null,
+      },
+    });
+    return result.count;
   }
 
   public async listOwnedDeepAnalysisReports(
@@ -537,6 +740,7 @@ export class AnalysisRepository {
   ): Promise<{ reports: DeepAnalysisReport[]; total: number }> {
     const where = {
       apiKeyFingerprint: toPrismaBytes(fingerprint),
+      deletedAt: null,
     };
     const [reports, total] = await this.prisma.$transaction([
       this.prisma.deepAnalysisReport.findMany({
@@ -561,6 +765,7 @@ export class AnalysisRepository {
       where: {
         id: reportId,
         apiKeyFingerprint: toPrismaBytes(fingerprint),
+        deletedAt: null,
       },
     });
 
@@ -576,7 +781,7 @@ export class AnalysisRepository {
 
   public async getDeepAnalysisReport(reportId: string): Promise<DeepAnalysisReport> {
     const report = await this.prisma.deepAnalysisReport.findUnique({
-      where: { id: reportId },
+      where: { id: reportId, deletedAt: null },
     });
 
     if (report === null) {
@@ -594,14 +799,23 @@ export class AnalysisRepository {
     data: Prisma.DeepAnalysisReportUncheckedUpdateInput,
   ): Promise<DeepAnalysisReport> {
     return this.prisma.deepAnalysisReport.update({
-      where: { id: reportId },
+      where: { id: reportId, deletedAt: null },
       data,
     });
   }
 
   public async deleteDeepAnalysisReport(reportId: string): Promise<void> {
-    await this.prisma.deepAnalysisReport.delete({
-      where: { id: reportId },
+    await this.prisma.deepAnalysisReport.update({
+      where: { id: reportId, deletedAt: null },
+      data: {
+        deletedAt: new Date(),
+        previewJson: Prisma.DbNull,
+        internalComment: null,
+        reportObjectKey: null,
+        sourceSnapshotObjectKey: '',
+        errorCode: null,
+        errorMessage: null,
+      },
     });
   }
 

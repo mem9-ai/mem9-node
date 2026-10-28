@@ -173,6 +173,10 @@ model AnalysisPipelineConfig {
 model DeepAnalysisReport {
   id                    String                   @id @db.VarChar(64)
   apiKeyFingerprint     Bytes                    @db.VarBinary(32)
+  deletedAt             DateTime?                @db.DateTime(3)
+  executionToken        String?                  @db.VarChar(64)
+  leaseExpiresAt        DateTime?                @db.DateTime(3)
+  executionDeadlineAt   DateTime?                @db.DateTime(3)
   requestDayKey         String                   @db.VarChar(64)
   status                DeepAnalysisReportStatus @default(QUEUED)
   stage                 DeepAnalysisReportStage  @default(FETCH_SOURCE)

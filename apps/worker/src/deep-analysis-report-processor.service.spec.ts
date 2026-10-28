@@ -1,11 +1,22 @@
 import type { AppConfig } from '@mem9/config';
 import type { DeepAnalysisReportMessage } from '@mem9/contracts';
-import { gzipJson } from '@mem9/shared';
+import { AppError, gzipJson } from '@mem9/shared';
 import { Logger } from '@nestjs/common';
+import type { Prisma } from '@prisma/client';
 
 import { DeepAnalysisReportProcessorService } from './deep-analysis-report-processor.service';
 
 const TEST_QWEN_MODEL = 'test-qwen-model';
+const TEST_LEASE_TOKEN = 'test-execution-token';
+const TEST_FINGERPRINT = Buffer.from('01'.repeat(32), 'hex');
+
+function createExecutionMocks() {
+  return {
+    claimDeepAnalysisExecution: jest.fn<Promise<string | null>, [string, Buffer, 'source' | 'worker']>().mockResolvedValue(TEST_LEASE_TOKEN),
+    renewDeepAnalysisExecution: jest.fn<Promise<boolean>, [string, Buffer, string]>().mockResolvedValue(true),
+    updateDeepAnalysisExecution: jest.fn<Promise<void>, [string, Buffer, string, Prisma.DeepAnalysisReportUncheckedUpdateInput]>().mockResolvedValue(undefined),
+  };
+}
 
 describe('deep report queue isolation', () => {
   const message: DeepAnalysisReportMessage = {
@@ -14,13 +25,13 @@ describe('deep report queue isolation', () => {
   function setup() {
     const repository = {
       getOwnedDeepAnalysisReport: jest.fn().mockResolvedValue({ id: message.reportId, status: 'COMPLETED', internalComment: null }),
-      updateDeepAnalysisReport: jest.fn(),
+      ...createExecutionMocks(),
     };
     const storage = { getObjectBuffer: jest.fn(), putJson: jest.fn() };
     const qwen = { getConfiguredModel: jest.fn().mockReturnValue(TEST_QWEN_MODEL), analyzeChunk: jest.fn(), synthesize: jest.fn() };
     const processor = new DeepAnalysisReportProcessorService(repository as never, storage as never, qwen as never, createConfig());
     const expectNoSideEffects = () => {
-      expect(repository.updateDeepAnalysisReport).not.toHaveBeenCalled();
+      expect(repository.updateDeepAnalysisExecution).not.toHaveBeenCalled();
       for (const operation of Object.values(storage)) expect(operation).not.toHaveBeenCalled();
       for (const operation of Object.values(qwen)) expect(operation).not.toHaveBeenCalled();
     };
@@ -51,13 +62,182 @@ describe('deep report queue isolation', () => {
     fixture.expectNoSideEffects();
   });
 
-  it('checks ownership even for an already completed report before skipping processing', async () => {
+  it.each(['COMPLETED', 'FAILED'])('checks ownership before skipping a terminal %s report', async (status) => {
     const fixture = setup();
+    fixture.repository.getOwnedDeepAnalysisReport.mockResolvedValue({ id: message.reportId, status, internalComment: null });
     await expect(fixture.processor.process(message)).resolves.toBeUndefined();
     expect(fixture.repository.getOwnedDeepAnalysisReport).toHaveBeenCalledWith(message.reportId, Buffer.from(message.apiKeyFingerprintHex, 'hex'));
+    expect(fixture.repository.updateDeepAnalysisExecution).not.toHaveBeenCalled();
+    expect(fixture.storage.getObjectBuffer).not.toHaveBeenCalled();
+    expect(fixture.repository.claimDeepAnalysisExecution).not.toHaveBeenCalled();
+    fixture.expectNoSideEffects();
+  });
+});
+
+describe('deep analysis worker execution leases', () => {
+  const message: DeepAnalysisReportMessage = {
+    messageType: 'deep_report', reportId: 'dar_lease', apiKeyFingerprintHex: '01'.repeat(32), traceId: 'trace_lease',
+  };
+
+  beforeEach(() => {
+    jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => jest.restoreAllMocks());
+
+  function setup() {
+    const report = {
+      id: message.reportId,
+      status: 'QUEUED',
+      lang: 'en',
+      sourceSnapshotObjectKey: 'deep-analysis/reports/dar_lease/source.json.gz',
+      reportObjectKey: null as string | null,
+      internalComment: null,
+    };
+    const repository = {
+      getOwnedDeepAnalysisReport: jest.fn().mockImplementation(async () => ({ ...report })),
+      ...createExecutionMocks(),
+      // Any accidental return to unfenced writes is a test failure.
+      updateDeepAnalysisReport: jest.fn().mockRejectedValue(new Error('Unfenced write')),
+    };
+    const storage = {
+      getObjectBuffer: jest.fn().mockResolvedValue(gzipJson({
+        fetchedAt: '2026-10-28T00:00:00Z',
+        memoryCount: 1,
+        memories: [{
+          id: 'mem_1',
+          content: 'Prefer detailed rollout planning for the dashboard project.',
+          createdAt: '2026-10-27T00:00:00Z',
+          updatedAt: '2026-10-27T00:00:00Z',
+          tags: ['rollout'],
+          metadata: null,
+        }],
+      })),
+      putJson: jest.fn().mockResolvedValue(undefined),
+      deleteObject: jest.fn().mockResolvedValue(undefined),
+    };
+    const qwen = {
+      getConfiguredModel: jest.fn().mockReturnValue(TEST_QWEN_MODEL),
+      createJson: jest.fn()
+        .mockResolvedValueOnce(createChunkResult())
+        .mockResolvedValueOnce(createSynthesisResult()),
+    };
+    const processor = new DeepAnalysisReportProcessorService(repository as never, storage as never, qwen as never, createConfig());
+    return { report, repository, storage, qwen, processor };
+  }
+
+  it('does no source or model work when the queued report cannot be claimed', async () => {
+    const fixture = setup();
+    fixture.repository.claimDeepAnalysisExecution.mockResolvedValue(null);
+
+    await fixture.processor.process(message);
+
+    expect(fixture.repository.claimDeepAnalysisExecution).toHaveBeenCalledWith(message.reportId, TEST_FINGERPRINT, 'worker');
+    expect(fixture.repository.updateDeepAnalysisExecution).not.toHaveBeenCalled();
     expect(fixture.repository.updateDeepAnalysisReport).not.toHaveBeenCalled();
     expect(fixture.storage.getObjectBuffer).not.toHaveBeenCalled();
-    expect(fixture.qwen.analyzeChunk).not.toHaveBeenCalled();
+    expect(fixture.storage.putJson).not.toHaveBeenCalled();
+    expect(fixture.qwen.getConfiguredModel).not.toHaveBeenCalled();
+    expect(fixture.qwen.createJson).not.toHaveBeenCalled();
+  });
+
+  it('performs a duplicate delivery only once when one worker wins the claim', async () => {
+    const fixture = setup();
+    fixture.repository.claimDeepAnalysisExecution.mockResolvedValueOnce(TEST_LEASE_TOKEN).mockResolvedValue(null);
+
+    await Promise.all([fixture.processor.process(message), fixture.processor.process(message)]);
+
+    expect(fixture.repository.claimDeepAnalysisExecution).toHaveBeenCalledTimes(2);
+    expect(fixture.storage.getObjectBuffer).toHaveBeenCalledTimes(1);
+    expect(fixture.qwen.createJson).toHaveBeenCalledTimes(2);
+    expect(fixture.storage.putJson).toHaveBeenCalledTimes(1);
+    expect(fixture.repository.updateDeepAnalysisReport).not.toHaveBeenCalled();
+    for (const call of fixture.repository.updateDeepAnalysisExecution.mock.calls) {
+      expect(call.slice(0, 3)).toEqual([message.reportId, TEST_FINGERPRINT, TEST_LEASE_TOKEN]);
+    }
+  });
+
+  it('stops after an in-flight model call loses its lease without overwriting recovery', async () => {
+    const fixture = setup();
+    fixture.qwen.createJson.mockReset().mockImplementation(async () => {
+      fixture.repository.renewDeepAnalysisExecution.mockResolvedValue(false);
+      return createChunkResult();
+    });
+
+    await expect(fixture.processor.process(message)).resolves.toBeUndefined();
+
+    expect(fixture.qwen.createJson).toHaveBeenCalledTimes(1);
+    expect(fixture.storage.putJson).not.toHaveBeenCalled();
+    expect(fixture.repository.updateDeepAnalysisExecution).toHaveBeenCalledTimes(2);
+    expect(fixture.repository.updateDeepAnalysisReport).not.toHaveBeenCalled();
+    expect(fixture.repository.updateDeepAnalysisExecution.mock.calls.map((call) => call[3].status)).toEqual(['PREPARING', 'ANALYZING']);
+  });
+
+  it('deletes only its unpublished attempt after lease loss during the S3 upload', async () => {
+    const fixture = setup();
+    fixture.storage.putJson.mockImplementation(async () => {
+      fixture.report.reportObjectKey = 'deep-analysis/reports/dar_lease/attempts/another-owner/report.json';
+      fixture.repository.renewDeepAnalysisExecution.mockResolvedValue(false);
+    });
+
+    await expect(fixture.processor.process(message)).resolves.toBeUndefined();
+
+    expect(fixture.storage.deleteObject).toHaveBeenCalledTimes(1);
+    expect(fixture.storage.deleteObject).toHaveBeenCalledWith(`deep-analysis/reports/dar_lease/attempts/${TEST_LEASE_TOKEN}/report.json`);
+    expect(fixture.repository.updateDeepAnalysisExecution.mock.calls.some((call) => call[3].status === 'COMPLETED' || call[3].status === 'FAILED')).toBe(false);
+    expect(fixture.repository.updateDeepAnalysisReport).not.toHaveBeenCalled();
+  });
+
+  it('preserves an attempt that was published before an ambiguous database error', async () => {
+    const fixture = setup();
+    fixture.repository.updateDeepAnalysisExecution.mockImplementation(async (_id, _fingerprint, _token, data) => {
+      if (data.status === 'COMPLETED') {
+        fixture.report.status = 'COMPLETED';
+        if (typeof data.reportObjectKey === 'string') {
+          fixture.report.reportObjectKey = data.reportObjectKey;
+        }
+        fixture.repository.renewDeepAnalysisExecution.mockResolvedValue(false);
+        throw new Error('Database response interrupted after commit');
+      }
+    });
+
+    await expect(fixture.processor.process(message)).resolves.toBeUndefined();
+
+    expect(fixture.storage.deleteObject).not.toHaveBeenCalled();
+    expect(fixture.report.reportObjectKey).toBe(`deep-analysis/reports/dar_lease/attempts/${TEST_LEASE_TOKEN}/report.json`);
+    expect(fixture.repository.updateDeepAnalysisExecution.mock.calls.some((call) => call[3].status === 'FAILED')).toBe(false);
+  });
+
+  it('keeps the attempt for later reconciliation when the publication reread fails', async () => {
+    const fixture = setup();
+    fixture.storage.putJson.mockImplementation(async () => {
+      fixture.repository.renewDeepAnalysisExecution.mockResolvedValue(false);
+      fixture.repository.getOwnedDeepAnalysisReport.mockRejectedValue(new Error('Database unavailable'));
+    });
+
+    await expect(fixture.processor.process(message)).resolves.toBeUndefined();
+
+    expect(fixture.storage.putJson).toHaveBeenCalledTimes(1);
+    expect(fixture.storage.deleteObject).not.toHaveBeenCalled();
+    expect(fixture.repository.updateDeepAnalysisReport).not.toHaveBeenCalled();
+  });
+
+  it.each(['initial update', 'source read'])('records operational failures in %s through the lease fence', async (operation) => {
+    const fixture = setup();
+    const failure = new AppError('Snapshot unavailable', { statusCode: 503, code: 'SOURCE_UNAVAILABLE' });
+    if (operation === 'initial update') {
+      fixture.repository.updateDeepAnalysisExecution.mockRejectedValueOnce(failure);
+    } else {
+      fixture.storage.getObjectBuffer.mockRejectedValue(failure);
+    }
+
+    await fixture.processor.process(message);
+
+    expect(fixture.repository.updateDeepAnalysisExecution).toHaveBeenLastCalledWith(message.reportId, TEST_FINGERPRINT, TEST_LEASE_TOKEN, expect.objectContaining({ status: 'FAILED', errorCode: 'SOURCE_UNAVAILABLE' }));
+    expect(fixture.repository.updateDeepAnalysisReport).not.toHaveBeenCalled();
+    expect(fixture.qwen.createJson).not.toHaveBeenCalled();
   });
 });
 
@@ -270,7 +450,7 @@ describe('deep analysis report processor service', () => {
         sourceSnapshotObjectKey: 'deep-analysis/reports/dar_long/source.json.gz',
         internalComment: null,
       }),
-      updateDeepAnalysisReport: jest.fn(),
+      ...createExecutionMocks(),
     };
     const storage = {
       getObjectBuffer: jest.fn().mockResolvedValue(gzipJson({
@@ -302,7 +482,7 @@ describe('deep analysis report processor service', () => {
 
     expect(storage.putJson).toHaveBeenCalledTimes(1);
     const [reportObjectKey, report] = storage.putJson.mock.calls[0] as [string, unknown];
-    expect(reportObjectKey).toBe('deep-analysis/reports/dar_long/report.json');
+    expect(reportObjectKey).toBe(`deep-analysis/reports/dar_long/attempts/${TEST_LEASE_TOKEN}/report.json`);
     expect(report).toMatchObject({
       overview: {
         memoryCount: 4,
@@ -316,12 +496,16 @@ describe('deep analysis report processor service', () => {
         }],
       },
     });
-    expect(repository.updateDeepAnalysisReport).toHaveBeenLastCalledWith(
+    expect(repository.updateDeepAnalysisExecution).toHaveBeenLastCalledWith(
       'dar_long',
+      TEST_FINGERPRINT,
+      TEST_LEASE_TOKEN,
       expect.objectContaining({ status: 'COMPLETED', progressPercent: 100 }),
     );
-    expect(repository.updateDeepAnalysisReport).not.toHaveBeenCalledWith(
+    expect(repository.updateDeepAnalysisExecution).not.toHaveBeenCalledWith(
       'dar_long',
+      TEST_FINGERPRINT,
+      TEST_LEASE_TOKEN,
       expect.objectContaining({ status: 'FAILED' }),
     );
   });
@@ -338,7 +522,7 @@ describe('deep analysis report processor service', () => {
         sourceSnapshotObjectKey: 'deep-analysis/reports/dar_1/source.json.gz',
         internalComment: null,
       })),
-      updateDeepAnalysisReport: jest.fn(async () => undefined),
+      ...createExecutionMocks(),
     };
     const storage = {
       getObjectBuffer: jest.fn(async () =>
@@ -539,11 +723,11 @@ describe('deep analysis report processor service', () => {
     );
 
     const internalCommentUpdates = (
-      repository.updateDeepAnalysisReport.mock.calls as unknown as Array<
-        [string, { internalComment?: string }]
+      repository.updateDeepAnalysisExecution.mock.calls as unknown as Array<
+        [string, Buffer, string, { internalComment?: string }]
       >
     )
-      .map((call) => call[1]?.internalComment)
+      .map((call) => call[3]?.internalComment)
       .filter((value): value is string => typeof value === 'string')
       .map(
         (value) =>
@@ -586,13 +770,15 @@ describe('deep analysis report processor service', () => {
       totalTokens: 150,
     });
 
-    expect(repository.updateDeepAnalysisReport).toHaveBeenLastCalledWith(
+    expect(repository.updateDeepAnalysisExecution).toHaveBeenLastCalledWith(
       'dar_1',
+      TEST_FINGERPRINT,
+      TEST_LEASE_TOKEN,
       expect.objectContaining({
         status: 'COMPLETED',
         stage: 'COMPLETE',
         progressPercent: 100,
-        reportObjectKey: 'deep-analysis/reports/dar_1/report.json',
+        reportObjectKey: `deep-analysis/reports/dar_1/attempts/${TEST_LEASE_TOKEN}/report.json`,
         internalComment: expect.any(String),
         previewJson: expect.objectContaining({
           summary: expect.any(String),
@@ -601,11 +787,11 @@ describe('deep analysis report processor service', () => {
     );
 
     const finalCall = (
-      repository.updateDeepAnalysisReport.mock.calls as unknown as Array<
-        [string, { internalComment?: string }]
+      repository.updateDeepAnalysisExecution.mock.calls as unknown as Array<
+        [string, Buffer, string, { internalComment?: string }]
       >
     ).at(-1);
-    const finalPayload = finalCall?.[1];
+    const finalPayload = finalCall?.[3];
     expect(finalPayload?.internalComment).toBeTruthy();
     const finalInternalComment = JSON.parse(
       String(finalPayload?.internalComment),
@@ -659,7 +845,7 @@ describe('deep analysis report processor service', () => {
           'deep-analysis/reports/dar_profile_alias/source.json.gz',
         internalComment: null,
       })),
-      updateDeepAnalysisReport: jest.fn(async () => undefined),
+      ...createExecutionMocks(),
     };
     const storage = {
       getObjectBuffer: jest.fn(async () =>
@@ -817,7 +1003,7 @@ describe('deep analysis report processor service', () => {
           'deep-analysis/reports/dar_progress/source.json.gz',
         internalComment: null,
       })),
-      updateDeepAnalysisReport: jest.fn(async () => undefined),
+      ...createExecutionMocks(),
     };
     const storage = {
       getObjectBuffer: jest.fn(async () =>
@@ -870,11 +1056,11 @@ describe('deep analysis report processor service', () => {
     });
 
     const progressUpdates = (
-      repository.updateDeepAnalysisReport.mock.calls as unknown as Array<
-        [string, { progressPercent?: number }]
+      repository.updateDeepAnalysisExecution.mock.calls as unknown as Array<
+        [string, Buffer, string, { progressPercent?: number }]
       >
     )
-      .map((call) => call[1]?.progressPercent)
+      .map((call) => call[3]?.progressPercent)
       .filter((value): value is number => typeof value === 'number');
 
     expect(progressUpdates).toEqual(
@@ -892,7 +1078,7 @@ describe('deep analysis report processor service', () => {
           'deep-analysis/reports/dar_malformed_chunk/source.json.gz',
         internalComment: null,
       })),
-      updateDeepAnalysisReport: jest.fn(async () => undefined),
+      ...createExecutionMocks(),
     };
     const storage = {
       getObjectBuffer: jest.fn(async () =>
@@ -1024,8 +1210,10 @@ describe('deep analysis report processor service', () => {
       expect.any(String),
       expect.any(String),
     );
-    expect(repository.updateDeepAnalysisReport).toHaveBeenLastCalledWith(
+    expect(repository.updateDeepAnalysisExecution).toHaveBeenLastCalledWith(
       'dar_malformed_chunk',
+      TEST_FINGERPRINT,
+      TEST_LEASE_TOKEN,
       expect.objectContaining({
         status: 'COMPLETED',
         stage: 'COMPLETE',
@@ -1035,12 +1223,12 @@ describe('deep analysis report processor service', () => {
     );
 
     const finalCall = (
-      repository.updateDeepAnalysisReport.mock.calls as unknown as Array<
-        [string, { internalComment?: string }]
+      repository.updateDeepAnalysisExecution.mock.calls as unknown as Array<
+        [string, Buffer, string, { internalComment?: string }]
       >
     ).at(-1);
     const finalInternalComment = JSON.parse(
-      String(finalCall?.[1]?.internalComment),
+      String(finalCall?.[3]?.internalComment),
     ) as {
       calls: Array<{
         stage: string;
@@ -1080,7 +1268,7 @@ describe('deep analysis report processor service', () => {
           'deep-analysis/reports/dar_concurrency/source.json.gz',
         internalComment: null,
       })),
-      updateDeepAnalysisReport: jest.fn(async () => undefined),
+      ...createExecutionMocks(),
     };
     const storage = {
       getObjectBuffer: jest.fn(async () =>
@@ -1161,7 +1349,7 @@ describe('deep analysis report processor service', () => {
           'deep-analysis/reports/dar_trim_failure/source.json.gz',
         internalComment: null,
       })),
-      updateDeepAnalysisReport: jest.fn(async () => undefined),
+      ...createExecutionMocks(),
     };
     const storage = {
       getObjectBuffer: jest.fn(async () =>
@@ -1277,8 +1465,10 @@ describe('deep analysis report processor service', () => {
 
     expect(errorSpy).toHaveBeenCalled();
 
-    expect(repository.updateDeepAnalysisReport).toHaveBeenLastCalledWith(
+    expect(repository.updateDeepAnalysisExecution).toHaveBeenLastCalledWith(
       'dar_trim_failure',
+      TEST_FINGERPRINT,
+      TEST_LEASE_TOKEN,
       expect.objectContaining({
         status: 'FAILED',
         stage: 'VALIDATE',
@@ -1289,12 +1479,12 @@ describe('deep analysis report processor service', () => {
     );
 
     const finalCall = (
-      repository.updateDeepAnalysisReport.mock.calls as unknown as Array<
-        [string, { internalComment?: string }]
+      repository.updateDeepAnalysisExecution.mock.calls as unknown as Array<
+        [string, Buffer, string, { internalComment?: string }]
       >
     ).at(-1);
     const finalInternalComment = JSON.parse(
-      String(finalCall?.[1]?.internalComment),
+      String(finalCall?.[3]?.internalComment),
     ) as {
       events: Array<{
         event: string;
@@ -1337,7 +1527,7 @@ describe('deep analysis report processor service', () => {
           'deep-analysis/reports/dar_validation_failure/source.json.gz',
         internalComment: null,
       })),
-      updateDeepAnalysisReport: jest.fn(async () => undefined),
+      ...createExecutionMocks(),
     };
     const storage = {
       getObjectBuffer: jest.fn(async () =>
@@ -1565,8 +1755,10 @@ describe('deep analysis report processor service', () => {
       traceId: 'trace_validation_failure',
     });
 
-    expect(repository.updateDeepAnalysisReport).toHaveBeenLastCalledWith(
+    expect(repository.updateDeepAnalysisExecution).toHaveBeenLastCalledWith(
       'dar_validation_failure',
+      TEST_FINGERPRINT,
+      TEST_LEASE_TOKEN,
       expect.objectContaining({
         status: 'COMPLETED',
         stage: 'COMPLETE',
@@ -1640,12 +1832,12 @@ describe('deep analysis report processor service', () => {
     ).toBe(true);
 
     const finalCall = (
-      repository.updateDeepAnalysisReport.mock.calls as unknown as Array<
-        [string, { internalComment?: string }]
+      repository.updateDeepAnalysisExecution.mock.calls as unknown as Array<
+        [string, Buffer, string, { internalComment?: string }]
       >
     ).at(-1);
     const finalInternalComment = JSON.parse(
-      String(finalCall?.[1]?.internalComment),
+      String(finalCall?.[3]?.internalComment),
     ) as {
       events: Array<{ event: string }>;
       runtimeErrors: Array<unknown>;
@@ -1707,7 +1899,7 @@ describe('deep analysis report processor service', () => {
           'deep-analysis/reports/dar_audit/source.json.gz',
         internalComment: null,
       })),
-      updateDeepAnalysisReport: jest.fn(async () => undefined),
+      ...createExecutionMocks(),
     };
     const storage = {
       getObjectBuffer: jest.fn(async () =>
@@ -1788,15 +1980,15 @@ describe('deep analysis report processor service', () => {
     await processPromise;
 
     const finalCall = (
-      repository.updateDeepAnalysisReport.mock.calls as unknown as Array<
-        [string, { internalComment?: string; status?: string }]
+      repository.updateDeepAnalysisExecution.mock.calls as unknown as Array<
+        [string, Buffer, string, { internalComment?: string; status?: string }]
       >
     ).at(-1);
-    expect(finalCall?.[1]?.status).toBe('COMPLETED');
-    expect(finalCall?.[1]?.internalComment).toBeTruthy();
+    expect(finalCall?.[3]?.status).toBe('COMPLETED');
+    expect(finalCall?.[3]?.internalComment).toBeTruthy();
 
     const finalInternalComment = JSON.parse(
-      String(finalCall?.[1]?.internalComment),
+      String(finalCall?.[3]?.internalComment),
     ) as {
       aggregate: {
         requestCount: number;
@@ -1876,7 +2068,7 @@ describe('deep analysis report processor service', () => {
           'deep-analysis/reports/dar_order/source.json.gz',
         internalComment: null,
       })),
-      updateDeepAnalysisReport: jest.fn(async () => undefined),
+      ...createExecutionMocks(),
     };
     const storage = {
       getObjectBuffer: jest.fn(async () =>
