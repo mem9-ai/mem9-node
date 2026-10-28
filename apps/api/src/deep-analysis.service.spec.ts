@@ -285,7 +285,7 @@ describe('deep analysis service', () => {
     );
   });
 
-  it('creates a report and delegates source preparation', async () => {
+  it('creates a report and delegates the authenticated tenant to source preparation', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-28T00:00:00Z'));
 
     const { service, repository, sourcePreparation } = createService({
@@ -309,10 +309,13 @@ describe('deep analysis service', () => {
       },
     });
 
-    const response = await service.createReport(createContext(), {
+    const context = createContext();
+    const dto = {
       lang: 'zh-CN',
       timezone: 'Asia/Shanghai',
-    });
+      apiKeyFingerprintHex: 'ff'.repeat(32),
+    };
+    const response = await service.createReport(context, dto);
 
     expect(response).toMatchObject({
       reportId: 'dar_created',
@@ -329,6 +332,7 @@ describe('deep analysis service', () => {
     expect(sourcePreparation.schedule).toHaveBeenCalledWith(
       expect.objectContaining({
         reportId: 'dar_created',
+        apiKeyFingerprintHex: context.apiKeyFingerprintHex,
         rawApiKey: 'space-key',
         traceId: 'req_1',
       }),

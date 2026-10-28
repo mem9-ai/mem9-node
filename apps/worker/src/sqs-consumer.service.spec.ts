@@ -91,6 +91,7 @@ describe('sqs consumer service', () => {
           },
           {
             Body: JSON.stringify({
+              apiKeyFingerprintHex: '01'.repeat(32),
               jobId: 'aj_1',
               batchIndex: 1,
               payloadObjectKey: 'analysis-jobs/aj_1/batches/1.json.gz',
@@ -138,6 +139,10 @@ describe('sqs consumer service', () => {
     await consumer['consumeBatchLoop']();
 
     expect(batchProcessor.process).toHaveBeenCalledTimes(1);
+    expect(batchProcessor.process).toHaveBeenCalledWith(
+      expect.objectContaining({ apiKeyFingerprintHex: '01'.repeat(32) }),
+      2,
+    );
     expect(queue.deleteMessage).toHaveBeenCalledWith('rh_good');
     expect(setIntervalSpy).toHaveBeenCalledWith(expect.any(Function), 7000);
     expect(Sentry.captureException).toHaveBeenCalledTimes(1);
@@ -154,6 +159,7 @@ describe('sqs consumer service', () => {
         .mockResolvedValueOnce([
           {
             Body: JSON.stringify({
+              apiKeyFingerprintHex: '01'.repeat(32),
               jobId: 'aj_1',
               batchIndex: 1,
               payloadObjectKey: 'analysis-jobs/aj_1/batches/1.json.gz',
@@ -169,6 +175,7 @@ describe('sqs consumer service', () => {
           },
           {
             Body: JSON.stringify({
+              apiKeyFingerprintHex: '02'.repeat(32),
               jobId: 'aj_2',
               batchIndex: 1,
               payloadObjectKey: 'analysis-jobs/aj_2/batches/1.json.gz',
@@ -223,6 +230,49 @@ describe('sqs consumer service', () => {
     expect(Sentry.captureException).toHaveBeenCalledTimes(1);
     expect(Sentry.captureException).toHaveBeenCalledWith(expect.any(Error));
     expect(errorSpy).toHaveBeenCalled();
+  });
+
+  it('dispatches deep report messages with their tenant fingerprint', async () => {
+    const message = {
+      messageType: 'deep_report',
+      reportId: 'dar_1',
+      apiKeyFingerprintHex: '01'.repeat(32),
+      traceId: 'trace_deep',
+    };
+    const queue = {
+      receiveLlmMessages: jest
+        .fn()
+        .mockResolvedValueOnce([{
+          Body: JSON.stringify(message),
+          ReceiptHandle: 'rh_deep',
+        }])
+        .mockImplementationOnce(async () => {
+          consumerLoop.running = false;
+          return [];
+        }),
+      extendLlmVisibility: jest.fn(async () => undefined),
+      deleteLlmMessage: jest.fn(async () => undefined),
+    };
+    const deepAnalysisProcessor = {
+      process: jest.fn(async () => undefined),
+    };
+    const consumer = new SqsConsumerService(
+      queue as never,
+      { process: jest.fn() } as never,
+      deepAnalysisProcessor as never,
+      { process: jest.fn() } as never,
+      createConfig(),
+    );
+    const consumerLoop = consumer as unknown as {
+      running: boolean;
+      consumeLlmLoop(): Promise<void>;
+    };
+
+    consumerLoop.running = true;
+    await consumerLoop.consumeLlmLoop();
+
+    expect(deepAnalysisProcessor.process).toHaveBeenCalledWith(message);
+    expect(queue.deleteLlmMessage).toHaveBeenCalledWith('rh_deep');
   });
 
   it('dispatches memory analysis report llm messages', async () => {

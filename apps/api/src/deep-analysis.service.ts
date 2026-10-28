@@ -143,6 +143,7 @@ export class DeepAnalysisService {
     }
 
     this.sourcePreparation.schedule({
+      apiKeyFingerprintHex: context.apiKeyFingerprintHex,
       reportId: report.id,
       sourceSnapshotObjectKey,
       rawApiKey: context.rawApiKey,
