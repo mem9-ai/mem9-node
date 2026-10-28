@@ -20,6 +20,7 @@ import {
   S3PayloadStorageService,
   gunzipJson,
   normalizeMemory,
+  parseApiKeyFingerprint,
 } from '@mem9/shared';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { DeepAnalysisReportStage, DeepAnalysisReportStatus, Prisma } from '@prisma/client';
@@ -1744,7 +1745,16 @@ export class DeepAnalysisReportProcessorService {
 
   public async process(message: DeepAnalysisReportMessage): Promise<void> {
     const processStartedAt = Date.now();
-    const reportRecord = await this.repository.getDeepAnalysisReport(message.reportId);
+    if (!message || typeof message !== 'object' || message.messageType !== 'deep_report' ||
+        typeof message.reportId !== 'string' || message.reportId.length === 0 || message.reportId.length > 64) {
+      throw new AppError('Invalid deep report message', { statusCode: 403, code: 'INVALID_REPORT_MESSAGE' });
+    }
+    // Keep this outside the processing/error bookkeeping path: an unowned
+    // message must not read a source snapshot or update the named report.
+    const reportRecord = await this.repository.getOwnedDeepAnalysisReport(
+      message.reportId,
+      parseApiKeyFingerprint(message.apiKeyFingerprintHex),
+    );
     const internalComment = parseInternalComment(
       reportRecord.internalComment,
       this.qwen.getConfiguredModel(),

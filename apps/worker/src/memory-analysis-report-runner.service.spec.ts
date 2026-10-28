@@ -1,9 +1,11 @@
 import type { AppConfig } from '@mem9/config';
+import { deriveApiKeyFingerprint } from '@mem9/shared';
 
 import { MEMORY_PERIOD_SUMMARY_CACHE_VERSION } from './memory-analysis/prompts';
 import { MemoryAnalysisReportRunnerService } from './memory-analysis-report-runner.service';
 
-const reportApiKeyFingerprint = Buffer.alloc(32, 1);
+const testPepper = 'test-pepper';
+const reportApiKeyFingerprint = deriveApiKeyFingerprint(testPepper, 'space-key');
 const reportContext = {
   apiKeyFingerprint: reportApiKeyFingerprint,
   apiKeyFingerprintHex: reportApiKeyFingerprint.toString('hex'),
@@ -12,6 +14,7 @@ const reportContext = {
 };
 
 const TEST_CONFIG = {
+  app: { pepper: testPepper },
   analysis: {
     qwenModel: 'test-model',
     qwenApiKey: 'test-qwen-key',
@@ -76,10 +79,11 @@ describe('MemoryAnalysisReportRunnerService', () => {
         .mockResolvedValue([]),
     };
     const repository = {
-      updateMemoryAnalysisReport: jest.fn(async () => createReport()),
+      findMemoryAnalysisReport: jest.fn(async () => createReport()),
+      updateMemoryAnalysisReport: jest.fn<Promise<ReturnType<typeof createReport>>, [number, Buffer, unknown]>().mockResolvedValue(createReport()),
     };
     const runner = new MemoryAnalysisReportRunnerService(
-      { analysis: {} } as never,
+      { app: { pepper: testPepper }, analysis: {} } as never,
       source as never,
       repository as never,
       new FakeRedis() as never,
@@ -91,7 +95,12 @@ describe('MemoryAnalysisReportRunnerService', () => {
     });
 
     expect(source.fetchSessionMemories).toHaveBeenCalledTimes(2);
-    expect(repository.updateMemoryAnalysisReport).toHaveBeenLastCalledWith(1, expect.objectContaining({
+    expect(repository.updateMemoryAnalysisReport).toHaveBeenCalledTimes(3);
+    for (const [reportId, fingerprint] of repository.updateMemoryAnalysisReport.mock.calls) {
+      expect(reportId).toBe(1);
+      expect(fingerprint).toEqual(reportApiKeyFingerprint);
+    }
+    expect(repository.updateMemoryAnalysisReport).toHaveBeenLastCalledWith(1, reportApiKeyFingerprint, expect.objectContaining({
       renderStatus: 'success',
       reportStage: 'complete',
     }));
@@ -111,10 +120,11 @@ describe('MemoryAnalysisReportRunnerService', () => {
       ]),
     };
     const repository = {
-      updateMemoryAnalysisReport: jest.fn(async () => createReport()),
+      findMemoryAnalysisReport: jest.fn(async () => createReport()),
+      updateMemoryAnalysisReport: jest.fn<Promise<ReturnType<typeof createReport>>, [number, Buffer, unknown]>().mockResolvedValue(createReport()),
     };
     const runner = new MemoryAnalysisReportRunnerService(
-      { analysis: {} } as never,
+      { app: { pepper: testPepper }, analysis: {} } as never,
       source as never,
       repository as never,
       new FakeRedis() as never,
@@ -128,13 +138,87 @@ describe('MemoryAnalysisReportRunnerService', () => {
       createdBefore: '2026-06-14T23:59:59.999Z',
     });
 
-    expect(repository.updateMemoryAnalysisReport).toHaveBeenLastCalledWith(1, expect.objectContaining({
+    expect(repository.updateMemoryAnalysisReport).toHaveBeenLastCalledWith(1, reportApiKeyFingerprint, expect.objectContaining({
       renderStatus: 'fail',
       reportStage: 'failed',
       failCode: 'QWEN_NOT_CONFIGURED',
       failReason: 'Qwen API key or model is not configured.',
     }));
     expect(errorSpy).toHaveBeenCalled();
+    for (const [reportId, fingerprint] of repository.updateMemoryAnalysisReport.mock.calls) {
+      expect(reportId).toBe(1);
+      expect(fingerprint).toEqual(reportApiKeyFingerprint);
+    }
+  });
+
+  function setupIsolatedReport() {
+    const source = { fetchSessionMemories: jest.fn(async () => []) };
+    const repository = {
+      findMemoryAnalysisReport: jest.fn(async () => createReport() as ReturnType<typeof createReport> | null),
+      updateMemoryAnalysisReport: jest.fn<Promise<ReturnType<typeof createReport>>, [number, Buffer, unknown]>().mockResolvedValue(createReport()),
+    };
+    const redis = new FakeRedis();
+    const runner = new MemoryAnalysisReportRunnerService(TEST_CONFIG, source as never, repository as never, redis as never);
+    const range = { createdAfter: '2026-06-01T00:00:00.000Z', createdBefore: '2026-06-14T23:59:59.999Z' };
+    return { source, repository, redis, runner, range };
+  }
+
+  it.each(['missing', 'different owner', 'different start', 'different end'])('does not write a failure or read source for a %s report', async (scenario) => {
+    const { source, repository, redis, runner, range } = setupIsolatedReport();
+    const overrides = scenario === 'different owner' ? { apiKeyFingerprint: Buffer.alloc(32, 9) }
+      : scenario === 'different start' ? { startTime: new Date('2026-06-02T00:00:00.000Z') }
+        : { endTime: new Date('2026-06-13T23:59:59.999Z') };
+    repository.findMemoryAnalysisReport.mockResolvedValue(scenario === 'missing' ? null : createReport(overrides));
+    await expect(runner.generateReport(reportContext, 1, range)).rejects.toMatchObject({ code: 'INVALID_REPORT_MESSAGE' });
+    expect(repository.findMemoryAnalysisReport).toHaveBeenCalledWith(reportApiKeyFingerprint, 1);
+    expect(repository.updateMemoryAnalysisReport).not.toHaveBeenCalled();
+    expect(source.fetchSessionMemories).not.toHaveBeenCalled();
+    expect(redis.get).not.toHaveBeenCalled();
+    expect(redis.set).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { rawApiKey: 'other-key' },
+    { apiKeyFingerprint: Buffer.alloc(32, 9) },
+    { apiKeyFingerprint: Buffer.alloc(1) },
+    { apiKeyFingerprintHex: Buffer.alloc(32, 9).toString('hex') },
+  ])('rejects a forged context before any report write', async (override) => {
+    const { source, repository, runner, range } = setupIsolatedReport();
+    await expect(runner.generateReport({ ...reportContext, ...override }, 1, range)).rejects.toMatchObject({ code: 'INVALID_REPORT_MESSAGE' });
+    expect(repository.findMemoryAnalysisReport).not.toHaveBeenCalled();
+    expect(repository.updateMemoryAnalysisReport).not.toHaveBeenCalled();
+    expect(source.fetchSessionMemories).not.toHaveBeenCalled();
+  });
+
+  it.each(['success', 'fail'])('leaves a terminal %s report unchanged on replay', async (renderStatus) => {
+    const { source, repository, runner, range } = setupIsolatedReport();
+    repository.findMemoryAnalysisReport.mockResolvedValue(createReport({ renderStatus }));
+    await runner.generateReport(reportContext, 1, range);
+    expect(repository.updateMemoryAnalysisReport).not.toHaveBeenCalled();
+    expect(source.fetchSessionMemories).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid dates before writing the running or failed state', async () => {
+    const { source, repository, runner, range } = setupIsolatedReport();
+    await expect(runner.generateReport(reportContext, 1, { ...range, createdAfter: 'invalid' }))
+      .rejects.toMatchObject({ code: 'MEMORY_ANALYSIS_INVALID_DATE_RANGE' });
+    expect(repository.updateMemoryAnalysisReport).not.toHaveBeenCalled();
+    expect(source.fetchSessionMemories).not.toHaveBeenCalled();
+  });
+
+  it('keeps the owner predicate when recording an initial update failure', async () => {
+    const { source, repository, runner, range } = setupIsolatedReport();
+    repository.updateMemoryAnalysisReport.mockRejectedValueOnce(new Error('initial update failed'));
+    await runner.generateReport(reportContext, 1, range);
+    expect(repository.updateMemoryAnalysisReport).toHaveBeenCalledTimes(2);
+    expect(repository.updateMemoryAnalysisReport).toHaveBeenLastCalledWith(1, reportApiKeyFingerprint, expect.objectContaining({
+      renderStatus: 'fail', failCode: 'MEMORY_ANALYSIS_GENERATION_FAILED',
+    }));
+    for (const [reportId, fingerprint] of repository.updateMemoryAnalysisReport.mock.calls) {
+      expect(reportId).toBe(1);
+      expect(fingerprint).toEqual(reportApiKeyFingerprint);
+    }
+    expect(source.fetchSessionMemories).not.toHaveBeenCalled();
   });
 
   it('uses the cache version for period summary cache lookups and writes', async () => {

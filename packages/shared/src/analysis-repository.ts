@@ -641,6 +641,7 @@ export class AnalysisRepository {
 
   public async updateMemoryAnalysisReport(
     reportId: number,
+    fingerprint: Buffer,
     data: Prisma.MemoryReportUncheckedUpdateInput,
   ): Promise<MemoryReport> {
     await this.ensureMemoryReportTable();
@@ -648,6 +649,7 @@ export class AnalysisRepository {
     return this.prisma.memoryReport.update({
       where: {
         reportId,
+        apiKeyFingerprint: toPrismaBytes(fingerprint),
       },
       data,
     });

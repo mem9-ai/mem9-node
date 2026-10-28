@@ -1,10 +1,65 @@
 import type { AppConfig } from '@mem9/config';
+import type { DeepAnalysisReportMessage } from '@mem9/contracts';
 import { gzipJson } from '@mem9/shared';
 import { Logger } from '@nestjs/common';
 
 import { DeepAnalysisReportProcessorService } from './deep-analysis-report-processor.service';
 
 const TEST_QWEN_MODEL = 'test-qwen-model';
+
+describe('deep report queue isolation', () => {
+  const message: DeepAnalysisReportMessage = {
+    messageType: 'deep_report', reportId: 'dar_owned', apiKeyFingerprintHex: '01'.repeat(32), traceId: 'trace',
+  };
+  function setup() {
+    const repository = {
+      getOwnedDeepAnalysisReport: jest.fn().mockResolvedValue({ id: message.reportId, status: 'COMPLETED', internalComment: null }),
+      updateDeepAnalysisReport: jest.fn(),
+    };
+    const storage = { getObjectBuffer: jest.fn(), putJson: jest.fn() };
+    const qwen = { getConfiguredModel: jest.fn().mockReturnValue(TEST_QWEN_MODEL), analyzeChunk: jest.fn(), synthesize: jest.fn() };
+    const processor = new DeepAnalysisReportProcessorService(repository as never, storage as never, qwen as never, createConfig());
+    const expectNoSideEffects = () => {
+      expect(repository.updateDeepAnalysisReport).not.toHaveBeenCalled();
+      for (const operation of Object.values(storage)) expect(operation).not.toHaveBeenCalled();
+      for (const operation of Object.values(qwen)) expect(operation).not.toHaveBeenCalled();
+    };
+    return { repository, storage, qwen, processor, expectNoSideEffects };
+  }
+
+  it.each([undefined, '', '01', 'gg'.repeat(32), '01'.repeat(32) + 'junk', '01'.repeat(32) + '\n'])('rejects an absent or malformed owner %p before lookup', async (owner) => {
+    const fixture = setup();
+    await expect(fixture.processor.process({ ...message, apiKeyFingerprintHex: owner } as DeepAnalysisReportMessage)).rejects.toThrow();
+    expect(fixture.repository.getOwnedDeepAnalysisReport).not.toHaveBeenCalled();
+    fixture.expectNoSideEffects();
+  });
+
+  it.each([null, {}, { ...message, reportId: undefined }, { ...message, reportId: '' }, { ...message, reportId: 42 }, { ...message, messageType: 'analysis_llm' }])(
+    'rejects malformed routing %p before lookup', async (body) => {
+      const fixture = setup();
+      await expect(fixture.processor.process(body as DeepAnalysisReportMessage)).rejects.toMatchObject({ code: 'INVALID_REPORT_MESSAGE' });
+      expect(fixture.repository.getOwnedDeepAnalysisReport).not.toHaveBeenCalled();
+      fixture.expectNoSideEffects();
+    },
+  );
+
+  it.each(['not owned', 'database unavailable'])('leaves report state and source storage untouched when the owner lookup fails: %s', async (reason) => {
+    const fixture = setup();
+    fixture.repository.getOwnedDeepAnalysisReport.mockRejectedValue(new Error(reason));
+    await expect(fixture.processor.process({ ...message, apiKeyFingerprintHex: '02'.repeat(32) })).rejects.toThrow(reason);
+    expect(fixture.repository.getOwnedDeepAnalysisReport).toHaveBeenCalledWith(message.reportId, Buffer.from('02'.repeat(32), 'hex'));
+    fixture.expectNoSideEffects();
+  });
+
+  it('checks ownership even for an already completed report before skipping processing', async () => {
+    const fixture = setup();
+    await expect(fixture.processor.process(message)).resolves.toBeUndefined();
+    expect(fixture.repository.getOwnedDeepAnalysisReport).toHaveBeenCalledWith(message.reportId, Buffer.from(message.apiKeyFingerprintHex, 'hex'));
+    expect(fixture.repository.updateDeepAnalysisReport).not.toHaveBeenCalled();
+    expect(fixture.storage.getObjectBuffer).not.toHaveBeenCalled();
+    expect(fixture.qwen.analyzeChunk).not.toHaveBeenCalled();
+  });
+});
 
 function createConfig(overrides?: Partial<AppConfig['analysis']>): AppConfig {
   return {
@@ -208,7 +263,7 @@ describe('deep analysis report processor service', () => {
       metadata: null,
     }));
     const repository = {
-      getDeepAnalysisReport: jest.fn().mockResolvedValue({
+      getOwnedDeepAnalysisReport: jest.fn().mockResolvedValue({
         id: 'dar_long',
         status: 'QUEUED',
         lang: 'en',
@@ -240,6 +295,7 @@ describe('deep analysis report processor service', () => {
 
     await processor.process({
       messageType: 'deep_report',
+      apiKeyFingerprintHex: '01'.repeat(32),
       reportId: 'dar_long',
       traceId: 'trace_long',
     });
@@ -275,7 +331,7 @@ describe('deep analysis report processor service', () => {
       .spyOn(Logger.prototype, 'log')
       .mockImplementation(() => undefined);
     const repository = {
-      getDeepAnalysisReport: jest.fn(async () => ({
+      getOwnedDeepAnalysisReport: jest.fn(async () => ({
         id: 'dar_1',
         status: 'QUEUED',
         lang: 'zh-CN',
@@ -387,6 +443,7 @@ describe('deep analysis report processor service', () => {
 
     await processor.process({
       messageType: 'deep_report',
+      apiKeyFingerprintHex: '01'.repeat(32),
       reportId: 'dar_1',
       traceId: 'trace_1',
     });
@@ -594,7 +651,7 @@ describe('deep analysis report processor service', () => {
 
   it('normalizes new profile LLM fields into the existing persona report schema', async () => {
     const repository = {
-      getDeepAnalysisReport: jest.fn(async () => ({
+      getOwnedDeepAnalysisReport: jest.fn(async () => ({
         id: 'dar_profile_alias',
         status: 'QUEUED',
         lang: 'zh-CN',
@@ -716,6 +773,7 @@ describe('deep analysis report processor service', () => {
 
     await processor.process({
       messageType: 'deep_report',
+      apiKeyFingerprintHex: '01'.repeat(32),
       reportId: 'dar_profile_alias',
       traceId: 'trace_profile_alias',
     });
@@ -751,7 +809,7 @@ describe('deep analysis report processor service', () => {
       metadata: null,
     }));
     const repository = {
-      getDeepAnalysisReport: jest.fn(async () => ({
+      getOwnedDeepAnalysisReport: jest.fn(async () => ({
         id: 'dar_progress',
         status: 'QUEUED',
         lang: 'en',
@@ -806,6 +864,7 @@ describe('deep analysis report processor service', () => {
 
     await processor.process({
       messageType: 'deep_report',
+      apiKeyFingerprintHex: '01'.repeat(32),
       reportId: 'dar_progress',
       traceId: 'trace_progress',
     });
@@ -825,7 +884,7 @@ describe('deep analysis report processor service', () => {
 
   it('filters malformed chunk theme and relationship fields instead of crashing before synthesis', async () => {
     const repository = {
-      getDeepAnalysisReport: jest.fn(async () => ({
+      getOwnedDeepAnalysisReport: jest.fn(async () => ({
         id: 'dar_malformed_chunk',
         status: 'QUEUED',
         lang: 'en',
@@ -953,6 +1012,7 @@ describe('deep analysis report processor service', () => {
 
     await processor.process({
       messageType: 'deep_report',
+      apiKeyFingerprintHex: '01'.repeat(32),
       reportId: 'dar_malformed_chunk',
       traceId: 'trace_malformed_chunk',
     });
@@ -1012,7 +1072,7 @@ describe('deep analysis report processor service', () => {
       metadata: null,
     }));
     const repository = {
-      getDeepAnalysisReport: jest.fn(async () => ({
+      getOwnedDeepAnalysisReport: jest.fn(async () => ({
         id: 'dar_concurrency',
         status: 'QUEUED',
         lang: 'en',
@@ -1065,6 +1125,7 @@ describe('deep analysis report processor service', () => {
 
     const processPromise = processor.process({
       messageType: 'deep_report',
+      apiKeyFingerprintHex: '01'.repeat(32),
       reportId: 'dar_concurrency',
       traceId: 'trace_concurrency',
     });
@@ -1092,7 +1153,7 @@ describe('deep analysis report processor service', () => {
 
   it('stores runtime trim errors and recent event logs in internal comment when processing fails', async () => {
     const repository = {
-      getDeepAnalysisReport: jest.fn(async () => ({
+      getOwnedDeepAnalysisReport: jest.fn(async () => ({
         id: 'dar_trim_failure',
         status: 'QUEUED',
         lang: 'en',
@@ -1209,6 +1270,7 @@ describe('deep analysis report processor service', () => {
 
     await processor.process({
       messageType: 'deep_report',
+      apiKeyFingerprintHex: '01'.repeat(32),
       reportId: 'dar_trim_failure',
       traceId: 'trace_trim_failure',
     });
@@ -1267,7 +1329,7 @@ describe('deep analysis report processor service', () => {
 
   it('repairs synthesized reports with invalid evidence ids and preserves LLM narrative fields', async () => {
     const repository = {
-      getDeepAnalysisReport: jest.fn(async () => ({
+      getOwnedDeepAnalysisReport: jest.fn(async () => ({
         id: 'dar_validation_failure',
         status: 'QUEUED',
         lang: 'en',
@@ -1498,6 +1560,7 @@ describe('deep analysis report processor service', () => {
 
     await processor.process({
       messageType: 'deep_report',
+      apiKeyFingerprintHex: '01'.repeat(32),
       reportId: 'dar_validation_failure',
       traceId: 'trace_validation_failure',
     });
@@ -1636,7 +1699,7 @@ describe('deep analysis report processor service', () => {
       metadata: null,
     }));
     const repository = {
-      getDeepAnalysisReport: jest.fn(async () => ({
+      getOwnedDeepAnalysisReport: jest.fn(async () => ({
         id: 'dar_audit',
         status: 'QUEUED',
         lang: 'en',
@@ -1706,6 +1769,7 @@ describe('deep analysis report processor service', () => {
 
     const processPromise = processor.process({
       messageType: 'deep_report',
+      apiKeyFingerprintHex: '01'.repeat(32),
       reportId: 'dar_audit',
       traceId: 'trace_audit',
     });
@@ -1804,7 +1868,7 @@ describe('deep analysis report processor service', () => {
       metadata: null,
     }));
     const repository = {
-      getDeepAnalysisReport: jest.fn(async () => ({
+      getOwnedDeepAnalysisReport: jest.fn(async () => ({
         id: 'dar_order',
         status: 'QUEUED',
         lang: 'en',
@@ -1912,6 +1976,7 @@ describe('deep analysis report processor service', () => {
 
     const processPromise = processor.process({
       messageType: 'deep_report',
+      apiKeyFingerprintHex: '01'.repeat(32),
       reportId: 'dar_order',
       traceId: 'trace_order',
     });
