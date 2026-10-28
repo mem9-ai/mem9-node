@@ -4,21 +4,18 @@ import type { DeepAnalysisReportStatus } from '@prisma/client';
 interface ExistingReport {
   id: string;
   status: DeepAnalysisReportStatus;
+  deletedAt?: Date | null;
 }
 
 interface ResolveCreateReportPolicyInput {
   env: 'development' | 'test' | 'production';
-  timezone: string;
   existingReports: ExistingReport[];
   memoryCount: number;
   bypassFingerprints: string[];
   apiKeyFingerprintHex: string;
-  now?: Date;
 }
 
 export interface DeepAnalysisCreatePolicyResult {
-  baseRequestDayKey: string;
-  requestDayKey: string;
   bypassDailyLimit: boolean;
   isProduction: boolean;
 }
@@ -38,31 +35,6 @@ function normalizeTimezone(input: string): string {
   }
 }
 
-function buildRequestDayKey(timezone: string, now = new Date()): string {
-  const formatter = new Intl.DateTimeFormat('en-CA', {
-    timeZone: timezone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  });
-  const parts = formatter.formatToParts(now);
-  const year = parts.find((part) => part.type === 'year')?.value ?? '0000';
-  const month = parts.find((part) => part.type === 'month')?.value ?? '00';
-  const day = parts.find((part) => part.type === 'day')?.value ?? '00';
-  return `${year}-${month}-${day}@${timezone}`;
-}
-
-function buildScopedRequestDayKey(baseRequestDayKey: string, scope: 'dev' | 'rerun'): string {
-  const suffix = `${scope}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  return `${baseRequestDayKey}#${suffix}`;
-}
-
-function buildDailyRequestDayKey(baseRequestDayKey: string, runIndex: number): string {
-  return runIndex <= 1
-    ? baseRequestDayKey
-    : `${baseRequestDayKey}#${runIndex}`;
-}
-
 function isRunningStatus(status: DeepAnalysisReportStatus): boolean {
   return status === 'QUEUED' ||
     status === 'PREPARING' ||
@@ -75,10 +47,10 @@ function isTerminalStatus(status: DeepAnalysisReportStatus): boolean {
 }
 
 function buildExistingReportError(existing: ExistingReport): AppError {
-  const running = isRunningStatus(existing.status);
+  const running = !existing.deletedAt && isRunningStatus(existing.status);
   return new AppError(
     running
-      ? 'A deep analysis report is already running for today'
+      ? 'A deep analysis report is already running'
       : `Deep analysis can be executed at most ${MAX_DAILY_REPORTS} times per day`,
     {
       statusCode: 409,
@@ -95,20 +67,18 @@ function buildExistingReportError(existing: ExistingReport): AppError {
 
 function resolveCreateReport({
   env,
-  timezone,
   existingReports,
   memoryCount,
   bypassFingerprints,
   apiKeyFingerprintHex,
-  now,
 }: ResolveCreateReportPolicyInput): DeepAnalysisCreatePolicyResult {
-  const baseRequestDayKey = buildRequestDayKey(timezone, now);
   const isProduction = env === 'production';
   const bypassDailyLimit = isProduction &&
     bypassFingerprints.includes(apiKeyFingerprintHex.toLowerCase());
 
   if (isProduction) {
-    const runningReport = existingReports.find((report) => isRunningStatus(report.status));
+    const runningReport = existingReports.find((report) =>
+      !report.deletedAt && isRunningStatus(report.status));
 
     if (runningReport) {
       throw buildExistingReportError(runningReport);
@@ -131,12 +101,6 @@ function resolveCreateReport({
   }
 
   return {
-    baseRequestDayKey,
-    requestDayKey: isProduction
-      ? (bypassDailyLimit
-        ? buildScopedRequestDayKey(baseRequestDayKey, 'rerun')
-        : buildDailyRequestDayKey(baseRequestDayKey, existingReports.length + 1))
-      : buildScopedRequestDayKey(baseRequestDayKey, 'dev'),
     bypassDailyLimit,
     isProduction,
   };
@@ -144,9 +108,6 @@ function resolveCreateReport({
 
 export const DeepAnalysisPolicy = {
   normalizeTimezone,
-  buildRequestDayKey,
-  buildScopedRequestDayKey,
-  buildDailyRequestDayKey,
   isRunningStatus,
   isTerminalStatus,
   buildExistingReportError,

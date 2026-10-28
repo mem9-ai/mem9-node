@@ -1,5 +1,6 @@
 export * from './analysis-pipeline';
 export * from './analysis-repository';
+export * from './deep-analysis-lease';
 export * from './aws.service';
 export * from './errors';
 export * from './fingerprint';

@@ -10,7 +10,6 @@ import type {
 } from '@mem9/contracts';
 import { AnalysisRepository, S3PayloadStorageService, createPrefixedId } from '@mem9/shared';
 import { Inject, Injectable } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
 
 import type { Mem9RequestContext } from './common/request-context';
 import { DeepAnalysisDuplicateOpsService } from './deep-analysis-duplicate-ops.service';
@@ -82,65 +81,31 @@ export class DeepAnalysisService {
     const timezone = DeepAnalysisPolicy.normalizeTimezone(dto.timezone);
     const isProduction = this.config.app.env === 'production';
     const memoryCount = await this.source.countMemories(context.rawApiKey);
-    const baseRequestDayKey = DeepAnalysisPolicy.buildRequestDayKey(timezone);
-    let existingReports = isProduction
-      ? await this.repository.findDeepAnalysisReportsByDayPrefix(
+    const existingReports = isProduction
+      ? await this.repository.findDeepAnalysisQuotaReports(
         context.apiKeyFingerprint,
-        baseRequestDayKey,
       )
       : [];
     const sourceSnapshotObjectKey = `deep-analysis/reports/${createPrefixedId('snapshot')}/source.json.gz`;
 
-    const resolvePolicy = () => DeepAnalysisPolicy.resolveCreateReport({
+    const policy = DeepAnalysisPolicy.resolveCreateReport({
       env: this.config.app.env,
-      timezone,
       existingReports,
       memoryCount,
       bypassFingerprints: this.config.analysis.deepAnalysisDailyLimitBypassFingerprints,
       apiKeyFingerprintHex: context.apiKeyFingerprintHex,
     });
 
-    let policy = resolvePolicy();
-    let report;
-    let lastCreateError: unknown = null;
-    const maxCreateAttempts = isProduction ? 3 : 1;
-
-    for (let attempt = 0; attempt < maxCreateAttempts; attempt += 1) {
-      try {
-        report = await this.repository.createDeepAnalysisReport({
-          fingerprint: context.apiKeyFingerprint,
-          requestDayKey: policy.requestDayKey,
-          lang: dto.lang.trim() || 'zh-CN',
-          timezone,
-          memoryCount,
-          sourceSnapshotObjectKey,
-        });
-        break;
-      } catch (error) {
-        if (
-          !isProduction ||
-          !(error instanceof Prisma.PrismaClientKnownRequestError) ||
-          error.code !== 'P2002'
-        ) {
-          throw error;
-        }
-
-        lastCreateError = error;
-        existingReports = await this.repository.findDeepAnalysisReportsByDayPrefix(
-          context.apiKeyFingerprint,
-          baseRequestDayKey,
-        );
-        policy = resolvePolicy();
-      }
-    }
-
-    if (!report) {
-      if (lastCreateError instanceof Error) {
-        throw lastCreateError;
-      }
-
-      throw new Error('Failed to create deep analysis report');
-    }
+    // The repository rechecks admission under a database lock across API replicas.
+    const report = await this.repository.createDeepAnalysisReport({
+      fingerprint: context.apiKeyFingerprint,
+      enforceQuota: policy.isProduction,
+      bypassDailyLimit: policy.bypassDailyLimit,
+      lang: dto.lang.trim() || 'zh-CN',
+      timezone,
+      memoryCount,
+      sourceSnapshotObjectKey,
+    });
 
     this.sourcePreparation.schedule({
       apiKeyFingerprintHex: context.apiKeyFingerprintHex,

@@ -26,6 +26,7 @@ import { DeepAnalysisDuplicateOpsService } from './deep-analysis-duplicate-ops.s
 import { DeepAnalysisSourcePreparationService } from './deep-analysis-source-preparation.service';
 import { DeepAnalysisController } from './deep-analysis.controller';
 import { DeepAnalysisService } from './deep-analysis.service';
+import { DeepAnalysisRecoveryService } from './deep-analysis-recovery.service';
 import { HealthController } from './health.controller';
 import { Mem9SourceService } from './mem9-source.service';
 import { MemoryAnalysisController } from './memory-analysis/memory-analysis.controller';
@@ -84,6 +85,7 @@ const appConfig = loadConfig();
     DeepAnalysisService,
     DeepAnalysisDuplicateOpsService,
     DeepAnalysisSourcePreparationService,
+    DeepAnalysisRecoveryService,
     Mem9SourceService,
     MemoryAnalysisReportCleanupService,
     MemoryAnalysisService,
