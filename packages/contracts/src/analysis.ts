@@ -181,7 +181,7 @@ export interface TaxonomyResponse {
 }
 
 export interface AnalysisBatchMessage {
-  apiKeyFingerprintHex?: string;
+  apiKeyFingerprintHex: string;
   jobId: string;
   batchIndex: number;
   payloadObjectKey: string;
@@ -538,7 +538,7 @@ export interface ListDeepAnalysisReportsResponse {
 
 export interface DeepAnalysisReportMessage {
   messageType: 'deep_report';
-  apiKeyFingerprintHex?: string;
+  apiKeyFingerprintHex: string;
   reportId: string;
   traceId: string;
 }

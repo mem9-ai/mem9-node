@@ -71,7 +71,7 @@ export class MemoryAnalysisService {
     });
 
     if (activeReport !== null && isExpiredMemoryAnalysisReport(activeReport, new Date())) {
-      await this.expireActiveReport(activeReport);
+      await this.expireActiveReport(activeReport, context.apiKeyFingerprint);
     } else if (activeReport !== null) {
       throw new AppError('A memory analysis report is already running for today', {
         statusCode: HttpStatus.CONFLICT,
@@ -150,7 +150,7 @@ export class MemoryAnalysisService {
         failCode: 'MEMORY_ANALYSIS_QUEUE_ENQUEUE_FAILED',
         failReason,
       }), error instanceof Error ? error.stack : undefined);
-      await this.repository.updateMemoryAnalysisReport(report.reportId, {
+      await this.repository.updateMemoryAnalysisReport(report.reportId, context.apiKeyFingerprint, {
         renderStatus: 'fail',
         reportStage: 'failed',
         completedAt: new Date(),
@@ -319,8 +319,8 @@ export class MemoryAnalysisService {
     return count;
   }
 
-  private async expireActiveReport(report: MemoryReport): Promise<void> {
-    await this.repository.updateMemoryAnalysisReport(report.reportId, {
+  private async expireActiveReport(report: MemoryReport, fingerprint: Buffer): Promise<void> {
+    await this.repository.updateMemoryAnalysisReport(report.reportId, fingerprint, {
       renderStatus: 'fail',
       reportStage: 'failed',
       completedAt: new Date(),

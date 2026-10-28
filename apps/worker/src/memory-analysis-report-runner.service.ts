@@ -1,11 +1,19 @@
 import type { AppConfig } from '@mem9/config';
 import { APP_CONFIG } from '@mem9/config';
 import type { DeepAnalysisMemorySnapshot } from '@mem9/contracts';
-import { AnalysisRepository, AppError, RedisService, redisKeys, sha256Hex } from '@mem9/shared';
+import {
+  AnalysisRepository,
+  AppError,
+  deriveApiKeyFingerprint,
+  parseApiKeyFingerprint,
+  RedisService,
+  redisKeys,
+  safeFingerprintEquals,
+  sha256Hex,
+} from '@mem9/shared';
 import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
 
 import { Mem9SourceService } from './mem9-source.service';
-
 import {
   MEMORY_PERIOD_SUMMARY_CACHE_VERSION,
   MEMORY_CHANGE_AGGREGATION_SYSTEM_PROMPT,
@@ -142,9 +150,29 @@ export class MemoryAnalysisReportRunnerService {
     reportId: number,
     dto: AnalyzeMemorySourceInput,
   ): Promise<void> {
+    // Validate before the failure-writing block: an untrusted message must not mutate any report.
+    if (!Number.isSafeInteger(reportId) || reportId <= 0
+      || !Buffer.isBuffer(context.apiKeyFingerprint) || context.apiKeyFingerprint.length !== 32
+      || typeof context.rawApiKey !== 'string' || !context.rawApiKey.trim()
+      || !safeFingerprintEquals(deriveApiKeyFingerprint(this.config.app.pepper, context.rawApiKey), context.apiKeyFingerprint)
+      || (context.apiKeyFingerprintHex !== undefined
+        && !safeFingerprintEquals(parseApiKeyFingerprint(context.apiKeyFingerprintHex), context.apiKeyFingerprint))) {
+      throw new AppError('Invalid report identity', { statusCode: 403, code: 'INVALID_REPORT_MESSAGE' });
+    }
+    this.validateDateRange(dto);
+    const report = await this.repository.findMemoryAnalysisReport(context.apiKeyFingerprint, reportId);
+    if (!report || !safeFingerprintEquals(Buffer.from(report.apiKeyFingerprint), context.apiKeyFingerprint)
+      || report.startTime?.getTime() !== Date.parse(dto.createdAfter)
+      || report.endTime?.getTime() !== Date.parse(dto.createdBefore)) {
+      throw new AppError('Report ownership or range mismatch', { statusCode: 403, code: 'INVALID_REPORT_MESSAGE' });
+    }
+    if (report.renderStatus === 'success' || report.renderStatus === 'fail') return;
+    if (report.renderStatus !== 'queued' && report.renderStatus !== 'running') {
+      throw new AppError('Invalid report state', { statusCode: 403, code: 'INVALID_REPORT_MESSAGE' });
+    }
     const startedAt = Date.now();
     try {
-      await this.repository.updateMemoryAnalysisReport(reportId, {
+      await this.repository.updateMemoryAnalysisReport(reportId, context.apiKeyFingerprint, {
         renderStatus: 'running',
         reportStage: 'fetch_source',
         startedAt: new Date(),
@@ -160,7 +188,7 @@ export class MemoryAnalysisReportRunnerService {
 
       const result = await this.generateReportWithRetry(context, reportId, dto);
 
-      await this.repository.updateMemoryAnalysisReport(reportId, {
+      await this.repository.updateMemoryAnalysisReport(reportId, context.apiKeyFingerprint, {
         renderStatus: 'running',
         reportStage: 'save_result',
         memoryCount: result.memoryCount,
@@ -171,7 +199,7 @@ export class MemoryAnalysisReportRunnerService {
         memoryCount: result.memoryCount,
       });
 
-      await this.repository.updateMemoryAnalysisReport(reportId, {
+      await this.repository.updateMemoryAnalysisReport(reportId, context.apiKeyFingerprint, {
         reportContent: JSON.stringify(result),
         renderStatus: 'success',
         reportStage: 'complete',
@@ -199,7 +227,7 @@ export class MemoryAnalysisReportRunnerService {
         failReason,
       }, 'error', error);
 
-      await this.repository.updateMemoryAnalysisReport(reportId, {
+      await this.repository.updateMemoryAnalysisReport(reportId, context.apiKeyFingerprint, {
         renderStatus: 'fail',
         reportStage: 'failed',
         completedAt: new Date(),
@@ -562,8 +590,8 @@ export class MemoryAnalysisReportRunnerService {
   }
 
   private validateDateRange(dto: AnalyzeMemorySourceInput): void {
-    const createdAfter = dto.createdAfter?.trim();
-    const createdBefore = dto.createdBefore?.trim();
+    const createdAfter = typeof dto.createdAfter === 'string' ? dto.createdAfter.trim() : '';
+    const createdBefore = typeof dto.createdBefore === 'string' ? dto.createdBefore.trim() : '';
 
     if (!createdAfter || !createdBefore) {
       throw new AppError('createdAfter and createdBefore are required', {

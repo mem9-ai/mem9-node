@@ -326,7 +326,7 @@ describe('memory analysis report service', () => {
     });
 
     expect(response.report_id).toBe(10);
-    expect(repository.updateMemoryAnalysisReport).toHaveBeenCalledWith(9, expect.objectContaining({
+    expect(repository.updateMemoryAnalysisReport).toHaveBeenCalledWith(9, reportApiKeyFingerprint, expect.objectContaining({
       renderStatus: 'fail',
       reportStage: 'failed',
       failCode: 'MEMORY_ANALYSIS_REPORT_EXPIRED',
@@ -366,7 +366,7 @@ describe('memory analysis report service', () => {
     });
 
     expect(response.report_id).toBe(10);
-    expect(repository.updateMemoryAnalysisReport).toHaveBeenCalledWith(9, expect.objectContaining({
+    expect(repository.updateMemoryAnalysisReport).toHaveBeenCalledWith(9, reportApiKeyFingerprint, expect.objectContaining({
       renderStatus: 'fail',
       reportStage: 'failed',
       failCode: 'MEMORY_ANALYSIS_REPORT_EXPIRED',
@@ -457,7 +457,7 @@ describe('memory analysis report service', () => {
       code: 'MEMORY_ANALYSIS_QUEUE_ENQUEUE_FAILED',
     });
 
-    expect(repository.updateMemoryAnalysisReport).toHaveBeenCalledWith(1, expect.objectContaining({
+    expect(repository.updateMemoryAnalysisReport).toHaveBeenCalledWith(1, reportApiKeyFingerprint, expect.objectContaining({
       renderStatus: 'fail',
       reportStage: 'failed',
       failCode: 'MEMORY_ANALYSIS_QUEUE_ENQUEUE_FAILED',
