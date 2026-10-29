@@ -5,6 +5,7 @@ describe('loadConfig', () => {
     DATABASE_URL: 'mysql://mem9:mem9@127.0.0.1:3306/mem9',
     REDIS_URL: 'redis://127.0.0.1:6379',
     APP_PEPPER: 'local-dev-pepper-1234567890',
+    QUEUE_ENCRYPTION_KEYS: `test:${Buffer.alloc(32, 1).toString('base64')}`,
     S3_BUCKET_ANALYSIS_PAYLOADS: 'mem9-analysis-payloads',
     SQS_ANALYSIS_BATCH_QUEUE_URL:
       'http://127.0.0.1:4566/000000000000/analysis-batch',
@@ -117,4 +118,24 @@ describe('loadConfig', () => {
     expect(config.analysis.mem9SourceFetchRetryBaseMs).toBe(250);
     expect(config.analysis.mem9SourceDeleteConcurrency).toBe(4);
   });
+
+  it('requires a separate encryption keyring in production', () => {
+    expect(() => loadConfig({ ...baseEnv, NODE_ENV: 'production', QUEUE_ENCRYPTION_KEYS: undefined }))
+      .toThrow(/QUEUE_ENCRYPTION_KEYS/);
+    expect(loadConfig(baseEnv).analysis.queueEncryptionKeys).toBe(baseEnv.QUEUE_ENCRYPTION_KEYS);
+  });
+
+  it('permits local startup without a keyring, without inventing a default encryption key', () => {
+    expect(loadConfig({ ...baseEnv, QUEUE_ENCRYPTION_KEYS: undefined }).analysis.queueEncryptionKeys)
+      .toBeUndefined();
+  });
+
+  it.each(['', 'id:weak', `test:${Buffer.alloc(32).toString('base64')}:`,
+    `${baseEnv.QUEUE_ENCRYPTION_KEYS},${baseEnv.QUEUE_ENCRYPTION_KEYS}`])(
+    'rejects malformed supplied keyrings in every environment', (QUEUE_ENCRYPTION_KEYS) => {
+      for (const NODE_ENV of ['development', 'test', 'production']) {
+        expect(() => loadConfig({ ...baseEnv, NODE_ENV, QUEUE_ENCRYPTION_KEYS })).toThrow(/QUEUE_ENCRYPTION_KEYS/);
+      }
+    },
+  );
 });

@@ -32,6 +32,18 @@ const appConfig = loadConfig();
     LoggerModule.forRoot({
       pinoHttp: {
         level: appConfig.app.logLevel,
+        redact: {
+          paths: [
+            'rawApiKey',
+            'encryptedApiKey',
+            '*.rawApiKey',
+            '*.encryptedApiKey',
+            'req.headers.authorization',
+            'req.headers["x-mem9-api-key"]',
+            'req.headers["x-api-key"]',
+          ],
+          censor: '[REDACTED]',
+        },
       },
     }),
   ],

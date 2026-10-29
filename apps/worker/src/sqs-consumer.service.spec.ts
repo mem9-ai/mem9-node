@@ -1,4 +1,5 @@
 import type { AppConfig } from '@mem9/config';
+import { AppError } from '@mem9/shared';
 import * as Sentry from '@sentry/nestjs';
 
 import { SqsConsumerService } from './sqs-consumer.service';
@@ -77,6 +78,7 @@ describe('sqs consumer service', () => {
   afterEach(() => {
     jest.clearAllMocks();
     jest.restoreAllMocks();
+    jest.useRealTimers();
   });
 
   it('skips malformed batch messages and continues processing later messages', async () => {
@@ -147,7 +149,8 @@ describe('sqs consumer service', () => {
     expect(setIntervalSpy).toHaveBeenCalledWith(expect.any(Function), 7000);
     expect(Sentry.captureException).toHaveBeenCalledTimes(1);
     expect(Sentry.captureException).toHaveBeenCalledWith(
-      expect.any(SyntaxError),
+      expect.objectContaining({ message: 'Queue operation failed', code: 'QUEUE_MESSAGE_INVALID_JSON' }),
+      { tags: { event: 'queue_message_parse_failed', queue: 'batch' } },
     );
     expect(errorSpy).toHaveBeenCalled();
   });
@@ -228,7 +231,10 @@ describe('sqs consumer service', () => {
     expect(queue.deleteMessage).toHaveBeenCalledTimes(1);
     expect(queue.deleteMessage).toHaveBeenCalledWith('rh_2');
     expect(Sentry.captureException).toHaveBeenCalledTimes(1);
-    expect(Sentry.captureException).toHaveBeenCalledWith(expect.any(Error));
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Queue operation failed', code: 'QUEUE_MESSAGE_PROCESSING_FAILED' }),
+      { tags: { event: 'queue_message_processing_failed', queue: 'batch' } },
+    );
     expect(errorSpy).toHaveBeenCalled();
   });
 
@@ -289,7 +295,7 @@ describe('sqs consumer service', () => {
               messageType: 'memory_analysis_report',
               reportId: 12,
               apiKeyFingerprintHex: Buffer.alloc(32, 4).toString('hex'),
-              rawApiKey: 'space-key',
+              encryptedApiKey: 'encrypted-test-envelope',
               createdAfter: '2026-06-01T00:00:00.000Z',
               createdBefore: '2026-06-14T23:59:59.999Z',
               traceId: 'trace_memory',
@@ -327,11 +333,166 @@ describe('sqs consumer service', () => {
       messageType: 'memory_analysis_report',
       reportId: 12,
       apiKeyFingerprintHex: Buffer.alloc(32, 4).toString('hex'),
-      rawApiKey: 'space-key',
+      encryptedApiKey: 'encrypted-test-envelope',
       createdAfter: '2026-06-01T00:00:00.000Z',
       createdBefore: '2026-06-14T23:59:59.999Z',
       traceId: 'trace_memory',
     });
     expect(queue.deleteLlmMessage).toHaveBeenCalledWith('rh_memory');
   });
+
+  function isolatedConsumer() {
+    const consumer = new SqsConsumerService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      createConfig(),
+    );
+    // eslint-disable-next-line @typescript-eslint/dot-notation -- Test-only access to the private logger.
+    const errorSpy = jest.spyOn(consumer['logger'], 'error').mockImplementation(() => undefined);
+    return { consumer, errorSpy };
+  }
+
+  function expectSafeCapture(original: unknown, secrets: string[]) {
+    const [captured, context] = jest.mocked(Sentry.captureException).mock.calls[0]!;
+    expect(captured).not.toBe(original);
+    expect(captured).toBeInstanceOf(AppError);
+    const error = captured as AppError;
+    expect(error.message).toBe('Queue operation failed');
+    expect(error.cause).toBeUndefined();
+    expect(error.details).toBeUndefined();
+    const serialized = JSON.stringify({ ...error, message: error.message, stack: error.stack, context });
+    for (const secret of secrets) expect(serialized).not.toContain(secret);
+  }
+
+  it('does not expose a malformed legacy body or its receipt handle through parse errors', async () => {
+    const secret = 'legacy-credential-sentinel';
+    const receipt = 'private-receipt-sentinel';
+    const body = `{"rawApiKey":"${secret}",`;
+    const { consumer, errorSpy } = isolatedConsumer();
+    const processMessage = jest.fn(async () => undefined);
+    const deleteMessage = jest.fn(async () => undefined);
+    // eslint-disable-next-line @typescript-eslint/dot-notation -- Exercise the private message boundary in isolation.
+    await consumer['handleMessage']({
+      message: { Body: body, ReceiptHandle: receipt },
+      extendVisibility: jest.fn(async () => undefined),
+      deleteMessage,
+      parseBody: JSON.parse,
+      processMessage,
+      loopName: 'llm',
+    });
+    expect(processMessage).not.toHaveBeenCalled();
+    expect(deleteMessage).not.toHaveBeenCalled();
+    expectSafeCapture(undefined, [secret, receipt, body]);
+    expect(JSON.parse(errorSpy.mock.calls[0]![0] as string)).toMatchInlineSnapshot(`
+{
+  "code": "QUEUE_MESSAGE_INVALID_JSON",
+  "event": "queue_message_parse_failed",
+  "queue": "llm",
+}
+`);
+    expect(errorSpy.mock.calls[0]).toHaveLength(1);
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(secret);
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(receipt);
+  });
+
+  it.each([
+    ['INVALID_QUEUE_CREDENTIAL', 'INVALID_QUEUE_CREDENTIAL'],
+    ['arbitrary-secret-error-code', 'QUEUE_MESSAGE_PROCESSING_FAILED'],
+  ])('retains only allowlisted processing codes: %s', async (code, expectedCode) => {
+    const secret = 'decrypted-credential-sentinel';
+    const receipt = 'private-processing-receipt';
+    const envelope = 'private-encrypted-envelope';
+    const error = new AppError(`Provider returned ${secret}`, {
+      statusCode: 403,
+      code,
+      details: { rawApiKey: secret, encryptedApiKey: envelope, receipt },
+      cause: new Error(`Nested failure ${secret}`),
+    });
+    error.stack = `Error stack containing ${secret} and ${envelope}`;
+    const { consumer, errorSpy } = isolatedConsumer();
+    const deleteMessage = jest.fn(async () => undefined);
+    // eslint-disable-next-line @typescript-eslint/dot-notation -- Exercise the private message boundary in isolation.
+    await consumer['handleMessage']({
+      message: { Body: JSON.stringify({ encryptedApiKey: envelope }), ReceiptHandle: receipt },
+      extendVisibility: jest.fn(async () => undefined),
+      deleteMessage,
+      parseBody: JSON.parse,
+      processMessage: jest.fn(async () => { throw error; }),
+      loopName: 'llm',
+    });
+    expect(deleteMessage).not.toHaveBeenCalled();
+    expectSafeCapture(error, [secret, receipt, envelope, 'arbitrary-secret-error-code']);
+    expect(JSON.parse(errorSpy.mock.calls[0]![0] as string)).toEqual({
+      event: 'queue_message_processing_failed', queue: 'llm', code: expectedCode,
+    });
+    expect(errorSpy.mock.calls[0]).toHaveLength(1);
+    const output = JSON.stringify(errorSpy.mock.calls);
+    for (const value of [secret, receipt, envelope, 'arbitrary-secret-error-code']) {
+      expect(output).not.toContain(value);
+    }
+  });
+
+  it('sanitizes arbitrary thrown values and acknowledgment failures', async () => {
+    const { consumer, errorSpy } = isolatedConsumer();
+    const receipt = 'private-delete-receipt';
+    const secret = 'sdk-error-credential';
+    const processMessage = jest.fn(async () => undefined);
+    // eslint-disable-next-line @typescript-eslint/dot-notation -- Exercise the private message boundary in isolation.
+    await consumer['handleMessage']({
+      message: { Body: '{}', ReceiptHandle: receipt },
+      extendVisibility: jest.fn(async () => undefined),
+      deleteMessage: jest.fn(async () => {
+        // eslint-disable-next-line @typescript-eslint/only-throw-error -- Verify sanitization of arbitrary SDK rejection values.
+        throw { rawApiKey: secret, ReceiptHandle: receipt };
+      }),
+      parseBody: JSON.parse,
+      processMessage,
+      loopName: 'llm',
+    });
+    expect(processMessage).toHaveBeenCalledTimes(1);
+    expectSafeCapture(undefined, [secret, receipt]);
+    expect(JSON.parse(errorSpy.mock.calls[0]![0] as string)).toMatchInlineSnapshot(`
+{
+  "code": "QUEUE_MESSAGE_PROCESSING_FAILED",
+  "event": "queue_message_processing_failed",
+  "queue": "llm",
+}
+`);
+  });
+
+  it('handles heartbeat errors without leaking receipt handles or creating unhandled rejections', async () => {
+    jest.useFakeTimers();
+    const { consumer, errorSpy } = isolatedConsumer();
+    const receipt = 'private-heartbeat-receipt';
+    const secret = 'heartbeat-credential-sentinel';
+    const error = new Error(`SDK failure ${receipt} ${secret}`);
+    let finishWork!: () => void;
+    const work = new Promise<void>((resolve) => { finishWork = resolve; });
+    const deleteMessage = jest.fn(async () => undefined);
+    // eslint-disable-next-line @typescript-eslint/dot-notation -- Exercise the private message boundary in isolation.
+    const processing = consumer['handleMessage']({
+      message: { Body: '{}', ReceiptHandle: receipt },
+      extendVisibility: jest.fn(async () => { throw error; }),
+      deleteMessage,
+      parseBody: JSON.parse,
+      processMessage: () => work,
+      loopName: 'llm',
+    });
+    await jest.advanceTimersByTimeAsync(7000);
+    finishWork();
+    await processing;
+    expectSafeCapture(error, [secret, receipt]);
+    expect(JSON.parse(errorSpy.mock.calls[0]![0] as string)).toMatchInlineSnapshot(`
+{
+  "code": "QUEUE_VISIBILITY_EXTENSION_FAILED",
+  "event": "queue_visibility_extension_failed",
+  "queue": "llm",
+}
+`);
+    expect(deleteMessage).toHaveBeenCalledWith(receipt);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
 });

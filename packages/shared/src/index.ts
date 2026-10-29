@@ -14,6 +14,7 @@ export * from './redis-keys';
 export * from './redis-progress-store';
 export * from './redis.service';
 export * from './redaction';
+export * from './queue-credentials';
 export * from './state-machine';
 export * from './taxonomy-cache.service';
 export * from './taxonomy-categories';

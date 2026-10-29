@@ -9,6 +9,74 @@ import { APP_CONFIG } from '@mem9/config';
 import type { AnalysisBatchMessage, AnalysisLlmQueueMessage } from '@mem9/contracts';
 import { Inject, Injectable } from '@nestjs/common';
 
+import { AppError } from './errors';
+
+function invalidQueueMessage(): AppError {
+  return new AppError('Invalid queue message', {
+    statusCode: 400,
+    code: 'INVALID_QUEUE_MESSAGE',
+  });
+}
+
+function assertNoRawQueueCredential(value: unknown, visited = new WeakSet<object>()): void {
+  if (value === null || typeof value !== 'object' || visited.has(value)) {
+    return;
+  }
+
+  visited.add(value);
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if ('rawApiKey' in value) {
+    throw invalidQueueMessage();
+  }
+
+  for (const descriptor of Object.values(descriptors)) {
+    // Queue payloads are data objects. Accessors must not hide credentials from inspection.
+    if (descriptor.get !== undefined || descriptor.set !== undefined) {
+      throw invalidQueueMessage();
+    }
+    assertNoRawQueueCredential(descriptor.value, visited);
+  }
+}
+
+function serializeQueueMessage(message: AnalysisBatchMessage | AnalysisLlmQueueMessage): string {
+  try {
+    assertNoRawQueueCredential(message);
+    let payload: AnalysisBatchMessage | AnalysisLlmQueueMessage = message;
+    if ('messageType' in message && message.messageType === 'memory_analysis_report') {
+      if (
+        typeof message.encryptedApiKey !== 'string' || message.encryptedApiKey.length === 0 ||
+        !Number.isSafeInteger(message.reportId) || message.reportId <= 0 ||
+        typeof message.apiKeyFingerprintHex !== 'string' ||
+        typeof message.createdAfter !== 'string' || typeof message.createdBefore !== 'string' ||
+        typeof message.traceId !== 'string'
+      ) {
+        throw invalidQueueMessage();
+      }
+      // Explicitly select the wire fields so extra request/context properties cannot enter SQS.
+      payload = {
+        messageType: 'memory_analysis_report',
+        reportId: message.reportId,
+        apiKeyFingerprintHex: message.apiKeyFingerprintHex,
+        encryptedApiKey: message.encryptedApiKey,
+        createdAfter: message.createdAfter,
+        createdBefore: message.createdBefore,
+        traceId: message.traceId,
+      };
+    }
+
+    return JSON.stringify(payload, (key: string, value: unknown) => {
+      // Check the serialized form too, including values returned by toJSON.
+      if (key === 'rawApiKey') {
+        throw invalidQueueMessage();
+      }
+      return value;
+    });
+  } catch {
+    // Do not attach the original error: it may contain a credential or a serialized payload.
+    throw invalidQueueMessage();
+  }
+}
+
 @Injectable()
 export class AwsClientFactory {
   private readonly s3Client: S3Client;
@@ -146,7 +214,7 @@ export class SqsQueueService {
     await this.factory.sqs.send(
       new SendMessageCommand({
         QueueUrl: this.factory.settings.aws.sqsAnalysisBatchQueueUrl,
-        MessageBody: JSON.stringify(message),
+        MessageBody: serializeQueueMessage(message),
       }),
     );
   }
@@ -155,7 +223,7 @@ export class SqsQueueService {
     await this.factory.sqs.send(
       new SendMessageCommand({
         QueueUrl: this.factory.settings.aws.sqsAnalysisLlmQueueUrl,
-        MessageBody: JSON.stringify(message),
+        MessageBody: serializeQueueMessage(message),
       }),
     );
   }
