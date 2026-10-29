@@ -1,8 +1,3 @@
-import type { AppConfig } from '@mem9/config';
-import type { MemoryAnalysisReportMessage } from '@mem9/contracts';
-import { decryptQueueCredential } from '@mem9/shared';
-import { Logger } from '@nestjs/common';
-
 import { MemoryAnalysisService } from './memory-analysis.service';
 
 const reportApiKeyFingerprint = Buffer.alloc(32, 1);
@@ -13,11 +8,9 @@ const reportContext = {
   requestId: 'req_1',
 } as never;
 
-const TEST_QUEUE_KEYS = `test:${Buffer.alloc(32, 1).toString('base64')}`;
 const TEST_CONFIG = {
   analysis: {
     qwenModel: 'test-model',
-    queueEncryptionKeys: TEST_QUEUE_KEYS,
   },
 } as never;
 
@@ -46,7 +39,6 @@ function createReportService(
   queue?: Record<string, jest.Mock>,
   sourceOverrides?: Record<string, jest.Mock>,
   redisOverrides?: Record<string, jest.Mock>,
-  config: AppConfig = TEST_CONFIG,
 ) {
   return new MemoryAnalysisService(
     {
@@ -62,7 +54,7 @@ function createReportService(
       del: jest.fn(async () => 0),
       ...redisOverrides,
     } as never,
-    config,
+    TEST_CONFIG,
   );
 }
 
@@ -151,7 +143,6 @@ function createSessionService(overrides?: {
 describe('memory analysis report service', () => {
   afterEach(() => {
     jest.useRealTimers();
-    jest.restoreAllMocks();
   });
 
   it('creates queued memory analysis report jobs', async () => {
@@ -168,7 +159,7 @@ describe('memory analysis report service', () => {
       updateMemoryAnalysisReport: jest.fn(async () => createReport()),
     };
     const queue = {
-      enqueueLlmMessage: jest.fn<Promise<void>, [MemoryAnalysisReportMessage]>(async () => undefined),
+      enqueueLlmMessage: jest.fn(async () => undefined),
     };
     const service = createReportService(repository, queue);
 
@@ -214,27 +205,11 @@ describe('memory analysis report service', () => {
       messageType: 'memory_analysis_report',
       reportId: 1,
       apiKeyFingerprintHex: reportApiKeyFingerprint.toString('hex'),
-      encryptedApiKey: expect.any(String) as unknown,
+      rawApiKey: 'space-key',
       createdAfter: '2026-06-01T00:00:00.000Z',
       createdBefore: '2026-06-14T23:59:59.999Z',
       traceId: 'req_1',
     });
-    const message = queue.enqueueLlmMessage.mock.calls[0]![0];
-    expect(JSON.stringify(message)).not.toContain('space-key');
-    expect(message).not.toHaveProperty('rawApiKey');
-    expect(decryptQueueCredential(TEST_QUEUE_KEYS, message.encryptedApiKey, message)).toBe('space-key');
-    expect(() => decryptQueueCredential(TEST_QUEUE_KEYS, message.encryptedApiKey, {
-      ...message,
-      reportId: 2,
-    })).toThrow('Invalid queue credential');
-    expect(() => decryptQueueCredential(TEST_QUEUE_KEYS, message.encryptedApiKey, {
-      ...message,
-      apiKeyFingerprintHex: Buffer.alloc(32, 2).toString('hex'),
-    })).toThrow('Invalid queue credential');
-    expect(() => decryptQueueCredential(TEST_QUEUE_KEYS, message.encryptedApiKey, {
-      ...message,
-      createdBefore: '2026-06-14T22:59:59.999Z',
-    })).toThrow('Invalid queue credential');
     expect(repository.updateMemoryAnalysisReport).not.toHaveBeenCalled();
   });
 
@@ -468,62 +443,26 @@ describe('memory analysis report service', () => {
     };
     const service = createReportService(repository, {
       enqueueLlmMessage: jest.fn(async () => {
-        throw new Error('sqs rejected request containing space-key');
+        throw new Error('sqs down');
       }),
     });
     const errorSpy = jest
-      .spyOn(Logger.prototype, 'error')
+      .spyOn(service['logger'], 'error')
       .mockImplementation(() => undefined);
-
-    const error: unknown = await service.createReport(reportContext, {
-      createdAfter: '2026-06-01T00:00:00.000Z',
-      createdBefore: '2026-06-14T23:59:59.999Z',
-    }).catch((failure: unknown) => failure);
-    expect(error).toMatchObject({
-      code: 'MEMORY_ANALYSIS_QUEUE_ENQUEUE_FAILED',
-    });
-    expect(error).toHaveProperty('cause', undefined);
-    expect(JSON.stringify(error)).not.toContain('space-key');
-
-    expect(repository.updateMemoryAnalysisReport).toHaveBeenCalledWith(1, reportApiKeyFingerprint, expect.objectContaining({
-      renderStatus: 'fail',
-      reportStage: 'failed',
-      failCode: 'MEMORY_ANALYSIS_QUEUE_ENQUEUE_FAILED',
-    }));
-    expect(errorSpy).toHaveBeenCalledTimes(1);
-    expect(errorSpy.mock.calls[0]).toHaveLength(1);
-    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain('space-key');
-  });
-
-  it.each([undefined, 'invalid-keyring'])('marks the report failed when encryption configuration is %s', async (queueEncryptionKeys) => {
-    const repository = {
-      findActiveMemoryAnalysisReportByDay: jest.fn(async () => null),
-      countMemoryAnalysisReportsByDay: jest.fn(async () => 0),
-      createMemoryAnalysisReport: jest.fn(async () => createReport({
-        renderStatus: 'queued',
-        reportStage: 'queued',
-      })),
-      updateMemoryAnalysisReport: jest.fn(async () => createReport()),
-    };
-    const queue = { enqueueLlmMessage: jest.fn(async () => undefined) };
-    const service = createReportService(repository, queue, undefined, undefined, {
-      analysis: { qwenModel: 'test-model', queueEncryptionKeys },
-    } as AppConfig);
-    jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
 
     await expect(service.createReport(reportContext, {
       createdAfter: '2026-06-01T00:00:00.000Z',
       createdBefore: '2026-06-14T23:59:59.999Z',
-    })).rejects.toMatchObject({ code: 'MEMORY_ANALYSIS_QUEUE_ENQUEUE_FAILED', cause: undefined });
+    })).rejects.toMatchObject({
+      code: 'MEMORY_ANALYSIS_QUEUE_ENQUEUE_FAILED',
+    });
 
-    expect(repository.createMemoryAnalysisReport).toHaveBeenCalledTimes(1);
-    expect(queue.enqueueLlmMessage).not.toHaveBeenCalled();
     expect(repository.updateMemoryAnalysisReport).toHaveBeenCalledWith(1, reportApiKeyFingerprint, expect.objectContaining({
       renderStatus: 'fail',
       reportStage: 'failed',
-      completedAt: expect.any(Date) as unknown,
       failCode: 'MEMORY_ANALYSIS_QUEUE_ENQUEUE_FAILED',
     }));
+    expect(errorSpy).toHaveBeenCalled();
   });
 
   it('lists memory analysis reports by type', async () => {

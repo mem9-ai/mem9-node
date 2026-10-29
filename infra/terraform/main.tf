@@ -50,13 +50,11 @@ resource "aws_s3_bucket_lifecycle_configuration" "analysis_payloads" {
 }
 
 resource "aws_sqs_queue" "analysis_batch_dlq" {
-  name                    = "${var.name_prefix}-analysis-batch-dlq"
-  sqs_managed_sse_enabled = true
+  name = "${var.name_prefix}-analysis-batch-dlq"
 }
 
 resource "aws_sqs_queue" "analysis_batch" {
   name                       = "${var.name_prefix}-analysis-batch"
-  sqs_managed_sse_enabled    = true
   visibility_timeout_seconds = 60
   redrive_policy = jsonencode({
     deadLetterTargetArn = aws_sqs_queue.analysis_batch_dlq.arn
@@ -65,13 +63,11 @@ resource "aws_sqs_queue" "analysis_batch" {
 }
 
 resource "aws_sqs_queue" "analysis_llm_dlq" {
-  name                    = "${var.name_prefix}-analysis-llm-dlq"
-  sqs_managed_sse_enabled = true
+  name = "${var.name_prefix}-analysis-llm-dlq"
 }
 
 resource "aws_sqs_queue" "analysis_llm" {
   name                       = "${var.name_prefix}-analysis-llm"
-  sqs_managed_sse_enabled    = true
   visibility_timeout_seconds = 60
   redrive_policy = jsonencode({
     deadLetterTargetArn = aws_sqs_queue.analysis_llm_dlq.arn
@@ -116,10 +112,7 @@ resource "aws_iam_role_policy" "task_execution_secrets" {
         Action = [
           "secretsmanager:GetSecretValue"
         ]
-        Resource = [
-          aws_secretsmanager_secret.app.arn,
-          aws_secretsmanager_secret.queue_credentials.arn
-        ]
+        Resource = aws_secretsmanager_secret.app.arn
       }
     ]
   })
@@ -373,30 +366,25 @@ data "aws_iam_policy_document" "ecs_task_assume_role" {
 }
 
 data "aws_iam_policy_document" "task_runtime" {
-  # The existing role is retained for workers. Narrow it only after queue
-  # producers are gated and drained; old API tasks still use this role.
   statement {
-    sid = "PayloadObjects"
     actions = [
       "s3:DeleteObject",
       "s3:GetObject",
-      "s3:PutObject"
-    ]
-
-    resources = ["${aws_s3_bucket.analysis_payloads.arn}/*"]
-  }
-
-  statement {
-    sid = "ConsumeAnalysisQueues"
-    actions = [
+      "s3:PutObject",
       "sqs:DeleteMessage",
       "sqs:ReceiveMessage",
-      "sqs:ChangeMessageVisibility"
+      "sqs:SendMessage",
+      "sqs:ChangeMessageVisibility",
+      "sqs:GetQueueAttributes"
     ]
 
     resources = [
+      aws_s3_bucket.analysis_payloads.arn,
+      "${aws_s3_bucket.analysis_payloads.arn}/*",
       aws_sqs_queue.analysis_batch.arn,
-      aws_sqs_queue.analysis_llm.arn
+      aws_sqs_queue.analysis_batch_dlq.arn,
+      aws_sqs_queue.analysis_llm.arn,
+      aws_sqs_queue.analysis_llm_dlq.arn
     ]
   }
 }

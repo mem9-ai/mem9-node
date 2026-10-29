@@ -5,32 +5,13 @@ import type {
   AnalysisBatchMessage,
   AnalysisLlmQueueMessage,
 } from '@mem9/contracts';
-import { AppError, SqsQueueService } from '@mem9/shared';
+import { SqsQueueService } from '@mem9/shared';
 import { Inject, Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import * as Sentry from '@sentry/nestjs';
 
 import { BatchProcessorService } from './batch-processor.service';
 import { DeepAnalysisReportProcessorService } from './deep-analysis-report-processor.service';
 import { MemoryAnalysisReportProcessorService } from './memory-analysis-report-processor.service';
-
-type QueueLoopName = 'batch' | 'llm';
-type QueueFailureEvent =
-  | 'queue_message_parse_failed'
-  | 'queue_message_processing_failed'
-  | 'queue_visibility_extension_failed';
-
-const SAFE_PROCESSING_ERROR_CODES = new Set([
-  'INVALID_QUEUE_CREDENTIAL',
-  'INVALID_QUEUE_OWNER',
-  'INVALID_REPORT_MESSAGE',
-  'INVALID_BATCH_MESSAGE',
-  'INVALID_BATCH_PAYLOAD',
-  'PAYLOAD_HASH_VALIDATION_FAILED',
-  'ANALYSIS_JOB_NOT_FOUND',
-  'ANALYSIS_BATCH_NOT_FOUND',
-  'DEEP_ANALYSIS_REPORT_NOT_FOUND',
-  'DEEP_ANALYSIS_LEASE_LOST',
-]);
 
 @Injectable()
 export class SqsConsumerService implements OnModuleDestroy {
@@ -105,7 +86,7 @@ export class SqsConsumerService implements OnModuleDestroy {
     deleteMessage: (receiptHandle: string) => Promise<void>;
     parseBody: (body: string) => TPayload;
     processMessage: (payload: TPayload, message: Message) => Promise<void>;
-    loopName: QueueLoopName;
+    loopName: string;
   }): Promise<void> {
     while (this.running) {
       const messages = (await receive()) ?? [];
@@ -140,7 +121,7 @@ export class SqsConsumerService implements OnModuleDestroy {
     deleteMessage: (receiptHandle: string) => Promise<void>;
     parseBody: (body: string) => TPayload;
     processMessage: (payload: TPayload, message: Message) => Promise<void>;
-    loopName: QueueLoopName;
+    loopName: string;
   }): Promise<void> {
     if (message.Body === undefined || message.ReceiptHandle === undefined) {
       return;
@@ -149,36 +130,27 @@ export class SqsConsumerService implements OnModuleDestroy {
     let payload: TPayload;
     try {
       payload = parseBody(message.Body);
-    } catch {
-      // JSON.parse errors can embed the queue body, including legacy credentials.
-      this.reportQueueFailure(loopName, 'queue_message_parse_failed', 'QUEUE_MESSAGE_INVALID_JSON');
+    } catch (error) {
+      Sentry.captureException(error);
+      this.logger.error(
+        `Failed to parse ${loopName} queue message`,
+        error instanceof Error ? error.stack : undefined,
+      );
       return;
     }
 
     const heartbeat = setInterval(() => {
-      void extendVisibility(message.ReceiptHandle!).catch(() => {
-        this.reportQueueFailure(loopName, 'queue_visibility_extension_failed', 'QUEUE_VISIBILITY_EXTENSION_FAILED');
-      });
+      void extendVisibility(message.ReceiptHandle!);
     }, this.config.sqs.visibilityHeartbeatSeconds * 1000);
 
     try {
       await processMessage(payload, message);
       await deleteMessage(message.ReceiptHandle);
     } catch (error) {
-      const code = error instanceof AppError && SAFE_PROCESSING_ERROR_CODES.has(error.code)
-        ? error.code
-        : 'QUEUE_MESSAGE_PROCESSING_FAILED';
-      this.reportQueueFailure(loopName, 'queue_message_processing_failed', code);
+      Sentry.captureException(error);
+      this.logger.error(error);
     } finally {
       clearInterval(heartbeat);
     }
-  }
-
-  private reportQueueFailure(queue: QueueLoopName, event: QueueFailureEvent, code: string): void {
-    // Do not forward the original error, stack, cause, body, or receipt handle.
-    // Structured logger redaction cannot sanitize arbitrary exception strings.
-    const error = new AppError('Queue operation failed', { statusCode: 500, code });
-    Sentry.captureException(error, { tags: { event, queue } });
-    this.logger.error(JSON.stringify({ event, queue, code }));
   }
 }

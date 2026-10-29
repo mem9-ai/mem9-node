@@ -98,18 +98,6 @@ const MAX_EVIDENCE_PER_CHANGE = 3;
 const QWEN_PERIOD_SUMMARY_CONCURRENCY = 5;
 const MAX_ANALYSIS_RANGE_MS = 14 * 24 * 60 * 60 * 1000;
 const MEMORY_ANALYSIS_REPORT_MAX_ATTEMPTS = 3;
-const SAFE_REPORT_FAILURE_CODES = new Set([
-  'DEEP_ANALYSIS_SOURCE_FETCH_FAILED',
-  'QWEN_REQUEST_FAILED',
-  'QWEN_REQUEST_TIMEOUT',
-  'QWEN_EMPTY_RESPONSE',
-  'QWEN_HTTP_ERROR',
-  'QWEN_NOT_CONFIGURED',
-  'QWEN_JSON_PARSE_FAILED',
-  'MEMORY_ANALYSIS_DATE_RANGE_REQUIRED',
-  'MEMORY_ANALYSIS_INVALID_DATE_RANGE',
-  'MEMORY_ANALYSIS_DATE_RANGE_TOO_LARGE',
-]);
 const MEMORY_ANALYSIS_REPORT_RETRY_BASE_MS = 1000;
 const MEMORY_PERIOD_SUMMARY_CACHE_TTL_SECONDS = 30 * 24 * 60 * 60;
 const MEMORY_PERIOD_SUMMARY_PROMPT_HASH = sha256Hex(MEMORY_PERIOD_SUMMARY_SYSTEM_PROMPT);
@@ -227,7 +215,8 @@ export class MemoryAnalysisReportRunnerService {
         memoryCount: result.memoryCount,
       });
     } catch (error) {
-      const failCode = this.getReportFailCode(error);
+      const appError = error instanceof AppError ? error : null;
+      const failCode = appError?.code ?? 'MEMORY_ANALYSIS_GENERATION_FAILED';
       const failReason = this.getReportFailReason(error);
 
       this.logReportEvent('memory_analysis_report_failed', {
@@ -236,7 +225,7 @@ export class MemoryAnalysisReportRunnerService {
         durationMs: Date.now() - startedAt,
         failCode,
         failReason,
-      }, 'error');
+      }, 'error', error);
 
       await this.repository.updateMemoryAnalysisReport(reportId, context.apiKeyFingerprint, {
         renderStatus: 'fail',
@@ -266,6 +255,7 @@ export class MemoryAnalysisReportRunnerService {
         return await this.analyzeSource(context, dto, { reportId });
       } catch (error) {
         lastError = error;
+        const appError = error instanceof AppError ? error : null;
         const retryable = this.isRetryableReportError(error);
         const willRetry = retryable && attempt < MEMORY_ANALYSIS_REPORT_MAX_ATTEMPTS;
 
@@ -274,9 +264,9 @@ export class MemoryAnalysisReportRunnerService {
           stage: 'failed',
           attempt,
           willRetry: willRetry ? 'true' : 'false',
-          failCode: this.getReportFailCode(error),
+          failCode: appError?.code ?? 'MEMORY_ANALYSIS_GENERATION_FAILED',
           failReason: this.getReportFailReason(error),
-        }, willRetry ? 'warn' : 'error');
+        }, willRetry ? 'warn' : 'error', error);
 
         if (!willRetry) {
           break;
@@ -310,13 +300,6 @@ export class MemoryAnalysisReportRunnerService {
     }
 
     return false;
-  }
-
-  private getReportFailCode(error: unknown): string {
-    // Provider error codes are untrusted strings and can contain credentials.
-    return error instanceof AppError && SAFE_REPORT_FAILURE_CODES.has(error.code)
-      ? error.code
-      : 'MEMORY_ANALYSIS_GENERATION_FAILED';
   }
 
   private getReportFailReason(error: unknown): string {
@@ -365,10 +348,11 @@ export class MemoryAnalysisReportRunnerService {
     event: string,
     data: Record<string, number | string | boolean | null | undefined>,
     level: 'log' | 'warn' | 'error' = 'log',
+    error?: unknown,
   ): void {
     const payload = JSON.stringify({ event, ...data });
     if (level === 'error') {
-      this.logger.error(payload);
+      this.logger.error(payload, error instanceof Error ? error.stack : undefined);
       return;
     }
     if (level === 'warn') {
@@ -793,7 +777,7 @@ export class MemoryAnalysisReportRunnerService {
       }
 
       const timedOut = controller.signal.aborted || (error instanceof Error && error.name === 'AbortError');
-      const message = 'Qwen request failed before completion';
+      const message = error instanceof Error ? error.message : 'unknown error';
       this.logger.warn(timedOut ? `${timeoutLogMessage} after ${timeoutMs}ms` : message);
       throw new AppError(timedOut ? `Qwen request timed out after ${timeoutMs}ms` : message, {
         statusCode: HttpStatus.BAD_GATEWAY,
