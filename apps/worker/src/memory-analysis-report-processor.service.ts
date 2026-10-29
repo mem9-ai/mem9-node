@@ -4,7 +4,6 @@ import type { MemoryAnalysisReportMessage } from '@mem9/contracts';
 import {
   AnalysisRepository,
   AppError,
-  decryptQueueCredential,
   deriveApiKeyFingerprint,
   parseApiKeyFingerprint,
   safeFingerprintEquals,
@@ -28,22 +27,14 @@ export class MemoryAnalysisReportProcessorService {
       throw new AppError('Invalid report message', { statusCode: 403, code: 'INVALID_REPORT_MESSAGE' });
     }
     const fingerprint = parseApiKeyFingerprint(message.apiKeyFingerprintHex);
-    if ('rawApiKey' in message || typeof message.encryptedApiKey !== 'string') {
-      throw new AppError('Invalid queue credential', { statusCode: 403, code: 'INVALID_QUEUE_CREDENTIAL' });
+    if (typeof message.rawApiKey !== 'string' || !message.rawApiKey.trim()
+      || !safeFingerprintEquals(deriveApiKeyFingerprint(this.config.app.pepper, message.rawApiKey), fingerprint)) {
+      throw new AppError('Credential owner mismatch', { statusCode: 403, code: 'INVALID_QUEUE_CREDENTIAL' });
     }
     const start = Date.parse(message.createdAfter);
     const end = Date.parse(message.createdBefore);
     if (!Number.isFinite(start) || !Number.isFinite(end) || start >= end || end - start > 14 * 24 * 60 * 60 * 1000) {
       throw new AppError('Invalid report date range', { statusCode: 403, code: 'INVALID_REPORT_MESSAGE' });
-    }
-    const rawApiKey = decryptQueueCredential(
-      this.config.analysis.queueEncryptionKeys,
-      message.encryptedApiKey,
-      message,
-    );
-    if (!rawApiKey.trim()
-      || !safeFingerprintEquals(deriveApiKeyFingerprint(this.config.app.pepper, rawApiKey), fingerprint)) {
-      throw new AppError('Credential owner mismatch', { statusCode: 403, code: 'INVALID_QUEUE_CREDENTIAL' });
     }
     const report = await this.repository.findMemoryAnalysisReport(fingerprint, message.reportId);
     if (!report || !safeFingerprintEquals(Buffer.from(report.apiKeyFingerprint), fingerprint)
@@ -59,7 +50,7 @@ export class MemoryAnalysisReportProcessorService {
       {
         apiKeyFingerprint: fingerprint,
         apiKeyFingerprintHex: fingerprint.toString('hex'),
-        rawApiKey,
+        rawApiKey: message.rawApiKey,
         requestId: message.traceId,
       },
       message.reportId,

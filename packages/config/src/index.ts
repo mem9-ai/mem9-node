@@ -1,9 +1,5 @@
 import { z } from 'zod';
 
-import { parseQueueEncryptionKeys } from './queue-encryption-keys';
-
-export { parseQueueEncryptionKeys } from './queue-encryption-keys';
-
 const emptyStringToUndefined = (value: unknown): unknown =>
   value === '' ? undefined : value;
 
@@ -28,7 +24,6 @@ const envSchema = z
       .default('mysql://mem9:mem9@127.0.0.1:3306/mem9'),
     REDIS_URL: z.string().min(1).default('redis://127.0.0.1:6379'),
     APP_PEPPER: z.string().min(16).default('local-dev-pepper-1234567890'),
-    QUEUE_ENCRYPTION_KEYS: z.string().optional(),
     SENTRY_DSN: z.preprocess(
       emptyStringToUndefined,
       z.string().min(1).optional(),
@@ -127,17 +122,6 @@ const envSchema = z
       .default(10),
   })
   .superRefine((env, ctx) => {
-    if (env.NODE_ENV === 'production' || env.QUEUE_ENCRYPTION_KEYS !== undefined) {
-      try {
-        parseQueueEncryptionKeys(env.QUEUE_ENCRYPTION_KEYS);
-      } catch {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: 'QUEUE_ENCRYPTION_KEYS must contain independent named 256-bit keys',
-          path: ['QUEUE_ENCRYPTION_KEYS'],
-        });
-      }
-    }
     const hasAccessKey = env.AWS_ACCESS_KEY_ID !== undefined;
     const hasSecretKey = env.AWS_SECRET_ACCESS_KEY !== undefined;
 
@@ -203,7 +187,6 @@ export interface AppConfig {
     sqsAnalysisLlmDlqUrl: string;
   };
   analysis: {
-    queueEncryptionKeys?: string;
     jobResultTtlSeconds: number;
     payloadRetentionDays: number;
     defaultBatchSize: number;
@@ -274,7 +257,6 @@ export function loadConfig(
       sqsAnalysisLlmDlqUrl: env.SQS_ANALYSIS_LLM_DLQ_URL,
     },
     analysis: {
-      queueEncryptionKeys: env.QUEUE_ENCRYPTION_KEYS,
       jobResultTtlSeconds: env.JOB_RESULT_TTL_SECONDS,
       payloadRetentionDays: env.PAYLOAD_RETENTION_DAYS,
       defaultBatchSize: env.DEFAULT_BATCH_SIZE,

@@ -13,7 +13,7 @@ resource "aws_ecs_task_definition" "api" {
   memory                   = "1024"
   skip_destroy             = true
   execution_role_arn       = aws_iam_role.task_execution.arn
-  task_role_arn            = aws_iam_role.api_runtime.arn
+  task_role_arn            = aws_iam_role.task_runtime.arn
 
   container_definitions = jsonencode([
     {
@@ -37,10 +37,6 @@ resource "aws_ecs_task_definition" "api" {
         {
           name      = "APP_PEPPER"
           valueFrom = "${aws_secretsmanager_secret.app.arn}:APP_PEPPER::"
-        },
-        {
-          name      = "QUEUE_ENCRYPTION_KEYS"
-          valueFrom = aws_secretsmanager_secret.queue_credentials.arn
         },
         {
           name      = "GO_INTERNAL_SHARED_SECRET"
@@ -138,10 +134,6 @@ resource "aws_ecs_task_definition" "worker" {
         {
           name      = "APP_PEPPER"
           valueFrom = "${aws_secretsmanager_secret.app.arn}:APP_PEPPER::"
-        },
-        {
-          name      = "QUEUE_ENCRYPTION_KEYS"
-          valueFrom = aws_secretsmanager_secret.queue_credentials.arn
         },
         {
           name      = "GO_INTERNAL_SHARED_SECRET"

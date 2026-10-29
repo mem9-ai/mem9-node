@@ -8,7 +8,7 @@ import type {
   MarkSessionMessageResponse,
 } from '@mem9/contracts';
 import { MEMORY_PERIOD_SUMMARY_CACHE_VERSION } from '@mem9/contracts';
-import { AnalysisRepository, AppError, RedisService, SqsQueueService, encryptQueueCredential, redisKeys } from '@mem9/shared';
+import { AnalysisRepository, AppError, RedisService, SqsQueueService, redisKeys } from '@mem9/shared';
 import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
 import type { MemoryReport } from '@prisma/client';
 
@@ -131,22 +131,16 @@ export class MemoryAnalysisService {
     });
 
     try {
-      const encryptedApiKey = encryptQueueCredential(this.config.analysis.queueEncryptionKeys, context.rawApiKey, {
-        reportId: report.reportId,
-        apiKeyFingerprintHex: context.apiKeyFingerprintHex,
-        createdAfter: dto.createdAfter,
-        createdBefore: dto.createdBefore,
-      });
       await this.queue.enqueueLlmMessage({
         messageType: 'memory_analysis_report',
         reportId: report.reportId,
         apiKeyFingerprintHex: context.apiKeyFingerprintHex,
-        encryptedApiKey,
+        rawApiKey: context.rawApiKey,
         createdAfter: dto.createdAfter,
         createdBefore: dto.createdBefore,
         traceId: context.requestId,
       });
-    } catch {
+    } catch (error) {
       const failReason = 'Failed to queue memory analysis report generation. Please retry later.';
       this.logger.error(JSON.stringify({
         event: 'memory_analysis_report_enqueue_failed',
@@ -155,7 +149,7 @@ export class MemoryAnalysisService {
         apiKeyFingerprint: context.apiKeyFingerprintHex,
         failCode: 'MEMORY_ANALYSIS_QUEUE_ENQUEUE_FAILED',
         failReason,
-      }));
+      }), error instanceof Error ? error.stack : undefined);
       await this.repository.updateMemoryAnalysisReport(report.reportId, context.apiKeyFingerprint, {
         renderStatus: 'fail',
         reportStage: 'failed',
@@ -166,6 +160,7 @@ export class MemoryAnalysisService {
       throw new AppError(failReason, {
         statusCode: HttpStatus.BAD_GATEWAY,
         code: 'MEMORY_ANALYSIS_QUEUE_ENQUEUE_FAILED',
+        cause: error,
       });
     }
 

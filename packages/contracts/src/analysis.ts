@@ -547,7 +547,7 @@ export interface MemoryAnalysisReportMessage {
   messageType: 'memory_analysis_report';
   reportId: number;
   apiKeyFingerprintHex: string;
-  encryptedApiKey: string;
+  rawApiKey: string;
   createdAfter: string;
   createdBefore: string;
   traceId: string;
