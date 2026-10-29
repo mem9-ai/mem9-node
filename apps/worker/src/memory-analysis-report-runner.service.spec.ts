@@ -1,5 +1,5 @@
 import type { AppConfig } from '@mem9/config';
-import { deriveApiKeyFingerprint } from '@mem9/shared';
+import { AppError, deriveApiKeyFingerprint } from '@mem9/shared';
 
 import { MEMORY_PERIOD_SUMMARY_CACHE_VERSION } from './memory-analysis/prompts';
 import { MemoryAnalysisReportRunnerService } from './memory-analysis-report-runner.service';
@@ -71,6 +71,8 @@ function createReport(overrides: Record<string, unknown> = {}) {
 }
 
 describe('MemoryAnalysisReportRunnerService', () => {
+  afterEach(() => jest.restoreAllMocks());
+
   it('retries transient report generation failures before marking success', async () => {
     const source = {
       fetchSessionMemories: jest
@@ -219,6 +221,92 @@ describe('MemoryAnalysisReportRunnerService', () => {
       expect(fingerprint).toEqual(reportApiKeyFingerprint);
     }
     expect(source.fetchSessionMemories).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      error: new SyntaxError('Response body contains space-key'),
+      expectedCode: 'MEMORY_ANALYSIS_GENERATION_FAILED',
+      expectedAttempts: 3,
+    },
+    {
+      error: new AppError('Provider echoed space-key', {
+        statusCode: 502,
+        code: 'QWEN_REQUEST_FAILED',
+        details: { rawApiKey: 'space-key' },
+        cause: new Error('Nested space-key'),
+      }),
+      expectedCode: 'QWEN_REQUEST_FAILED',
+      expectedAttempts: 3,
+    },
+    {
+      error: new AppError('Provider echoed space-key', {
+        statusCode: 502,
+        code: 'provider-code-containing-space-key',
+      }),
+      expectedCode: 'MEMORY_ANALYSIS_GENERATION_FAILED',
+      expectedAttempts: 1,
+    },
+  ])('keeps credentials out of failure logs and stored failure metadata without changing retries ($expectedCode, $expectedAttempts attempts)', async ({ error, expectedCode, expectedAttempts }) => {
+    const { source, repository, runner, range } = setupIsolatedReport();
+    error.stack = 'Original error stack containing space-key';
+    source.fetchSessionMemories.mockRejectedValue(error);
+    jest.spyOn(runner as unknown as { sleep(ms: number): Promise<void> }, 'sleep').mockResolvedValue(undefined);
+    // eslint-disable-next-line @typescript-eslint/dot-notation -- Test-only access to the private logger.
+    const errorSpy = jest.spyOn(runner['logger'], 'error').mockImplementation(() => undefined);
+    // eslint-disable-next-line @typescript-eslint/dot-notation -- Test-only access to the private logger.
+    const warnSpy = jest.spyOn(runner['logger'], 'warn').mockImplementation(() => undefined);
+    // eslint-disable-next-line @typescript-eslint/dot-notation -- Test-only access to the private logger.
+    const logSpy = jest.spyOn(runner['logger'], 'log').mockImplementation(() => undefined);
+
+    await runner.generateReport(reportContext, 1, range);
+
+    expect(source.fetchSessionMemories).toHaveBeenCalledTimes(expectedAttempts);
+    expect(repository.updateMemoryAnalysisReport).toHaveBeenLastCalledWith(1, reportApiKeyFingerprint, expect.objectContaining({
+      renderStatus: 'fail', failCode: expectedCode,
+    }));
+    expect(JSON.stringify(repository.updateMemoryAnalysisReport.mock.calls)).not.toContain('space-key');
+    expect(JSON.stringify([errorSpy.mock.calls, warnSpy.mock.calls, logSpy.mock.calls])).not.toContain('space-key');
+    for (const call of errorSpy.mock.calls) expect(call).toHaveLength(1);
+    const failure: unknown = JSON.parse(errorSpy.mock.calls.at(-1)![0] as string);
+    expect(failure).toMatchObject({ event: 'memory_analysis_report_failed', failCode: expectedCode });
+    expect(failure).not.toHaveProperty('stack');
+    expect(failure).not.toHaveProperty('cause');
+  });
+
+  it('does not log or propagate a provider transport error containing credentials', async () => {
+    const config = {
+      ...TEST_CONFIG,
+      analysis: {
+        ...TEST_CONFIG.analysis,
+        qwenApiBaseUrl: 'https://example.invalid/v1',
+        qwenRequestTimeoutMs: 1000,
+      },
+    };
+    const runner = new MemoryAnalysisReportRunnerService(config, {} as never, {} as never, new FakeRedis() as never);
+    jest.spyOn(global, 'fetch').mockRejectedValue(new Error('Transport error echoed space-key and test-qwen-key'));
+    // eslint-disable-next-line @typescript-eslint/dot-notation -- Test-only access to the private logger.
+    const warnSpy = jest.spyOn(runner['logger'], 'warn').mockImplementation(() => undefined);
+    // eslint-disable-next-line @typescript-eslint/dot-notation -- Exercise the private transport boundary in isolation.
+    const error = await runner['callQwenJsonCompletion']({
+      event: 'memory_analysis_qwen_completed',
+      systemPrompt: 'synthetic prompt',
+      userContent: 'synthetic content',
+      logMetadata: { reportId: 1 },
+      timeoutLogMessage: 'Qwen request timed out',
+    }).catch((failure: unknown) => failure);
+
+    expect(error).toMatchObject({ message: 'Qwen request failed before completion', code: 'QWEN_REQUEST_FAILED' });
+    expect(warnSpy.mock.calls).toMatchInlineSnapshot(`
+[
+  [
+    "Qwen request failed before completion",
+  ],
+]
+`);
+    expect((error as AppError).cause).toBeUndefined();
+    expect((error as AppError).stack).not.toContain('space-key');
+    expect((error as AppError).stack).not.toContain('test-qwen-key');
   });
 
   it('uses the cache version for period summary cache lookups and writes', async () => {

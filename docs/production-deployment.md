@@ -70,6 +70,12 @@ Terraform state untouched. The next production release refreshes the state and
 deploys its new task-definition pair. API and worker updates are coordinated by
 one workflow but are not an atomic AWS transaction.
 
+The queue-credential remediation changes the message protocol and runtime roles.
+Before releasing it or rolling back across that boundary, follow the
+[queue credential rollout](security/queue-credentials-rollout.md). The normal
+rollback workflow does not drain queues, reconcile reports, or restore IAM
+policies; restoring the old task pair alone is not a safe rollback for this change.
+
 ## Terraform state
 
 Terraform state and its lock file use the existing S3 backend:
