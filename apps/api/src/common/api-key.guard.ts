@@ -1,5 +1,6 @@
+import { APP_CONFIG, type AppConfig } from '@mem9/config';
 import { AppError, deriveApiKeyFingerprint, fingerprintToHex } from '@mem9/shared';
-import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
+import { CanActivate, ExecutionContext, Inject, Injectable } from '@nestjs/common';
 
 
 import { ApiKeyAuthService } from './api-key-auth.service';
@@ -9,7 +10,10 @@ const API_KEY_PATTERN = /^[\x21-\x7E]{1,256}$/;
 
 @Injectable()
 export class ApiKeyGuard implements CanActivate {
-  public constructor(private readonly apiKeyAuthService: ApiKeyAuthService) {}
+  public constructor(
+    private readonly apiKeyAuthService: ApiKeyAuthService,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
+  ) {}
 
   public async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<Mem9FastifyRequest>();
@@ -30,7 +34,7 @@ export class ApiKeyGuard implements CanActivate {
       });
     }
 
-    const pepper = process.env.APP_PEPPER;
+    const pepper = this.config.app.pepper;
 
     if (pepper === undefined || pepper.length === 0) {
       throw new AppError('APP_PEPPER is not configured', {

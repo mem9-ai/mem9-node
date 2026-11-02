@@ -94,6 +94,7 @@ describe('loadConfig', () => {
       ...baseEnv,
       NODE_ENV: 'production',
       GO_VERIFY_MODE: 'remote',
+      APP_PEPPER: 'production-test-pepper-1234567890',
       GO_VERIFY_BASE_URL: 'https://api.mem9.example',
       GO_VERIFY_TIMEOUT_MS: '1500',
     });
@@ -118,3 +119,7 @@ describe('loadConfig', () => {
     expect(config.analysis.mem9SourceDeleteConcurrency).toBe(4);
   });
 });
+
+  it.each([undefined, 'local-dev-pepper-1234567890'])('rejects default production pepper (%s)', (pepper) => {
+    expect(() => loadConfig({ NODE_ENV: 'production', APP_PEPPER: pepper })).toThrow(/APP_PEPPER/);
+  });

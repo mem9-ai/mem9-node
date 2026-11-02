@@ -25,7 +25,7 @@ function setup(result: unknown = { id: 'aks_1', status: 'ACTIVE', planCode: 'def
       return result;
     }),
   };
-  const guard = new ApiKeyGuard(apiKeyAuthService as never);
+  const guard = new ApiKeyGuard(apiKeyAuthService as never, { app: { pepper: PEPPER } } as never);
   return { guard, apiKeyAuthService };
 }
 
@@ -107,6 +107,7 @@ describe('ApiKeyGuard', () => {
     const { guard, apiKeyAuthService } = setup(subject);
     const { context, request } = buildContext({ 'x-mem9-api-key': 'mk_valid_key' });
     const expectedFingerprint = deriveApiKeyFingerprint(PEPPER, 'mk_valid_key');
+    process.env.APP_PEPPER = 'different-raw-environment-pepper';
 
     await expect(guard.canActivate(context)).resolves.toBe(true);
 

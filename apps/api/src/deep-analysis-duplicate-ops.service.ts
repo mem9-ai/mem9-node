@@ -21,10 +21,10 @@ import { Mem9SourceService } from './mem9-source.service';
 interface SourceSnapshotPayload {
   fetchedAt: string;
   memoryCount: number;
-  memories: Array<{
+  memories: {
     id: string;
     content: string;
-  }>;
+  }[];
 }
 
 function sentencePreview(content: string): string {
@@ -82,6 +82,8 @@ interface ScheduleDuplicateCleanupInput {
   reportId: string;
   rawApiKey: string;
   duplicateMemoryIds: string[];
+  requestId: string;
+  apiKeyFingerprintHex: string;
 }
 
 function toPreview(value: unknown): DeepAnalysisReportPreview | null {
@@ -227,6 +229,8 @@ export class DeepAnalysisDuplicateOpsService {
       reportId,
       rawApiKey: context.rawApiKey,
       duplicateMemoryIds,
+      requestId: context.requestId,
+      apiKeyFingerprintHex: context.apiKeyFingerprintHex,
     });
 
     return {
@@ -330,6 +334,12 @@ export class DeepAnalysisDuplicateOpsService {
   }
 
   private async runDuplicateCleanup(input: ScheduleDuplicateCleanupInput): Promise<void> {
+    const auditContext = {
+      requestId: input.requestId,
+      reportId: input.reportId,
+      apiKeyFingerprintHex: input.apiKeyFingerprintHex,
+      requestedCount: input.duplicateMemoryIds.length,
+    };
     try {
       const report = await this.repository.getDeepAnalysisReport(input.reportId);
       const queuedCleanup = getDuplicateCleanupStatus(report);
@@ -350,7 +360,13 @@ export class DeepAnalysisDuplicateOpsService {
         previewJson: buildPreviewWithDuplicateCleanup(report, runningCleanup),
       });
 
+      this.logger.log(JSON.stringify({ event: 'duplicate_cleanup_started', ...auditContext }));
       const deletion = await this.source.deleteMemories(input.rawApiKey, input.duplicateMemoryIds);
+      this.logger.log(JSON.stringify({
+        event: 'duplicate_cleanup_result', ...auditContext,
+        deletedCount: deletion.deletedMemoryIds.length,
+        failedCount: deletion.failedMemoryIds.length,
+      }));
       const completedReport = await this.repository.getDeepAnalysisReport(input.reportId);
       const latestCleanup = getDuplicateCleanupStatus(completedReport);
       const completedCleanup: DeepAnalysisDuplicateCleanupStatus = {
@@ -373,6 +389,7 @@ export class DeepAnalysisDuplicateOpsService {
         previewJson: buildPreviewWithDuplicateCleanup(completedReport, completedCleanup),
       });
     } catch (error) {
+      this.logger.error(JSON.stringify({ event: 'duplicate_cleanup_failed', ...auditContext }));
       this.logger.error(
         `Failed to delete duplicate memories for ${input.reportId}`,
         error instanceof Error ? error.stack : undefined,
