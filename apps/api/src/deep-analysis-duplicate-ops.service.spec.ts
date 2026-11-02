@@ -1,4 +1,5 @@
 import { gzipJson } from '@mem9/shared';
+import { Logger } from '@nestjs/common';
 
 import { DeepAnalysisDuplicateOpsService } from './deep-analysis-duplicate-ops.service';
 
@@ -60,6 +61,7 @@ describe('deep analysis duplicate ops service', () => {
   });
 
   it('delegates duplicate deletion to the mem9 source client', async () => {
+    const auditLog = jest.spyOn(Logger.prototype, 'log').mockImplementation();
     let resolveDeletionStarted!: () => void;
     const deletionStarted = new Promise<void>((resolve) => {
       resolveDeletionStarted = resolve;
@@ -126,6 +128,14 @@ describe('deep analysis duplicate ops service', () => {
     expect(result.duplicateCleanup.status).toBe('QUEUED');
     expect(result.duplicateCleanup.totalCount).toBe(2);
     expect(source.deleteMemories).toHaveBeenCalledWith('space-key', ['mem_2', 'mem_3']);
+    await new Promise(resolve => setImmediate(resolve));
+    const events = auditLog.mock.calls.map(([entry]) => JSON.parse(String(entry)) as Record<string, unknown>);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event: 'duplicate_cleanup_started', requestId: 'req_1', reportId: 'dar_1', requestedCount: 2 }),
+      expect.objectContaining({ event: 'duplicate_cleanup_result', deletedCount: 1, failedCount: 1 }),
+    ]));
+    expect(JSON.stringify(events)).not.toContain('space-key');
+    auditLog.mockRestore();
   });
 
   it('rejects deleting a running report', async () => {

@@ -113,12 +113,7 @@ describe('rate limit window service', () => {
     );
 
     await expect(
-      service.consume(
-        'abc',
-        policy,
-        1,
-        new Date('2026-03-01T00:01:00.000Z'),
-      ),
+      service.consume('abc', policy, 1, new Date('2026-03-01T00:01:00.000Z')),
     ).rejects.toMatchObject({
       details: {
         limit: 'day',
@@ -158,6 +153,77 @@ describe('rate limit window service', () => {
       details: {
         limit: 'day',
       },
+    });
+  });
+});
+
+describe('rate limiting fails closed', () => {
+  it.each([
+    null,
+    [],
+    [[null, 1]],
+    [
+      [new Error('OOM'), null],
+      [null, 0],
+      [null, 1],
+      [null, 1],
+    ],
+    [
+      [null, 1],
+      [new Error('TTL failed'), null],
+      [null, 1],
+      [null, 1],
+    ],
+    [
+      [null, 1],
+      [null, 1],
+      [new Error('WRONGTYPE'), null],
+      [null, 1],
+    ],
+    [
+      [null, 1],
+      [null, 1],
+      [null, 1],
+      [null, 0],
+    ],
+    [
+      [null, '1'],
+      [null, 1],
+      [null, 1],
+      [null, 1],
+    ],
+    [
+      [null, NaN],
+      [null, 1],
+      [null, 1],
+      [null, 1],
+    ],
+  ].map(result => [result]))('rejects unusable transaction result %#', async (result) => {
+    const multi = {
+      incrby: jest.fn().mockReturnThis(),
+      expire: jest.fn().mockReturnThis(),
+      exec: jest.fn().mockResolvedValue(result),
+    };
+    const service = new RateLimitWindowService({ multi: () => multi } as never);
+    await expect(
+      service.consume('owner', { rpmLimit: 10, dailyLimit: 100 }, 1),
+    ).rejects.toMatchObject({
+      statusCode: 503,
+      code: 'RATE_LIMIT_UNAVAILABLE',
+    });
+  });
+
+  it('rejects a disconnected Redis transaction without leaking its error', async () => {
+    const service = new RateLimitWindowService({
+      multi: () => {
+        throw new Error('redis://secret');
+      },
+    } as never);
+    await expect(
+      service.consume('owner', { rpmLimit: 10, dailyLimit: 100 }, 1),
+    ).rejects.toMatchObject({
+      statusCode: 503,
+      message: 'Rate limiting is temporarily unavailable',
     });
   });
 });

@@ -1,7 +1,6 @@
 import './instrument';
 import 'reflect-metadata';
 
-import { randomUUID } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import type { Http2ServerRequest } from 'node:http2';
 
@@ -17,6 +16,7 @@ import { Logger } from 'nestjs-pino';
 
 import { AppModule } from './app.module';
 import { AppExceptionFilter } from './common/app-exception.filter';
+import { resolveRequestId } from './common/request-id';
 
 async function bootstrap(): Promise<void> {
   const config = loadConfig();
@@ -25,8 +25,9 @@ async function bootstrap(): Promise<void> {
     new FastifyAdapter({
       logger: false,
       bodyLimit: config.analysis.maxBatchBytes * 2,
+      requestIdHeader: false,
       genReqId: (request: IncomingMessage | Http2ServerRequest) =>
-        String(request.headers['x-request-id'] ?? randomUUID()),
+        resolveRequestId(request.headers['x-request-id']),
     }),
     {
       bufferLogs: true,

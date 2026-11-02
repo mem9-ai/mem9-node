@@ -152,6 +152,13 @@ const envSchema = z
         path: ['GO_VERIFY_MODE'],
       });
     }
+    if (env.NODE_ENV === 'production' && env.APP_PEPPER === 'local-dev-pepper-1234567890') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Production requires an explicit non-default APP_PEPPER',
+        path: ['APP_PEPPER'],
+      });
+    }
   });
 
 export type AppEnv = z.infer<typeof envSchema>;

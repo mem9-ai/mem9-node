@@ -1,5 +1,5 @@
 import { AppError } from '@mem9/shared';
-import { HttpException, HttpStatus } from '@nestjs/common';
+import { HttpException, HttpStatus, Logger } from '@nestjs/common';
 import * as Sentry from '@sentry/nestjs';
 
 import { AppExceptionFilter } from './app-exception.filter';
@@ -10,6 +10,7 @@ jest.mock('@sentry/nestjs', () => ({
 
 describe('AppExceptionFilter', () => {
   afterEach(() => {
+    jest.restoreAllMocks();
     jest.clearAllMocks();
   });
 
@@ -83,11 +84,15 @@ describe('AppExceptionFilter', () => {
   it('does not report client HttpExceptions', () => {
     const filter = new AppExceptionFilter();
     const { host, response } = createHost();
+    const log = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
     const error = new HttpException('bad request', HttpStatus.BAD_REQUEST);
 
     filter.catch(error, host);
 
     expect(Sentry.captureException).not.toHaveBeenCalled();
     expect(response.status).toHaveBeenCalledWith(HttpStatus.BAD_REQUEST);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('request_rejected'));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('req_123'));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('400'));
   });
 });
