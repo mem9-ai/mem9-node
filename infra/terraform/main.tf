@@ -119,6 +119,8 @@ resource "aws_iam_role_policy" "task_execution_secrets" {
 }
 
 resource "aws_iam_role" "task_runtime" {
+  # Retained during rollout for existing tasks and the previous release's
+  # restore point. New task definitions use service_runtime instead.
   name               = "${var.name_prefix}-task-runtime"
   assume_role_policy = data.aws_iam_policy_document.ecs_task_assume_role.json
 }
@@ -345,12 +347,18 @@ resource "aws_db_instance" "mysql" {
   username = var.database_username
   password = var.database_password
 
-  backup_retention_period = 7
-  skip_final_snapshot     = true
-  publicly_accessible     = true
+  backup_retention_period   = 7
+  deletion_protection       = true
+  skip_final_snapshot       = false
+  final_snapshot_identifier = "${var.name_prefix}-mysql-final"
+  publicly_accessible       = false
 
   db_subnet_group_name   = aws_db_subnet_group.mysql.name
   vpc_security_group_ids = [aws_security_group.db.id]
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 
@@ -401,4 +409,15 @@ resource "aws_elasticache_replication_group" "redis" {
   subnet_group_name          = aws_elasticache_subnet_group.redis.name
   security_group_ids         = [aws_security_group.redis.id]
   automatic_failover_enabled = false
+
+  # Roll out TLS clients before moving the server from preferred to required.
+  transit_encryption_enabled = true
+  transit_encryption_mode    = "preferred"
+  snapshot_retention_limit   = 7
+  # ElastiCache requires immediate application when enabling transit encryption.
+  apply_immediately = true
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }

@@ -40,7 +40,7 @@ deep_analysis_daily_limit_bypass_fingerprints = "fingerprint_hex_1,fingerprint_h
 analysis_payload_bucket_name = "mem9-apse1-payloads-example"
 payload_retention_days       = 7
 
-mem9_source_api_base_url = "http://internal-mem9-service/v1alpha2/mem9s"
+mem9_source_api_base_url = "https://api.mem9.ai/v1alpha2/mem9s"
 go_verify_base_url       = null
 mem9_source_request_timeout_ms = 10000
 mem9_source_fetch_retries      = 2

@@ -1,7 +1,11 @@
 locals {
+  # Upgrade the legacy public endpoint before a credential-bearing first request.
+  # Production endpoints must use HTTPS. Staging's internal endpoint has a
+  # separate TLS remediation and retains its current transport until then.
+  mem9_source_api_base_url = startswith(var.mem9_source_api_base_url, "http://api.mem9.ai/") ? replace(var.mem9_source_api_base_url, "http://api.mem9.ai/", "https://api.mem9.ai/") : var.mem9_source_api_base_url
   go_verify_base_url = coalesce(
     var.go_verify_base_url,
-    trimsuffix(var.mem9_source_api_base_url, "/v1alpha2/mem9s"),
+    trimsuffix(local.mem9_source_api_base_url, "/v1alpha2/mem9s"),
   )
 }
 
@@ -13,7 +17,7 @@ resource "aws_ecs_task_definition" "api" {
   memory                   = "1024"
   skip_destroy             = true
   execution_role_arn       = aws_iam_role.task_execution.arn
-  task_role_arn            = aws_iam_role.task_runtime.arn
+  task_role_arn            = aws_iam_role.service_runtime["api"].arn
 
   container_definitions = jsonencode([
     {
@@ -61,7 +65,8 @@ resource "aws_ecs_task_definition" "api" {
       ]
 
       environment = [
-        { name = "MEM9_SOURCE_API_BASE_URL", value = var.mem9_source_api_base_url },
+        { name = "MEM9_SOURCE_API_BASE_URL", value = local.mem9_source_api_base_url },
+        { name = "UPSTREAM_HTTPS_REQUIRED", value = tostring(var.environment_name == "prod") },
         { name = "MEM9_SOURCE_PAGE_SIZE", value = "200" },
         { name = "MEM9_SOURCE_REQUEST_TIMEOUT_MS", value = tostring(var.mem9_source_request_timeout_ms) },
         { name = "MEM9_SOURCE_FETCH_RETRIES", value = tostring(var.mem9_source_fetch_retries) },
@@ -82,7 +87,7 @@ resource "aws_ecs_task_definition" "api" {
         { name = "GO_VERIFY_MODE", value = "remote" },
         { name = "GO_VERIFY_BASE_URL", value = local.go_verify_base_url },
         { name = "LOG_LEVEL", value = "info" },
-        { name = "REDIS_URL", value = "redis://${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379" }
+        { name = "REDIS_URL", value = "rediss://${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379" }
       ]
 
       logConfiguration = {
@@ -110,7 +115,7 @@ resource "aws_ecs_task_definition" "worker" {
   memory                   = "1024"
   skip_destroy             = true
   execution_role_arn       = aws_iam_role.task_execution.arn
-  task_role_arn            = aws_iam_role.task_runtime.arn
+  task_role_arn            = aws_iam_role.service_runtime["worker"].arn
 
   container_definitions = jsonencode([
     {
@@ -158,7 +163,8 @@ resource "aws_ecs_task_definition" "worker" {
         { name = "WORKER_HEALTH_PORT", value = "3001" },
         { name = "TAXONOMY_VERSION", value = "v3" },
         { name = "AWS_REGION", value = var.aws_region },
-        { name = "MEM9_SOURCE_API_BASE_URL", value = var.mem9_source_api_base_url },
+        { name = "MEM9_SOURCE_API_BASE_URL", value = local.mem9_source_api_base_url },
+        { name = "UPSTREAM_HTTPS_REQUIRED", value = tostring(var.environment_name == "prod") },
         { name = "MEM9_SOURCE_PAGE_SIZE", value = "200" },
         { name = "MEM9_SOURCE_REQUEST_TIMEOUT_MS", value = tostring(var.mem9_source_request_timeout_ms) },
         { name = "MEM9_SOURCE_FETCH_RETRIES", value = tostring(var.mem9_source_fetch_retries) },
@@ -175,7 +181,7 @@ resource "aws_ecs_task_definition" "worker" {
         { name = "LOG_LEVEL", value = "info" },
         { name = "GO_VERIFY_MODE", value = "remote" },
         { name = "GO_VERIFY_BASE_URL", value = local.go_verify_base_url },
-        { name = "REDIS_URL", value = "redis://${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379" }
+        { name = "REDIS_URL", value = "rediss://${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379" }
       ]
 
       logConfiguration = {

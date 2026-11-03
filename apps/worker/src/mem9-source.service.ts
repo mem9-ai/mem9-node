@@ -115,6 +115,8 @@ export class Mem9SourceService {
       try {
         const response = await fetch(url, {
           ...init,
+          // Custom API-key headers must never be forwarded to a redirect target.
+          redirect: 'error',
           signal: controller.signal,
         });
 

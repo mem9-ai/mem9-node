@@ -58,6 +58,7 @@ const envSchema = z
       .string()
       .url()
       .default('http://127.0.0.1:8080/v1alpha2/mem9s'),
+    UPSTREAM_HTTPS_REQUIRED: z.enum(['true', 'false']).transform((value) => value === 'true').optional(),
     MEM9_SOURCE_PAGE_SIZE: z.coerce
       .number()
       .int()
@@ -158,6 +159,17 @@ const envSchema = z
         message: 'Production requires an explicit non-default APP_PEPPER',
         path: ['APP_PEPPER'],
       });
+    }
+    if (env.UPSTREAM_HTTPS_REQUIRED ?? (env.NODE_ENV === 'production')) {
+      for (const key of ['MEM9_SOURCE_API_BASE_URL', 'GO_VERIFY_BASE_URL'] as const) {
+        if (URL.canParse(env[key]) && new URL(env[key]).protocol !== 'https:') {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `${key} must use HTTPS when upstream TLS is required`,
+            path: [key],
+          });
+        }
+      }
     }
   });
 

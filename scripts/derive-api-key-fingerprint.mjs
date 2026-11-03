@@ -16,6 +16,13 @@ async function readStdin() {
 }
 
 async function main() {
+  const cliArgs = process.argv.slice(2).filter((value) => value !== '--');
+  if (cliArgs.length > 0) {
+    console.error('Supply the API key through standard input; command-line key arguments are not accepted.');
+    process.exitCode = 1;
+    return;
+  }
+
   const pepper = process.env.APP_PEPPER?.trim();
   if (!pepper) {
     console.error('APP_PEPPER is required');
@@ -23,12 +30,9 @@ async function main() {
     return;
   }
 
-  const cliArgs = process.argv
-    .slice(2)
-    .filter((value) => value !== '--');
-  const apiKey = (cliArgs[0] ?? (await readStdin())).trim();
+  const apiKey = await readStdin();
   if (!apiKey) {
-    console.error('Usage: APP_PEPPER=... pnpm deep-analysis:fingerprint -- <x-mem9-api-key>');
+    console.error('Set APP_PEPPER in the environment and supply the API key through standard input to pnpm deep-analysis:fingerprint.');
     process.exitCode = 1;
     return;
   }
