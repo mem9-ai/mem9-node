@@ -425,7 +425,7 @@ describe('deep analysis report processor service', () => {
     jest.restoreAllMocks();
   });
 
-  it('completes historical long-content reports without deduplicating different suffixes', async () => {
+  it('keeps deterministic duplicates when the model labels different long-content memories as duplicates', async () => {
     jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
     const prefix = 'Review dashboards and preserve detailed rollout decisions. '.repeat(240);
     expect(prefix.length).toBeGreaterThan(12000);
@@ -464,7 +464,21 @@ describe('deep analysis report processor service', () => {
       getConfiguredModel: jest.fn(() => TEST_QWEN_MODEL),
       createJson: jest.fn()
         .mockResolvedValueOnce(createChunkResult())
-        .mockResolvedValueOnce(createSynthesisResult()),
+        .mockResolvedValueOnce({
+          ...createSynthesisResult(),
+          parsed: {
+            quality: {
+              duplicateClusters: [{ canonicalMemoryId: 'mem_1', duplicateMemoryIds: ['mem_2'] }],
+            },
+          },
+          requestMeta: {
+            ...createSynthesisResult().requestMeta,
+            success: true,
+            parseSucceeded: true,
+            errorCode: null,
+            errorMessage: null,
+          },
+        }),
     };
     const processor = new DeepAnalysisReportProcessorService(
       repository as never,

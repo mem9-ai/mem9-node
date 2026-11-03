@@ -10,6 +10,8 @@ import {
   AppError,
   S3PayloadStorageService,
   gunzipJson,
+  normalizeMemoryContent,
+  sha256Hex,
 } from '@mem9/shared';
 import { Injectable, Logger } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
@@ -67,6 +69,7 @@ const ACTIVE_DUPLICATE_CLEANUP_STATUSES = new Set<
   DeepAnalysisDuplicateCleanupStatus['status']
 >(['QUEUED', 'RUNNING']);
 const STALE_DUPLICATE_CLEANUP_MS = 30 * 60 * 1000;
+const DUPLICATE_VERIFICATION_CONCURRENCY = 4;
 
 interface DeepAnalysisReportRecordLike {
   id: string;
@@ -82,8 +85,23 @@ interface ScheduleDuplicateCleanupInput {
   reportId: string;
   rawApiKey: string;
   duplicateMemoryIds: string[];
+  verifiedDuplicates: VerifiedDuplicate[];
   requestId: string;
   apiKeyFingerprintHex: string;
+}
+
+interface VerifiedDuplicate {
+  canonicalMemoryId: string;
+  duplicateMemoryId: string;
+  contentHash: string;
+  clusterIndex: number;
+}
+
+function unverifiedDuplicates(): AppError {
+  return new AppError('Duplicate contents could not be verified. Generate a new report before retrying cleanup.', {
+    statusCode: 409,
+    code: 'DEEP_ANALYSIS_DUPLICATES_UNVERIFIED',
+  });
 }
 
 function toPreview(value: unknown): DeepAnalysisReportPreview | null {
@@ -136,14 +154,50 @@ function buildPreviewWithDuplicateCleanup(
   } as unknown as Prisma.InputJsonValue;
 }
 
-function collectDuplicateMemoryIds(
+function verifyDuplicateClusters(
   document: DeepAnalysisReportDocument,
-  deletedMemoryIds: string[],
-): string[] {
+  snapshot: SourceSnapshotPayload,
+  deletedMemoryIds: string[] = [],
+): VerifiedDuplicate[] {
+  const clusters = document?.quality?.duplicateClusters;
+  if (!Array.isArray(clusters) || !Array.isArray(snapshot?.memories)) {
+    throw unverifiedDuplicates();
+  }
+  const contentById = new Map<string, string>();
+  for (const memory of snapshot.memories) {
+    if (!memory || typeof memory.id !== 'string' || typeof memory.content !== 'string' || contentById.has(memory.id)) {
+      throw unverifiedDuplicates();
+    }
+    contentById.set(memory.id, normalizeMemoryContent(memory.content));
+  }
+  // Reserve every canonical across all clusters, including legacy model output.
+  // Otherwise overlapping/cyclic clusters could delete the last retained copy.
+  const canonicalIds = new Set(clusters.map(cluster => cluster?.canonicalMemoryId));
   const deletedIds = new Set(deletedMemoryIds);
-  return [...new Set(
-    (document.quality.duplicateClusters ?? []).flatMap((cluster) => cluster.duplicateMemoryIds),
-  )].filter((memoryId) => !deletedIds.has(memoryId));
+  const verified = new Map<string, VerifiedDuplicate>();
+  for (const [index, cluster] of clusters.entries()) {
+    if (!cluster || typeof cluster.canonicalMemoryId !== 'string' || !Array.isArray(cluster.duplicateMemoryIds)) {
+      throw unverifiedDuplicates();
+    }
+    const content = contentById.get(cluster.canonicalMemoryId);
+    if (!content || deletedIds.has(cluster.canonicalMemoryId)) {
+      throw unverifiedDuplicates();
+    }
+    for (const id of cluster.duplicateMemoryIds) {
+      if (typeof id !== 'string' || canonicalIds.has(id) || contentById.get(id) !== content) {
+        throw unverifiedDuplicates();
+      }
+      if (!deletedIds.has(id)) {
+        verified.set(id, {
+          canonicalMemoryId: cluster.canonicalMemoryId,
+          duplicateMemoryId: id,
+          contentHash: sha256Hex(content),
+          clusterIndex: index + 1,
+        });
+      }
+    }
+  }
+  return [...verified.values()];
 }
 
 @Injectable()
@@ -185,7 +239,11 @@ export class DeepAnalysisDuplicateOpsService {
     }
 
     const previousDeletedMemoryIds = existingCleanup?.deletedMemoryIds ?? [];
-    const duplicateMemoryIds = collectDuplicateMemoryIds(document, previousDeletedMemoryIds);
+    const sourcePayload = await this.storage.getObjectBuffer(report.sourceSnapshotObjectKey);
+    const verifiedDuplicates = verifyDuplicateClusters(
+      document, gunzipJson<SourceSnapshotPayload>(sourcePayload), previousDeletedMemoryIds,
+    );
+    const duplicateMemoryIds = verifiedDuplicates.map(item => item.duplicateMemoryId);
 
     if (duplicateMemoryIds.length === 0) {
       const duplicateCleanup: DeepAnalysisDuplicateCleanupStatus = {
@@ -229,6 +287,7 @@ export class DeepAnalysisDuplicateOpsService {
       reportId,
       rawApiKey: context.rawApiKey,
       duplicateMemoryIds,
+      verifiedDuplicates,
       requestId: context.requestId,
       apiKeyFingerprintHex: context.apiKeyFingerprintHex,
     });
@@ -302,15 +361,13 @@ export class DeepAnalysisDuplicateOpsService {
     );
 
     const rows: DeepAnalysisDuplicateExportRow[] =
-      (document.quality.duplicateClusters ?? []).flatMap((cluster, index) =>
-        cluster.duplicateMemoryIds.map((duplicateMemoryId) => ({
-          duplicateMemoryId,
-          clusterIndex: index + 1,
-          canonicalPreview: memoryPreviewById.get(cluster.canonicalMemoryId) ?? '',
-          duplicatePreview: memoryPreviewById.get(duplicateMemoryId) ?? '',
-          reason: 'Duplicate content matched the canonical memory in this cluster.',
-        })),
-      );
+      verifyDuplicateClusters(document, sourceSnapshot).map((item) => ({
+        duplicateMemoryId: item.duplicateMemoryId,
+        clusterIndex: item.clusterIndex,
+        canonicalPreview: memoryPreviewById.get(item.canonicalMemoryId) ?? '',
+        duplicatePreview: memoryPreviewById.get(item.duplicateMemoryId) ?? '',
+        reason: 'Duplicate content matched the canonical memory in this cluster.',
+      }));
 
     return {
       filename: buildDuplicateCsvFilename(reportId),
@@ -361,6 +418,22 @@ export class DeepAnalysisDuplicateOpsService {
       });
 
       this.logger.log(JSON.stringify({ event: 'duplicate_cleanup_started', ...auditContext }));
+      // Verify the entire batch before the first DELETE, using the caller's key.
+      // Snapshot checks alone cannot protect memories edited since the report.
+      const expectedHashes = new Map<string, string>();
+      for (const item of input.verifiedDuplicates) {
+        expectedHashes.set(item.canonicalMemoryId, item.contentHash);
+        expectedHashes.set(item.duplicateMemoryId, item.contentHash);
+      }
+      const entries = [...expectedHashes];
+      for (let offset = 0; offset < entries.length; offset += DUPLICATE_VERIFICATION_CONCURRENCY) {
+        await Promise.all(entries.slice(offset, offset + DUPLICATE_VERIFICATION_CONCURRENCY).map(async ([id, expectedHash]) => {
+          const memory = await this.source.fetchMemoryById(input.rawApiKey, id);
+          if (memory.id !== id || sha256Hex(normalizeMemoryContent(memory.content)) !== expectedHash) {
+            throw unverifiedDuplicates();
+          }
+        }));
+      }
       const deletion = await this.source.deleteMemories(input.rawApiKey, input.duplicateMemoryIds);
       this.logger.log(JSON.stringify({
         event: 'duplicate_cleanup_result', ...auditContext,
@@ -398,6 +471,8 @@ export class DeepAnalysisDuplicateOpsService {
       try {
         const report = await this.repository.getDeepAnalysisReport(input.reportId);
         const currentCleanup = getDuplicateCleanupStatus(report);
+        const deletedMemoryIds = currentCleanup?.deletedMemoryIds ?? [];
+        const failedMemoryIds = input.duplicateMemoryIds.filter(id => !deletedMemoryIds.includes(id));
         const failedCleanup: DeepAnalysisDuplicateCleanupStatus = {
           status: 'FAILED',
           requestedAt: currentCleanup?.requestedAt ?? new Date().toISOString(),
@@ -405,9 +480,9 @@ export class DeepAnalysisDuplicateOpsService {
           completedAt: new Date().toISOString(),
           totalCount: currentCleanup?.totalCount ?? input.duplicateMemoryIds.length,
           deletedCount: currentCleanup?.deletedCount ?? 0,
-          failedCount: currentCleanup?.failedCount ?? input.duplicateMemoryIds.length,
-          deletedMemoryIds: currentCleanup?.deletedMemoryIds ?? [],
-          failedMemoryIds: currentCleanup?.failedMemoryIds ?? input.duplicateMemoryIds,
+          failedCount: failedMemoryIds.length,
+          deletedMemoryIds,
+          failedMemoryIds,
           errorMessage:
             error instanceof Error
               ? error.message.slice(0, 512)
