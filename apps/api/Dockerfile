@@ -26,5 +26,7 @@ COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/apps ./apps
 COPY --from=build /app/packages ./packages
 COPY --from=build /app/prisma ./prisma
+COPY --from=build /app/scripts/database-tls-url.cjs /app/scripts/database-tls-entrypoint.sh ./scripts/
 EXPOSE 3000
+ENTRYPOINT ["sh", "/app/scripts/database-tls-entrypoint.sh"]
 CMD ["node", "apps/api/dist/apps/api/src/main.js"]

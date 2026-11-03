@@ -40,6 +40,67 @@ Before doing so, prepare rollback task definitions that retain `rediss://` and
 the new endpoint; old plaintext task definitions will no longer work. Remove the
 legacy broad runtime role after the rollback window and confirm no tasks use it.
 
+## Require TLS for existing Redis and MySQL
+
+This stage changes connection policy only. It must not replace either resource,
+rotate database credentials or `APP_PEPPER`, alter schemas, or rewrite data.
+Staging HTTP is a separate deferred issue. Use the same steps in staging before
+production, and retain the Terraform plans and live validation results.
+
+1. Check running analysis work and queue/DLQ counts. Record the current task
+   revisions and service counts. Both runtime images now package the public AWS
+   RDS CA bundle and a shared entrypoint; `DATABASE_TLS_CA_FILE` makes that
+   entrypoint add `sslcert` and `sslaccept=strict` to the existing secret URL.
+   This also covers overridden commands such as `pnpm migrate`. It fails closed
+   if the CA file is absent and does not print the connection string.
+2. Prepare the database parameter group with
+   `database_require_secure_transport=false` and keep
+   `redis_transit_encryption_mode=preferred`. Apply only the reviewed parameter
+   group and database association plan. The family is `mysql8.4`, matching both
+   existing instances; confirm the live major version before applying elsewhere.
+   Do not apply an unrelated pending database change. Association may report
+   `pending-reboot`; a newly associated group is not proof of active enforcement.
+3. Deploy the TLS-capable images and task definitions with both enforcement
+   overrides still set as above. The release workflow only permits ECS changes,
+   so reconcile the infrastructure before invoking it. API, worker, migration,
+   administrative clients, and rollback task revisions must all use TLS before
+   enforcement. Roll back only to an image containing the CA bundle and shared
+   entrypoint, retaining `DATABASE_TLS_CA_FILE` and the TLS Redis endpoint.
+   Dispatch the first deployment with `data_tls_phase=compatibility`; after
+   enforcement, normal releases use the default `enforced`. This input changes
+   the expected Terraform policy only: existing plan guards still reject any
+   non-ECS change, including attempts to relax server enforcement through CI.
+4. From the real VPC, check MySQL `Ssl_cipher` / `Ssl_version` and successful
+   Prisma migration status with the trusted CA. Wrong-CA and wrong-hostname
+   connections must fail. Confirm every active database client is accounted for;
+   one successful test connection does not prove all service pools migrated.
+5. Verify Redis plaintext client count is zero. Apply a Redis-only plan with
+   `redis_transit_encryption_mode=required`. Wait for completion, then prove TLS
+   PING and synthetic write/read/delete succeed and a plaintext connection fails.
+   The old plaintext DNS endpoint disappears; use the TLS primary endpoint.
+6. Apply the MySQL parameter-only plan with
+   `database_require_secure_transport=true` and `apply_method=immediate`. Check
+   the actual server value of `@@GLOBAL.require_secure_transport`. If a reboot is
+   needed, stop admission and drain workers before the maintenance operation;
+   resume only after database health and TLS validation succeed. Confirm a fresh
+   plaintext connection is rejected and fresh TLS connections still work.
+7. Remove temporary overrides so both defaults enforce TLS. A final full plan
+   must contain no unintended resource changes. Run an isolated full analysis
+   pipeline, then remove its test data and confirm queues, health, and errors.
+
+For a client rollout failure before enforcement, restore the previous task
+revisions. After enforcement, prefer the prepared TLS-capable rollback release.
+If relaxing a server policy is necessary during an incident, explicitly restore
+the compatibility setting and verify it takes effect before rolling clients
+back; never assume an old plaintext revision will work. No data restore is part
+of this rollback. Storage encryption and Redis authentication remain separate.
+The automated rollback workflow refuses a target that drops the current database
+CA configuration or changes a TLS Redis endpoint. The first TLS release is the
+minimum compatible baseline; an older plaintext release needs explicit incident
+handling, not a blind rollback. The production deploy workflow still does not
+execute database migrations. Existing production migration-history discrepancies
+must be reconciled separately, never by applying old migrations as part of TLS.
+
 ## Storage encryption migration
 
 Existing unencrypted RDS and Redis cannot be made encrypted at rest by replacing
