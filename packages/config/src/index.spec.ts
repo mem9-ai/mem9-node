@@ -96,6 +96,7 @@ describe('loadConfig', () => {
       GO_VERIFY_MODE: 'remote',
       APP_PEPPER: 'production-test-pepper-1234567890',
       GO_VERIFY_BASE_URL: 'https://api.mem9.example',
+      MEM9_SOURCE_API_BASE_URL: 'https://api.mem9.example/v1alpha2/mem9s',
       GO_VERIFY_TIMEOUT_MS: '1500',
     });
 
@@ -108,6 +109,34 @@ describe('loadConfig', () => {
     const config = loadConfig({ ...baseEnv, GO_VERIFY_MODE: 'noop' });
 
     expect(config.goVerify.mode).toBe('noop');
+  });
+
+  it.each(['MEM9_SOURCE_API_BASE_URL', 'GO_VERIFY_BASE_URL'] as const)(
+    'rejects plaintext credential transport in production for %s',
+    (key) => {
+      expect(() => loadConfig({
+        ...baseEnv,
+        NODE_ENV: 'production',
+        APP_PEPPER: 'production-test-pepper-1234567890',
+        MEM9_SOURCE_API_BASE_URL: 'https://api.mem9.example/v1alpha2/mem9s',
+        GO_VERIFY_BASE_URL: 'https://api.mem9.example',
+        [key]: 'http://api.mem9.ai/v1alpha2/mem9s',
+      })).toThrow(new RegExp(`${key} must use HTTPS`));
+    },
+  );
+
+  it('keeps an explicit staging HTTP exception separate from the production default', () => {
+    const config = loadConfig({
+      ...baseEnv,
+      NODE_ENV: 'production',
+      APP_PEPPER: 'staging-test-pepper-1234567890',
+      UPSTREAM_HTTPS_REQUIRED: 'false',
+    });
+    expect(config.analysis.mem9SourceApiBaseUrl).toMatch(/^http:/);
+  });
+
+  it('rejects a misspelled upstream TLS policy instead of silently disabling it', () => {
+    expect(() => loadConfig({ ...baseEnv, UPSTREAM_HTTPS_REQUIRED: 'treu' })).toThrow(/UPSTREAM_HTTPS_REQUIRED/);
   });
 
   it('exposes mem9 source hardening defaults', () => {
