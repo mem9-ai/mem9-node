@@ -3,6 +3,15 @@ run-name: Deploy ${{ github.sha }} to production
 
 on:
   workflow_dispatch:
+    inputs:
+      data_tls_phase:
+        description: Match pre-applied data TLS policy; compatibility is only for the initial client rollout
+        required: true
+        default: enforced
+        type: choice
+        options:
+          - enforced
+          - compatibility
 
 permissions:
   contents: read
@@ -23,6 +32,8 @@ env:
   TF_WORKING_DIR: infra/terraform
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
+  TF_VAR_database_require_secure_transport: ${{ inputs.data_tls_phase == 'compatibility' && 'false' || 'true' }}
+  TF_VAR_redis_transit_encryption_mode: ${{ inputs.data_tls_phase == 'compatibility' && 'preferred' || 'required' }}
 
 jobs:
   deploy:

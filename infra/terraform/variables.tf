@@ -107,6 +107,23 @@ variable "database_name" {
   default = "mem9"
 }
 
+variable "database_require_secure_transport" {
+  description = "Require MySQL TLS after all application and migration clients have migrated. Disable only during the documented staged rollout or rollback."
+  type        = bool
+  default     = true
+}
+
+variable "redis_transit_encryption_mode" {
+  description = "Require Redis TLS. Preferred is retained only for staged rollout or rollback."
+  type        = string
+  default     = "required"
+
+  validation {
+    condition     = contains(["preferred", "required"], var.redis_transit_encryption_mode)
+    error_message = "Redis encryption mode must be preferred or required."
+  }
+}
+
 variable "database_username" {
   type    = string
   default = "mem9"

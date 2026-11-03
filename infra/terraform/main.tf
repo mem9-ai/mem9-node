@@ -336,6 +336,18 @@ resource "aws_lb_listener" "https" {
   }
 }
 
+resource "aws_db_parameter_group" "mysql" {
+  name        = "${var.name_prefix}-mysql-tls"
+  family      = "mysql8.4"
+  description = "Require encrypted connections to the existing MySQL 8.4 database"
+
+  parameter {
+    name         = "require_secure_transport"
+    value        = var.database_require_secure_transport ? "1" : "0"
+    apply_method = "immediate"
+  }
+}
+
 resource "aws_db_instance" "mysql" {
   identifier        = "${var.name_prefix}-mysql"
   engine            = "mysql"
@@ -352,6 +364,7 @@ resource "aws_db_instance" "mysql" {
   skip_final_snapshot       = false
   final_snapshot_identifier = "${var.name_prefix}-mysql-final"
   publicly_accessible       = false
+  parameter_group_name      = aws_db_parameter_group.mysql.name
 
   db_subnet_group_name   = aws_db_subnet_group.mysql.name
   vpc_security_group_ids = [aws_security_group.db.id]
@@ -410,9 +423,9 @@ resource "aws_elasticache_replication_group" "redis" {
   security_group_ids         = [aws_security_group.redis.id]
   automatic_failover_enabled = false
 
-  # Roll out TLS clients before moving the server from preferred to required.
+  # Both live services and their rollback revisions must use TLS before enforcing it.
   transit_encryption_enabled = true
-  transit_encryption_mode    = "preferred"
+  transit_encryption_mode    = var.redis_transit_encryption_mode
   snapshot_retention_limit   = 7
   # ElastiCache requires immediate application when enabling transit encryption.
   apply_immediately = true

@@ -178,6 +178,31 @@ jobs:
             --output text \
             --region "$AWS_REGION")" = "ACTIVE"
 
+      - name: Reject rollback to incompatible data transports
+        run: |
+          for container in api worker; do
+            if [ "$container" = "api" ]; then
+              current="$CURRENT_API_TASK_DEFINITION"
+              target="$TARGET_API_TASK_DEFINITION"
+            else
+              current="$CURRENT_WORKER_TASK_DEFINITION"
+              target="$TARGET_WORKER_TASK_DEFINITION"
+            fi
+            aws ecs describe-task-definition --task-definition "$current" --region "$AWS_REGION" > "$RUNNER_TEMP/current-$container.json"
+            aws ecs describe-task-definition --task-definition "$target" --region "$AWS_REGION" > "$RUNNER_TEMP/target-$container.json"
+            if ! jq -e --arg name "$container" --slurpfile current "$RUNNER_TEMP/current-$container.json" '
+              def settings: .taskDefinition.containerDefinitions[] | select(.name == $name) | (.environment // []) | map({key: .name, value: .value}) | from_entries;
+              ($current[0] | settings) as $live | settings as $target |
+              (($live.DATABASE_TLS_CA_FILE // "") == "" or
+                $target.DATABASE_TLS_CA_FILE == $live.DATABASE_TLS_CA_FILE) and
+              (($live.REDIS_URL // "" | startswith("rediss://") | not) or
+                $target.REDIS_URL == $live.REDIS_URL)
+            ' "$RUNNER_TEMP/target-$container.json" > /dev/null; then
+              echo "Rollback target is incompatible with current data TLS settings. Prepare a TLS-compatible restore point or follow the documented server-policy rollback before changing services." >&2
+              exit 1
+            fi
+          done
+
       - name: Roll back ECS services
         run: |
           aws ecs update-service \
