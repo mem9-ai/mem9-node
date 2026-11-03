@@ -1466,40 +1466,6 @@ function sanitizeLowQualityExamples(
   return repaired.length > 0 ? repaired.slice(0, 10) : fallback;
 }
 
-function sanitizeDuplicateClusters(
-  value: unknown,
-  fallback: DeepAnalysisReportDocument['quality']['duplicateClusters'],
-  validMemoryIds: Set<string>,
-  diagnostics: ReturnType<typeof createRepairDiagnostics>,
-): DeepAnalysisReportDocument['quality']['duplicateClusters'] {
-  if (!Array.isArray(value)) {
-    return fallback;
-  }
-
-  const repaired = value.flatMap((item) => {
-    if (!isRecord(item)) {
-      noteRepair(diagnostics);
-      return [];
-    }
-
-    const canonicalMemoryId = normalizeEvidenceIds([item.canonicalMemoryId], validMemoryIds, diagnostics, 1)[0] ?? null;
-    const duplicateMemoryIds = normalizeEvidenceIds(item.duplicateMemoryIds, validMemoryIds, diagnostics, 12)
-      .filter((memoryId) => memoryId !== canonicalMemoryId);
-
-    if (!canonicalMemoryId || duplicateMemoryIds.length === 0) {
-      noteRepair(diagnostics);
-      return [];
-    }
-
-    return [{
-      canonicalMemoryId,
-      duplicateMemoryIds,
-    }];
-  });
-
-  return repaired.length > 0 ? repaired.slice(0, 10) : fallback;
-}
-
 function sanitizeProductSignals(
   value: unknown,
   fallback: DeepAnalysisReportDocument['productSignals'],
@@ -2688,12 +2654,9 @@ export class DeepAnalysisReportProcessorService {
         duplicateRatio: fallbackReport.quality.duplicateRatio,
         duplicateMemoryCount: fallbackReport.quality.duplicateMemoryCount,
         noisyMemoryCount: fallbackReport.quality.noisyMemoryCount,
-        duplicateClusters: sanitizeDuplicateClusters(
-          rawQuality.duplicateClusters,
-          fallbackReport.quality.duplicateClusters,
-          validMemoryIds,
-          diagnostics,
-        ),
+        // These IDs authorize destructive cleanup. Model output is not evidence
+        // of duplicate content, even when every ID belongs to this corpus.
+        duplicateClusters: fallbackReport.quality.duplicateClusters,
         lowQualityExamples: sanitizeLowQualityExamples(
           rawQuality.lowQualityExamples,
           fallbackReport.quality.lowQualityExamples,

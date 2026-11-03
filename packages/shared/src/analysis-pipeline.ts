@@ -227,13 +227,17 @@ function tokenize(text: string, lang: string): string[] {
     .filter((part) => part.length > 1 && /[\p{L}\p{N}]/u.test(part));
 }
 
-export function normalizeMemory(memory: MemoryInput): NormalizedMemory {
-  if (typeof memory.content !== 'string') {
+export function normalizeMemoryContent(content: string): string {
+  if (typeof content !== 'string') {
     throw new TypeError('Memory content must be a string');
   }
+  return content.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+export function normalizeMemory(memory: MemoryInput): NormalizedMemory {
   // Keep complete historical content for classification and deduplication.
   // Upload size limits belong at the batch boundary, not in shared normalization.
-  const normalizedContent = memory.content.replace(/\s+/g, ' ').trim().toLowerCase();
+  const normalizedContent = normalizeMemoryContent(memory.content);
 
   return {
     id: memory.id,
