@@ -104,3 +104,20 @@ Regression coverage checks timezone-independent admission, UTC boundaries,
 owner-lock ordering, legacy keys, deleted usage, active-report checks, allowlist
 behavior, and tombstone read/write protection. Repository tests mock Prisma;
 they do not prove real MySQL concurrency, migrations, or cloud rollout.
+
+## Computing an allowlist fingerprint
+
+Set `APP_PEPPER` through the approved secret-management environment. The helper
+accepts the API key only on standard input; positional key arguments are rejected
+to avoid encouraging secrets in process arguments or shell history. For a local
+Bash or Zsh session, read the key without terminal echo and pipe the shell variable:
+
+```sh
+IFS= read -r -s MEM9_API_KEY
+printf '%s' "$MEM9_API_KEY" | pnpm deep-analysis:fingerprint
+unset MEM9_API_KEY
+```
+
+The command prints only the fingerprint. Each admitted production allowlist use
+emits `deep_analysis_daily_quota_bypass_used` with the request ID, report ID,
+tenant fingerprint, UTC quota date and previous report count, without the raw key.

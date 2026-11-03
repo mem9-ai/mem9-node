@@ -17,7 +17,7 @@ resource "aws_ecs_task_definition" "api" {
   memory                   = "1024"
   skip_destroy             = true
   execution_role_arn       = aws_iam_role.task_execution.arn
-  task_role_arn            = aws_iam_role.task_runtime.arn
+  task_role_arn            = aws_iam_role.service_runtime["api"].arn
 
   container_definitions = jsonencode([
     {
@@ -87,7 +87,7 @@ resource "aws_ecs_task_definition" "api" {
         { name = "GO_VERIFY_MODE", value = "remote" },
         { name = "GO_VERIFY_BASE_URL", value = local.go_verify_base_url },
         { name = "LOG_LEVEL", value = "info" },
-        { name = "REDIS_URL", value = "redis://${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379" }
+        { name = "REDIS_URL", value = "rediss://${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379" }
       ]
 
       logConfiguration = {
@@ -115,7 +115,7 @@ resource "aws_ecs_task_definition" "worker" {
   memory                   = "1024"
   skip_destroy             = true
   execution_role_arn       = aws_iam_role.task_execution.arn
-  task_role_arn            = aws_iam_role.task_runtime.arn
+  task_role_arn            = aws_iam_role.service_runtime["worker"].arn
 
   container_definitions = jsonencode([
     {
@@ -181,7 +181,7 @@ resource "aws_ecs_task_definition" "worker" {
         { name = "LOG_LEVEL", value = "info" },
         { name = "GO_VERIFY_MODE", value = "remote" },
         { name = "GO_VERIFY_BASE_URL", value = local.go_verify_base_url },
-        { name = "REDIS_URL", value = "redis://${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379" }
+        { name = "REDIS_URL", value = "rediss://${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379" }
       ]
 
       logConfiguration = {

@@ -9,7 +9,7 @@ import type {
   ListDeepAnalysisReportsResponse,
 } from '@mem9/contracts';
 import { AnalysisRepository, S3PayloadStorageService, createPrefixedId } from '@mem9/shared';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 
 import type { Mem9RequestContext } from './common/request-context';
 import { DeepAnalysisDuplicateOpsService } from './deep-analysis-duplicate-ops.service';
@@ -65,6 +65,8 @@ function toListItem(report: {
 
 @Injectable()
 export class DeepAnalysisService {
+  private readonly logger = new Logger(DeepAnalysisService.name);
+
   public constructor(
     private readonly repository: AnalysisRepository,
     private readonly source: Mem9SourceService,
@@ -106,6 +108,18 @@ export class DeepAnalysisService {
       memoryCount,
       sourceSnapshotObjectKey,
     });
+
+    if (policy.bypassDailyLimit) {
+      this.logger.warn(JSON.stringify({
+        event: 'deep_analysis_daily_quota_bypass_used',
+        requestId: context.requestId,
+        apiKeyFingerprint: context.apiKeyFingerprintHex,
+        reportId: report.id,
+        quotaDayUtc: report.requestedAt.toISOString().slice(0, 10),
+        previousDailyReportCount: existingReports.length,
+        memoryCount,
+      }));
+    }
 
     this.sourcePreparation.schedule({
       apiKeyFingerprintHex: context.apiKeyFingerprintHex,

@@ -1,5 +1,6 @@
 import type { AppConfig } from '@mem9/config';
 import { AppError } from '@mem9/shared';
+import { Logger } from '@nestjs/common';
 
 import { DeepAnalysisService } from './deep-analysis.service';
 
@@ -266,6 +267,48 @@ describe('deep analysis service', () => {
     expect(repository.createDeepAnalysisReport).toHaveBeenCalledWith(expect.objectContaining({
       enforceQuota: true, bypassDailyLimit: false,
     }));
+  });
+
+  it('audits an admitted quota-bypass request without logging its raw API key', async () => {
+    const context = createContext();
+    const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    try {
+      const { service } = createService({
+        config: { analysis: { deepAnalysisDailyLimitBypassFingerprints: [context.apiKeyFingerprintHex] } },
+        repository: {
+          findDeepAnalysisQuotaReports: jest.fn(async () => [
+            { status: 'COMPLETED' }, { status: 'COMPLETED' }, { status: 'COMPLETED' },
+          ]),
+        },
+      });
+      await service.createReport(context, { lang: 'en', timezone: 'UTC' });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('deep_analysis_daily_quota_bypass_used'));
+      const event = JSON.parse(String(warn.mock.calls[0]?.[0])) as Record<string, unknown>;
+      expect(event).toMatchObject({
+        event: 'deep_analysis_daily_quota_bypass_used', reportId: 'dar_1',
+        requestId: context.requestId, apiKeyFingerprint: context.apiKeyFingerprintHex,
+        previousDailyReportCount: 3,
+      });
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(context.rawApiKey);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does not audit ordinary or rejected requests as successful bypass use', async () => {
+    const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const context = createContext();
+    try {
+      await createService().service.createReport(context, { lang: 'en', timezone: 'UTC' });
+      const { service } = createService({
+        config: { analysis: { deepAnalysisDailyLimitBypassFingerprints: [context.apiKeyFingerprintHex] } },
+        repository: { createDeepAnalysisReport: jest.fn().mockRejectedValue(new Error('admission failed')) },
+      });
+      await expect(service.createReport(context, { lang: 'en', timezone: 'UTC' })).rejects.toThrow('admission failed');
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('does not let a deleted report with a stale active status block all future requests', async () => {
