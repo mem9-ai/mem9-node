@@ -51,10 +51,6 @@ resource "aws_ecs_task_definition" "api" {
           valueFrom = "${aws_secretsmanager_secret.app.arn}:SENTRY_DSN::"
         },
         {
-          name      = "SENTRY_AUTH_TOKEN"
-          valueFrom = "${aws_secretsmanager_secret.app.arn}:SENTRY_AUTH_TOKEN::"
-        },
-        {
           name      = "QWEN_API_KEY"
           valueFrom = "${aws_secretsmanager_secret.app.arn}:QWEN_API_KEY::"
         },
@@ -148,10 +144,6 @@ resource "aws_ecs_task_definition" "worker" {
         {
           name      = "SENTRY_DSN"
           valueFrom = "${aws_secretsmanager_secret.app.arn}:SENTRY_DSN::"
-        },
-        {
-          name      = "SENTRY_AUTH_TOKEN"
-          valueFrom = "${aws_secretsmanager_secret.app.arn}:SENTRY_AUTH_TOKEN::"
         },
         {
           name      = "QWEN_API_KEY"
