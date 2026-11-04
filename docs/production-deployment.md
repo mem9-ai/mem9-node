@@ -114,6 +114,13 @@ Create one repository-level GitHub Actions secret named `TF_VARS`. Its value is
 the complete production `terraform.tfvars` content. The workflow writes it to
 the ephemeral runner without printing it and removes the runner after the job.
 
+Neither `TF_VARS` nor `STAGING_TF_VARS` may contain `sentry_auth_token`. Keep
+`sentry_dsn` for runtime error reporting. Sentry authentication tokens belong
+only in the sourcemap upload process, outside Terraform and ECS. Existing
+environments need the separate [Sentry token cleanup](security/sentry-token-rollout.md)
+before their next application deployment; the normal release scope guard
+intentionally rejects changes to Secrets Manager versions.
+
 Do not add these release-specific values to `TF_VARS`:
 
 ```text

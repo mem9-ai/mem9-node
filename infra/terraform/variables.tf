@@ -154,11 +154,6 @@ variable "sentry_dsn" {
   sensitive = true
 }
 
-variable "sentry_auth_token" {
-  type      = string
-  sensitive = true
-}
-
 variable "mem9_source_api_base_url" {
   type = string
 }

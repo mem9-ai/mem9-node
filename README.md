@@ -48,6 +48,12 @@ Worker health: `http://127.0.0.1:3001/health/live`
 - Build and upload Sentry sourcemaps: `pnpm build:with-sourcemaps`
 - Verify: `pnpm verify`
 
+Sentry error reporting uses `SENTRY_DSN`. Supply `SENTRY_AUTH_TOKEN` only to the
+process running `pnpm build:with-sourcemaps` or `pnpm sentry:sourcemaps`, using a
+build secret or your credential manager. Do not put this token in application
+environment files, Terraform variables, or ECS runtime secrets. The deployment
+workflows currently build images without uploading sourcemaps.
+
 ## Production Deployment
 
 Pull requests run application and Terraform checks. Production is released
