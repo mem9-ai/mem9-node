@@ -9,6 +9,7 @@ resource "aws_secretsmanager_secret_version" "app" {
     DATABASE_URL              = "mysql://${var.database_username}:${var.database_password}@${aws_db_instance.mysql.address}:3306/${var.database_name}"
     APP_PEPPER                = var.app_pepper
     GO_INTERNAL_SHARED_SECRET = var.go_internal_shared_secret
+    QUEUE_CREDENTIAL_KEYRING  = var.queue_credential_keyring
     SENTRY_DSN                = var.sentry_dsn
     # Older task revisions still fetch this key at startup. An empty value keeps
     # rollback compatible without retaining the build-only Sentry credential.
