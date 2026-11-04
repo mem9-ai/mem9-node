@@ -8,7 +8,7 @@ import type {
   MarkSessionMessageResponse,
 } from '@mem9/contracts';
 import { MEMORY_PERIOD_SUMMARY_CACHE_VERSION } from '@mem9/contracts';
-import { AnalysisRepository, AppError, RedisService, SqsQueueService, redisKeys } from '@mem9/shared';
+import { AnalysisRepository, AppError, RedisService, SqsQueueService, redisKeys, sealQueueCredential } from '@mem9/shared';
 import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
 import type { MemoryReport } from '@prisma/client';
 
@@ -131,11 +131,25 @@ export class MemoryAnalysisService {
     });
 
     try {
+      const keyring = this.config.queueCredentialKeyring;
+      if (keyring === undefined) {
+        throw new Error('QUEUE_CREDENTIAL_KEYRING is not configured');
+      }
+      const encryptedApiKey = sealQueueCredential(
+        keyring,
+        context.rawApiKey,
+        {
+          reportId: report.reportId,
+          apiKeyFingerprintHex: context.apiKeyFingerprintHex,
+          createdAfter: dto.createdAfter,
+          createdBefore: dto.createdBefore,
+        },
+      );
       await this.queue.enqueueLlmMessage({
         messageType: 'memory_analysis_report',
         reportId: report.reportId,
         apiKeyFingerprintHex: context.apiKeyFingerprintHex,
-        rawApiKey: context.rawApiKey,
+        encryptedApiKey,
         createdAfter: dto.createdAfter,
         createdBefore: dto.createdBefore,
         traceId: context.requestId,

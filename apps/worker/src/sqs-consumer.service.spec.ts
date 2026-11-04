@@ -146,10 +146,64 @@ describe('sqs consumer service', () => {
     expect(queue.deleteMessage).toHaveBeenCalledWith('rh_good');
     expect(setIntervalSpy).toHaveBeenCalledWith(expect.any(Function), 7000);
     expect(Sentry.captureException).toHaveBeenCalledTimes(1);
-    expect(Sentry.captureException).toHaveBeenCalledWith(
+    // The parser error quotes the body, so it must not be forwarded as-is.
+    expect(Sentry.captureException).not.toHaveBeenCalledWith(
       expect.any(SyntaxError),
     );
     expect(errorSpy).toHaveBeenCalled();
+  });
+
+  it('never forwards an unparseable LLM queue body to Sentry or the logs', async () => {
+    const secretBody = 'mk_plaintext_queue_secret_value';
+    const queue = {
+      receiveBatchMessages: jest.fn(async () => []),
+      extendVisibility: jest.fn(async () => undefined),
+      deleteMessage: jest.fn(async () => undefined),
+      receiveLlmMessages: jest
+        .fn()
+        .mockResolvedValueOnce([
+          {
+            Body: secretBody,
+            ReceiptHandle: 'rh_bad',
+            Attributes: { ApproximateReceiveCount: '1' },
+          },
+        ])
+        .mockImplementationOnce(async () => {
+          consumer['running'] = false;
+          return [];
+        }),
+      extendLlmVisibility: jest.fn(async () => undefined),
+      deleteLlmMessage: jest.fn(async () => undefined),
+    };
+    const consumer = new SqsConsumerService(
+      queue as never,
+      { process: jest.fn() } as never,
+      { process: jest.fn() } as never,
+      { process: jest.fn() } as never,
+      createConfig(),
+    );
+    const logged: unknown[][] = [];
+    for (const level of ['error', 'warn', 'log'] as const) {
+      jest
+        .spyOn(consumer['logger'], level)
+        .mockImplementation((...args: unknown[]) => {
+          logged.push(args);
+        });
+    }
+
+    consumer['running'] = true;
+    await consumer['consumeLlmLoop']();
+
+    // Read message/stack directly: errors thrown inside Jest's VM realm fail `instanceof Error`.
+    const describeValue = (value: unknown): string => {
+      const candidate = value as { message?: unknown; stack?: unknown } | null;
+      return `${String(value)} ${String(candidate?.message)} ${String(candidate?.stack)} ${JSON.stringify(value)}`;
+    };
+    const captured = (Sentry.captureException as jest.Mock).mock.calls.flat().map(describeValue).join(' ');
+    // V8 quotes up to the first 10 characters of the body, so check the prefix too.
+    const secretPrefix = secretBody.slice(0, 10);
+    expect(captured).not.toContain(secretPrefix);
+    expect(logged.flat().map(describeValue).join(' ')).not.toContain(secretPrefix);
   });
 
   it('keeps consuming after one processor failure', async () => {

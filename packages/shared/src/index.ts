@@ -9,6 +9,7 @@ export * from './gzip';
 export * from './hash';
 export * from './ids';
 export * from './prisma.service';
+export * from './queue-credentials';
 export * from './rate-limit';
 export * from './redis-keys';
 export * from './redis-progress-store';

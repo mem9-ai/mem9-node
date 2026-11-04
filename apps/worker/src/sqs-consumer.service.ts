@@ -130,11 +130,11 @@ export class SqsConsumerService implements OnModuleDestroy {
     let payload: TPayload;
     try {
       payload = parseBody(message.Body);
-    } catch (error) {
-      Sentry.captureException(error);
+    } catch {
+      const parseError = new Error(`Failed to parse ${loopName} queue message`);
+      Sentry.captureException(parseError);
       this.logger.error(
         `Failed to parse ${loopName} queue message`,
-        error instanceof Error ? error.stack : undefined,
       );
       return;
     }

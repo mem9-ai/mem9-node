@@ -47,6 +47,10 @@ resource "aws_ecs_task_definition" "api" {
           valueFrom = "${aws_secretsmanager_secret.app.arn}:GO_INTERNAL_SHARED_SECRET::"
         },
         {
+          name      = "QUEUE_CREDENTIAL_KEYRING"
+          valueFrom = "${aws_secretsmanager_secret.app.arn}:QUEUE_CREDENTIAL_KEYRING::"
+        },
+        {
           name      = "SENTRY_DSN"
           valueFrom = "${aws_secretsmanager_secret.app.arn}:SENTRY_DSN::"
         },
@@ -144,6 +148,10 @@ resource "aws_ecs_task_definition" "worker" {
         {
           name      = "GO_INTERNAL_SHARED_SECRET"
           valueFrom = "${aws_secretsmanager_secret.app.arn}:GO_INTERNAL_SHARED_SECRET::"
+        },
+        {
+          name      = "QUEUE_CREDENTIAL_KEYRING"
+          valueFrom = "${aws_secretsmanager_secret.app.arn}:QUEUE_CREDENTIAL_KEYRING::"
         },
         {
           name      = "SENTRY_DSN"
