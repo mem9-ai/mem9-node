@@ -20,7 +20,7 @@
     "taxonomy:v3:coverage": "node scripts/analyze-taxonomy-v3-coverage.mjs",
     "migrate": "prisma migrate deploy",
     "migrate:dev": "prisma migrate dev",
-    "seed": "tsx prisma/seed.ts",
+    "seed": "node --env-file-if-exists=.env --import tsx prisma/seed.ts",
     "prisma:generate": "prisma generate",
     "prepare": "prisma generate",
     "updateSentry": "npx @sentry/wizard@latest -i sourcemaps --saas --org pingcap2 --project mem9-node",

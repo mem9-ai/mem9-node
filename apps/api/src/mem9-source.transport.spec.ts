@@ -34,6 +34,9 @@ describe('MEM9 source credential transport', () => {
     try {
       const config = loadConfig({
         NODE_ENV: 'test',
+        DATABASE_URL: 'mysql://mem9:mem9@127.0.0.1:3306/mem9',
+        APP_PEPPER: 'transport-test-pepper-1234567890',
+        GO_INTERNAL_SHARED_SECRET: 'transport-test-secret',
         MEM9_SOURCE_API_BASE_URL: sourceUrl,
         MEM9_SOURCE_FETCH_RETRIES: '0',
       });

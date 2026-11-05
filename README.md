@@ -34,6 +34,15 @@ API docs: [http://127.0.0.1:3000/docs](http://127.0.0.1:3000/docs)
 
 Worker health: `http://127.0.0.1:3001/health/live`
 
+Explicitly supply `DATABASE_URL`, `APP_PEPPER`, and `GO_INTERNAL_SHARED_SECRET`
+in the application environment; there are no credential fallbacks. Production
+rejects the example database credentials, development pepper, and placeholder
+secrets. Keep existing valid deployment credentials unchanged, especially
+`APP_PEPPER`, which determines ownership of existing reports. Check both API and
+worker configuration before deploying stricter validation. `pnpm seed` loads a
+local `.env` when present (exported variables take precedence) and validates the
+database configuration before connecting.
+
 ## Main Commands
 
 - Install: `pnpm install`
