@@ -11,19 +11,56 @@ const booleanish = z.union([z.boolean(), z.string()]).transform((value) => {
   return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
 });
 
+function validateDatabaseEnvironment(
+  env: { NODE_ENV: string; DATABASE_URL: string },
+  ctx: z.RefinementCtx,
+): void {
+  let connection: URL;
+  try {
+    connection = new URL(env.DATABASE_URL);
+    if (connection.protocol !== 'mysql:') throw new Error('Invalid protocol');
+    if (
+      env.NODE_ENV === 'production' &&
+      decodeURIComponent(connection.username) === 'mem9' &&
+      decodeURIComponent(connection.password) === 'mem9'
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'Production DATABASE_URL must not use the local development credentials',
+        path: ['DATABASE_URL'],
+      });
+    }
+  } catch {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'DATABASE_URL must be a valid MySQL connection URL',
+      path: ['DATABASE_URL'],
+    });
+  }
+}
+
+const databaseEnvSchema = z.object({
+  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+  DATABASE_URL: z.string().min(1),
+});
+
+// Seed validates only database configuration, before opening a connection.
+export function loadDatabaseUrl(
+  environment: NodeJS.ProcessEnv = process.env,
+): string {
+  return databaseEnvSchema
+    .superRefine(validateDatabaseEnvironment)
+    .parse(environment).DATABASE_URL;
+}
+
 const envSchema = z
   .object({
-    NODE_ENV: z
-      .enum(['development', 'test', 'production'])
-      .default('development'),
+    ...databaseEnvSchema.shape,
     PORT: z.coerce.number().int().positive().default(3000),
     WORKER_HEALTH_PORT: z.coerce.number().int().positive().default(3001),
-    DATABASE_URL: z
-      .string()
-      .min(1)
-      .default('mysql://mem9:mem9@127.0.0.1:3306/mem9'),
     REDIS_URL: z.string().min(1).default('redis://127.0.0.1:6379'),
-    APP_PEPPER: z.string().min(16).default('local-dev-pepper-1234567890'),
+    APP_PEPPER: z.string().min(16),
     SENTRY_DSN: z.preprocess(
       emptyStringToUndefined,
       z.string().min(1).optional(),
@@ -104,7 +141,7 @@ const envSchema = z
     GO_VERIFY_MODE: z.enum(['noop', 'remote']).default('remote'),
     GO_VERIFY_BASE_URL: z.string().url().default('http://127.0.0.1:8080'),
     GO_VERIFY_TIMEOUT_MS: z.coerce.number().int().positive().default(3000),
-    GO_INTERNAL_SHARED_SECRET: z.string().min(8).default('local-secret'),
+    GO_INTERNAL_SHARED_SECRET: z.string().min(8),
     LOG_LEVEL: z
       .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace'])
       .default('info'),
@@ -122,6 +159,7 @@ const envSchema = z
       .positive()
       .default(10),
   })
+  .superRefine(validateDatabaseEnvironment)
   .superRefine((env, ctx) => {
     const hasAccessKey = env.AWS_ACCESS_KEY_ID !== undefined;
     const hasSecretKey = env.AWS_SECRET_ACCESS_KEY !== undefined;
@@ -153,11 +191,28 @@ const envSchema = z
         path: ['GO_VERIFY_MODE'],
       });
     }
-    if (env.NODE_ENV === 'production' && env.APP_PEPPER === 'local-dev-pepper-1234567890') {
+    if (
+      env.NODE_ENV === 'production' &&
+      [
+        'local-dev-pepper-1234567890',
+        'replace-with-32-char-random-secret',
+      ].includes(env.APP_PEPPER)
+    ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: 'Production requires an explicit non-default APP_PEPPER',
         path: ['APP_PEPPER'],
+      });
+    }
+    if (
+      env.NODE_ENV === 'production' &&
+      ['local-secret', 'replace-me'].includes(env.GO_INTERNAL_SHARED_SECRET)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'Production requires an explicit non-default GO_INTERNAL_SHARED_SECRET',
+        path: ['GO_INTERNAL_SHARED_SECRET'],
       });
     }
     if (env.UPSTREAM_HTTPS_REQUIRED ?? (env.NODE_ENV === 'production')) {
