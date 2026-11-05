@@ -39,9 +39,9 @@ in the application environment; there are no credential fallbacks. Production
 rejects the example database credentials, development pepper, and placeholder
 secrets. Keep existing valid deployment credentials unchanged, especially
 `APP_PEPPER`, which determines ownership of existing reports. Check both API and
-worker configuration before deploying stricter validation. `pnpm seed` loads a
-local `.env` when present (exported variables take precedence) and validates the
-database configuration before connecting.
+worker configuration before deploying stricter validation. `pnpm dev` and
+`pnpm seed` load a local `.env` when present (exported variables take precedence).
+Seed validates database configuration before connecting.
 
 ## Main Commands
 
