@@ -9,6 +9,7 @@ import type {
 import { Injectable } from '@nestjs/common';
 
 import type { Mem9RequestContext } from './common/request-context';
+import { trimTrailingCharacters } from './common/trim-trailing-characters';
 import { Mem9SourceService } from './mem9-source.service';
 
 const MAX_ITEMS_PER_KIND = 10;
@@ -1721,8 +1722,7 @@ export class UserProfileService {
   }
 
   private toInlineClause(value: string): string {
-    return this.cleanText(value)
-      .replace(/[。.!?？！]+$/u, '')
+    return trimTrailingCharacters(this.cleanText(value), '。.!?？！')
       .replace(/^(用户|这个用户|ユーザー|このユーザー|TA|ta)\s*/u, '')
       .replace(
         /^(目标是|长期目标是|当前重心是|当前重心在|偏好|喜欢|更喜欢|希望|想要|目標は|長期目標は|現在の重点は|好みは|好む|希望する)\s*/u,
@@ -1741,7 +1741,7 @@ export class UserProfileService {
   }
 
   private limitSummaryText(value: string, maxLength = 100): string {
-    const text = this.cleanText(value).replace(/[；，、。,.，:：;]+$/u, '');
+    const text = trimTrailingCharacters(this.cleanText(value), '；，、。,.:：;');
     if (text.length <= maxLength) {
       return text;
     }
@@ -1757,11 +1757,10 @@ export class UserProfileService {
       head.lastIndexOf('；'),
       head.lastIndexOf(';'),
     );
-    const shortened = (
-      sentenceBoundary > 0 ? head.slice(0, sentenceBoundary + 1) : head
-    )
-      .replace(/[；，、。,.，:：;]+$/u, '')
-      .trim();
+    const shortened = trimTrailingCharacters(
+      sentenceBoundary > 0 ? head.slice(0, sentenceBoundary + 1) : head,
+      '；，、。,.:：;',
+    ).trim();
     return shortened || text.slice(0, maxLength).trim();
   }
 

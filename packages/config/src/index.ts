@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+export { loadApiIngressConfig, type ApiIngressConfig } from './api-ingress';
+
 const emptyStringToUndefined = (value: unknown): unknown =>
   value === '' ? undefined : value;
 
