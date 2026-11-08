@@ -1,3 +1,5 @@
+import { performance } from 'node:perf_hooks';
+
 import type { DeepAnalysisMemorySnapshot } from '@mem9/contracts';
 
 import type { Mem9RequestContext } from './common/request-context';
@@ -32,6 +34,25 @@ function createContext(): Mem9RequestContext {
 }
 
 describe('user profile service', () => {
+  it('handles long punctuation runs followed by text without quadratic backtracking', () => {
+    const source = { fetchProfileMemories: jest.fn() };
+    const service = new UserProfileService(source as unknown as Mem9SourceService);
+    const text = service as unknown as {
+      limitSummaryText(value: string): string;
+      toInlineClause(value: string): string;
+    };
+    const summaryInput = ';'.repeat(200000) + 'x';
+    const inlineInput = '.'.repeat(200000) + 'x';
+    const start = performance.now();
+
+    // These inputs force the old suffix regex to retry from every position.
+    expect(text.limitSummaryText(summaryInput)).toBe(';'.repeat(100));
+    expect(text.toInlineClause(inlineInput)).toBe(inlineInput);
+    expect(text.limitSummaryText('你好；，。')).toBe('你好');
+    expect(text.toInlineClause('用户 喜欢研究。！？')).toBe('研究');
+    expect(performance.now() - start).toBeLessThan(1000);
+  });
+
   it('builds the profile page model only from fact, insight, and pinned memories', async () => {
     const source = {
       fetchProfileMemories: jest.fn(async () => [

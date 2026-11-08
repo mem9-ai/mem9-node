@@ -4,7 +4,7 @@ import 'reflect-metadata';
 import type { IncomingMessage } from 'node:http';
 import type { Http2ServerRequest } from 'node:http2';
 
-import { loadConfig } from '@mem9/config';
+import { loadApiIngressConfig, loadConfig } from '@mem9/config';
 import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import {
@@ -16,19 +16,24 @@ import { Logger } from 'nestjs-pino';
 
 import { AppModule } from './app.module';
 import { AppExceptionFilter } from './common/app-exception.filter';
+import { installPreAuthThrottle } from './common/pre-auth-throttle';
 import { resolveRequestId } from './common/request-id';
 
 async function bootstrap(): Promise<void> {
   const config = loadConfig();
+  const ingress = loadApiIngressConfig();
+  const adapter = new FastifyAdapter({
+    logger: false,
+    bodyLimit: config.analysis.maxBatchBytes * 2,
+    requestIdHeader: false,
+    trustProxy: ingress.trustedProxyCidrs.length > 0 ? ingress.trustedProxyCidrs : false,
+    genReqId: (request: IncomingMessage | Http2ServerRequest) =>
+      resolveRequestId(request.headers['x-request-id']),
+  });
+  installPreAuthThrottle(adapter.getInstance(), ingress);
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
-    new FastifyAdapter({
-      logger: false,
-      bodyLimit: config.analysis.maxBatchBytes * 2,
-      requestIdHeader: false,
-      genReqId: (request: IncomingMessage | Http2ServerRequest) =>
-        resolveRequestId(request.headers['x-request-id']),
-    }),
+    adapter,
     {
       bufferLogs: true,
     },

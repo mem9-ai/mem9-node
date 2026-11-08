@@ -1,3 +1,8 @@
+data "aws_subnet" "api_ingress_proxy" {
+  for_each = toset(var.public_subnet_ids)
+  id       = each.value
+}
+
 locals {
   # Upgrade the legacy public endpoint before a credential-bearing first request.
   # Production endpoints must use HTTPS. Staging's internal endpoint has a
@@ -61,6 +66,9 @@ resource "aws_ecs_task_definition" "api" {
       ]
 
       environment = [
+        # Tasks accept ingress only from the ALB security group. Trust only its
+        # subnets; never trust all forwarded headers or a client-supplied hop.
+        { name = "PREAUTH_TRUSTED_PROXY_CIDRS", value = join(",", [for subnet in data.aws_subnet.api_ingress_proxy : subnet.cidr_block]) },
         { name = "MEM9_SOURCE_API_BASE_URL", value = local.mem9_source_api_base_url },
         { name = "UPSTREAM_HTTPS_REQUIRED", value = tostring(var.environment_name == "prod") },
         { name = "MEM9_SOURCE_PAGE_SIZE", value = "200" },
