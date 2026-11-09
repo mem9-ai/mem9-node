@@ -17,7 +17,6 @@ import {
   Prisma,
 } from '@prisma/client';
 
-import { AppError } from './errors';
 import {
   DEEP_ANALYSIS_INITIAL_WAIT_MS,
   DEEP_ANALYSIS_LEASE_MS,
@@ -25,6 +24,7 @@ import {
   DEEP_ANALYSIS_SOURCE_DEADLINE_MS,
   DEEP_ANALYSIS_WORKER_DEADLINE_MS,
 } from './deep-analysis-lease';
+import { AppError } from './errors';
 import { createPrefixedId } from './ids';
 import { PrismaService } from './prisma.service';
 
@@ -808,9 +808,9 @@ export class AnalysisRepository {
     return report;
   }
 
-  public async getDeepAnalysisReport(reportId: string): Promise<DeepAnalysisReport> {
+  public async getDeepAnalysisReport(reportId: string, fingerprint: Buffer): Promise<DeepAnalysisReport> {
     const report = await this.prisma.deepAnalysisReport.findUnique({
-      where: { id: reportId, deletedAt: null },
+      where: { id: reportId, apiKeyFingerprint: toPrismaBytes(fingerprint), deletedAt: null },
     });
 
     if (report === null) {
@@ -825,17 +825,18 @@ export class AnalysisRepository {
 
   public async updateDeepAnalysisReport(
     reportId: string,
+    fingerprint: Buffer,
     data: Prisma.DeepAnalysisReportUncheckedUpdateInput,
   ): Promise<DeepAnalysisReport> {
     return this.prisma.deepAnalysisReport.update({
-      where: { id: reportId, deletedAt: null },
+      where: { id: reportId, apiKeyFingerprint: toPrismaBytes(fingerprint), deletedAt: null },
       data,
     });
   }
 
-  public async deleteDeepAnalysisReport(reportId: string): Promise<void> {
+  public async deleteDeepAnalysisReport(reportId: string, fingerprint: Buffer): Promise<void> {
     await this.prisma.deepAnalysisReport.update({
-      where: { id: reportId, deletedAt: null },
+      where: { id: reportId, apiKeyFingerprint: toPrismaBytes(fingerprint), deletedAt: null },
       data: {
         deletedAt: new Date(),
         previewJson: Prisma.DbNull,

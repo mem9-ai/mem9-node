@@ -11,6 +11,7 @@ import {
   S3PayloadStorageService,
   gunzipJson,
   normalizeMemoryContent,
+  parseApiKeyFingerprint,
   sha256Hex,
 } from '@mem9/shared';
 import { Injectable, Logger } from '@nestjs/common';
@@ -258,7 +259,7 @@ export class DeepAnalysisDuplicateOpsService {
         failedMemoryIds: [],
         errorMessage: null,
       };
-      await this.repository.updateDeepAnalysisReport(reportId, {
+      await this.repository.updateDeepAnalysisReport(reportId, context.apiKeyFingerprint, {
         previewJson: buildPreviewWithDuplicateCleanup(report, duplicateCleanup),
       });
       return {
@@ -280,7 +281,7 @@ export class DeepAnalysisDuplicateOpsService {
       errorMessage: null,
     };
 
-    await this.repository.updateDeepAnalysisReport(reportId, {
+    await this.repository.updateDeepAnalysisReport(reportId, context.apiKeyFingerprint, {
       previewJson: buildPreviewWithDuplicateCleanup(report, duplicateCleanup),
     });
     this.scheduleDuplicateCleanup({
@@ -327,7 +328,7 @@ export class DeepAnalysisDuplicateOpsService {
       this.storage.deleteObject(report.sourceSnapshotObjectKey),
     ]);
 
-    await this.repository.deleteDeepAnalysisReport(report.id);
+    await this.repository.deleteDeepAnalysisReport(report.id, context.apiKeyFingerprint);
 
     return {
       reportId,
@@ -398,7 +399,8 @@ export class DeepAnalysisDuplicateOpsService {
       requestedCount: input.duplicateMemoryIds.length,
     };
     try {
-      const report = await this.repository.getDeepAnalysisReport(input.reportId);
+      const fingerprint = parseApiKeyFingerprint(input.apiKeyFingerprintHex);
+      const report = await this.repository.getDeepAnalysisReport(input.reportId, fingerprint);
       const queuedCleanup = getDuplicateCleanupStatus(report);
       const runningCleanup: DeepAnalysisDuplicateCleanupStatus = {
         status: 'RUNNING',
@@ -413,7 +415,7 @@ export class DeepAnalysisDuplicateOpsService {
         errorMessage: null,
       };
 
-      await this.repository.updateDeepAnalysisReport(input.reportId, {
+      await this.repository.updateDeepAnalysisReport(input.reportId, fingerprint, {
         previewJson: buildPreviewWithDuplicateCleanup(report, runningCleanup),
       });
 
@@ -440,7 +442,7 @@ export class DeepAnalysisDuplicateOpsService {
         deletedCount: deletion.deletedMemoryIds.length,
         failedCount: deletion.failedMemoryIds.length,
       }));
-      const completedReport = await this.repository.getDeepAnalysisReport(input.reportId);
+      const completedReport = await this.repository.getDeepAnalysisReport(input.reportId, fingerprint);
       const latestCleanup = getDuplicateCleanupStatus(completedReport);
       const completedCleanup: DeepAnalysisDuplicateCleanupStatus = {
         status: 'COMPLETED',
@@ -458,7 +460,7 @@ export class DeepAnalysisDuplicateOpsService {
         errorMessage: null,
       };
 
-      await this.repository.updateDeepAnalysisReport(input.reportId, {
+      await this.repository.updateDeepAnalysisReport(input.reportId, fingerprint, {
         previewJson: buildPreviewWithDuplicateCleanup(completedReport, completedCleanup),
       });
     } catch (error) {
@@ -469,7 +471,8 @@ export class DeepAnalysisDuplicateOpsService {
       );
 
       try {
-        const report = await this.repository.getDeepAnalysisReport(input.reportId);
+        const fingerprint = parseApiKeyFingerprint(input.apiKeyFingerprintHex);
+        const report = await this.repository.getDeepAnalysisReport(input.reportId, fingerprint);
         const currentCleanup = getDuplicateCleanupStatus(report);
         const deletedMemoryIds = currentCleanup?.deletedMemoryIds ?? [];
         const failedMemoryIds = input.duplicateMemoryIds.filter(id => !deletedMemoryIds.includes(id));
@@ -488,7 +491,7 @@ export class DeepAnalysisDuplicateOpsService {
               ? error.message.slice(0, 512)
               : 'Failed to delete duplicate memories',
         };
-        await this.repository.updateDeepAnalysisReport(input.reportId, {
+        await this.repository.updateDeepAnalysisReport(input.reportId, fingerprint, {
           previewJson: buildPreviewWithDuplicateCleanup(report, failedCleanup),
         });
       } catch (updateError) {
