@@ -34,6 +34,57 @@ function createContext(): Mem9RequestContext {
 }
 
 describe('user profile service', () => {
+  it('preserves temporal plan matching across text and line boundaries', () => {
+    const service = new UserProfileService({} as Mem9SourceService);
+    const classifier = service as unknown as {
+      isTemporalPlanMemory(value: DeepAnalysisMemorySnapshot): boolean;
+    };
+    for (const [content, expected] of [
+      ['换岗位', true],
+      ['想换一个更合适的岗位', true],
+      ['岗位换', false],
+      ['换岗', false],
+      ['换\n岗位', false],
+      ['换\r岗位', false],
+      ['换\u2028岗位', false],
+      ['换\u2029岗位', false],
+      ['换\n换新岗位', true],
+      ['换\t新岗位', true],
+      ['换😀岗位', true],
+      ['EXAM', true],
+      ['来年', true],
+      ['喜欢读书', false],
+    ] as const) {
+      expect(
+        classifier.isTemporalPlanMemory(memory('plan', content, 'fact')),
+      ).toBe(expected);
+    }
+  });
+
+  it('classifies long repeated change prefixes without quadratic backtracking', () => {
+    const service = new UserProfileService({} as Mem9SourceService);
+    const classifier = service as unknown as {
+      isTemporalPlanMemory(value: DeepAnalysisMemorySnapshot): boolean;
+    };
+    const content = '换'.repeat(200000);
+    const start = performance.now();
+
+    expect(
+      classifier.isTemporalPlanMemory(memory('missing', content, 'fact')),
+    ).toBe(false);
+    expect(
+      classifier.isTemporalPlanMemory(
+        memory('match', content + '岗位', 'fact'),
+      ),
+    ).toBe(true);
+    expect(
+      classifier.isTemporalPlanMemory(
+        memory('newline', content + '\n岗位', 'fact'),
+      ),
+    ).toBe(false);
+    expect(performance.now() - start).toBeLessThan(1000);
+  });
+
   it('handles long punctuation runs followed by text without quadratic backtracking', () => {
     const source = { fetchProfileMemories: jest.fn() };
     const service = new UserProfileService(source as unknown as Mem9SourceService);
