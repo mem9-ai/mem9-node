@@ -167,9 +167,13 @@ jobs:
       - name: Write production variables
         env:
           TF_VARS: ${{ secrets.TF_VARS }}
+          QUEUE_CREDENTIAL_KEYRING: ${{ secrets.QUEUE_CREDENTIAL_KEYRING }}
         run: |
           test -n "$TF_VARS"
+          test -n "$QUEUE_CREDENTIAL_KEYRING"
           printf '%s\n' "$TF_VARS" > "$TF_WORKING_DIR/production.auto.tfvars"
+          jq -n '{queue_credential_keyring: env.QUEUE_CREDENTIAL_KEYRING}' \
+            > "$TF_WORKING_DIR/queue-credential.auto.tfvars.json"
 
       - name: Initialize Terraform
         run: |
