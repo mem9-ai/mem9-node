@@ -9,6 +9,7 @@ import type {
 import { Injectable } from '@nestjs/common';
 
 import type { Mem9RequestContext } from './common/request-context';
+import { trimTrailingCharacters } from './common/trim-trailing-characters';
 import { Mem9SourceService } from './mem9-source.service';
 
 const MAX_ITEMS_PER_KIND = 10;
@@ -58,7 +59,7 @@ const DISLIKE_SUMMARY_KEYWORDS =
 const WORK_STYLE_SUMMARY_KEYWORDS =
   /(做事风格|工作风格|决策|习惯|执行方式|推进方式|结构化推进|仕事の進め方|働き方|意思決定|習慣|実行方法|体系的|style|habit|decision|structured)/iu;
 const TEMPORAL_PLAN_KEYWORDS =
-  /(当前|现在|近期|明年|优先事项|优先处理|待办|备考|考试|换.*岗位|资格证|需要补上|現在|最近|来年|優先事項|やること|試験対策|試験|転職|資格|補う|priority|todo|exam)/iu;
+  /(当前|现在|近期|明年|优先事项|优先处理|待办|备考|考试|资格证|需要补上|現在|最近|来年|優先事項|やること|試験対策|試験|転職|資格|補う|priority|todo|exam)/iu;
 const EPHEMERAL_SUMMARY_KEYWORDS =
   /(今天|昨天|明天|刚才|本次|这次|当前对话|随口|临时|一次性|暂时|已失效|过期|今日|昨日|明日|先ほど|今回|現在の会話|一時的|単発|期限切れ|today|yesterday|tomorrow|temporary|one-off|expired)/iu;
 const STABLE_PERSONA_KEYWORDS =
@@ -1407,7 +1408,26 @@ export class UserProfileService {
   }
 
   private isTemporalPlanMemory(memory: DeepAnalysisMemorySnapshot): boolean {
-    return TEMPORAL_PLAN_KEYWORDS.test(memory.content);
+    const content = memory.content;
+    if (TEMPORAL_PLAN_KEYWORDS.test(content)) {
+      return true;
+    }
+
+    // Match 换.*岗位 in one pass, without retrying at every 换. Preserve
+    // JavaScript dot semantics: the match cannot cross a line terminator.
+    let hasChangePrefix = false;
+    for (let index = 0; index < content.length; index += 1) {
+      const character = content.charAt(index);
+      if ('\n\r\u2028\u2029'.includes(character)) {
+        hasChangePrefix = false;
+      } else if (character === '换') {
+        hasChangePrefix = true;
+      } else if (hasChangePrefix && content.startsWith('岗位', index)) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   private isStablePersonaMemory(memory: DeepAnalysisMemorySnapshot): boolean {
@@ -1721,8 +1741,7 @@ export class UserProfileService {
   }
 
   private toInlineClause(value: string): string {
-    return this.cleanText(value)
-      .replace(/[。.!?？！]+$/u, '')
+    return trimTrailingCharacters(this.cleanText(value), '。.!?？！')
       .replace(/^(用户|这个用户|ユーザー|このユーザー|TA|ta)\s*/u, '')
       .replace(
         /^(目标是|长期目标是|当前重心是|当前重心在|偏好|喜欢|更喜欢|希望|想要|目標は|長期目標は|現在の重点は|好みは|好む|希望する)\s*/u,
@@ -1741,7 +1760,7 @@ export class UserProfileService {
   }
 
   private limitSummaryText(value: string, maxLength = 100): string {
-    const text = this.cleanText(value).replace(/[；，、。,.，:：;]+$/u, '');
+    const text = trimTrailingCharacters(this.cleanText(value), '；，、。,.:：;');
     if (text.length <= maxLength) {
       return text;
     }
@@ -1757,11 +1776,10 @@ export class UserProfileService {
       head.lastIndexOf('；'),
       head.lastIndexOf(';'),
     );
-    const shortened = (
-      sentenceBoundary > 0 ? head.slice(0, sentenceBoundary + 1) : head
-    )
-      .replace(/[；，、。,.，:：;]+$/u, '')
-      .trim();
+    const shortened = trimTrailingCharacters(
+      sentenceBoundary > 0 ? head.slice(0, sentenceBoundary + 1) : head,
+      '；，、。,.:：;',
+    ).trim();
     return shortened || text.slice(0, maxLength).trim();
   }
 

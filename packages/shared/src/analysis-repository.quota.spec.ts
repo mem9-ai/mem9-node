@@ -307,34 +307,35 @@ describe('deep analysis quota tombstones', () => {
   it('does not let internal cleanup read a deleted report', async () => {
     const { reports, repository } = setup();
     await expect(
-      repository.getDeepAnalysisReport('deleted'),
+      repository.getDeepAnalysisReport('deleted', fingerprint),
     ).rejects.toMatchObject({ code: 'DEEP_ANALYSIS_REPORT_NOT_FOUND' });
     expect(reports.findUnique.mock.calls[0]![0].where).toEqual({
       id: 'deleted',
+      apiKeyFingerprint: dbFingerprint,
       deletedAt: null,
     });
   });
 
   it('guards late worker and duplicate-cleanup writes against deleted reports', async () => {
     const { reports, repository } = setup();
-    await repository.updateDeepAnalysisReport('deleted', {
+    await repository.updateDeepAnalysisReport('deleted', fingerprint, {
       internalComment: 'late result',
     });
     expect(reports.update.mock.calls[0]![0]).toEqual({
-      where: { id: 'deleted', deletedAt: null },
+      where: { id: 'deleted', apiKeyFingerprint: dbFingerprint, deletedAt: null },
       data: { internalComment: 'late result' },
     });
   });
 
   it('retains the quota row while clearing stored content and sensitive errors', async () => {
     const { reports, repository } = setup();
-    await repository.deleteDeepAnalysisReport('report');
+    await repository.deleteDeepAnalysisReport('report', fingerprint);
 
     expect(reports.delete).not.toHaveBeenCalled();
     const { where, data } = reports.update.mock.calls[0]![0];
-    expect(where).toEqual({ id: 'report', deletedAt: null });
+    expect(where).toEqual({ id: 'report', apiKeyFingerprint: dbFingerprint, deletedAt: null });
     expect(data).toEqual({
-      deletedAt: expect.any(Date),
+      deletedAt: expect.any(Date) as unknown,
       previewJson: Prisma.DbNull,
       internalComment: null,
       reportObjectKey: null,

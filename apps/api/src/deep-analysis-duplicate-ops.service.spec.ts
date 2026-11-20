@@ -266,7 +266,7 @@ describe('duplicate cleanup verification boundaries', () => {
     const repository = {
       getOwnedDeepAnalysisReport: jest.fn(async () => ({ ...report })),
       getDeepAnalysisReport: jest.fn(async () => ({ ...report })),
-      updateDeepAnalysisReport: jest.fn(async (_id: string, update: { previewJson: Record<string, unknown> }) => {
+      updateDeepAnalysisReport: jest.fn(async (_id: string, _fingerprint: Buffer, update: { previewJson: Record<string, unknown> }) => {
         report.previewJson = update.previewJson;
       }),
     };
@@ -284,6 +284,42 @@ describe('duplicate cleanup verification boundaries', () => {
       report, repository, source, storage, memories,
     };
   }
+
+  it('rechecks the authenticated owner after the HTTP response before any source work', async () => {
+    const f = setup();
+    const context = createContext();
+    const notOwned = new Error('Report no longer belongs to this owner');
+    f.repository.getDeepAnalysisReport.mockRejectedValue(notOwned);
+
+    await f.service.deleteDuplicateMemories(context, 'report');
+    f.repository.updateDeepAnalysisReport.mockClear();
+    await new Promise(resolve => setImmediate(resolve));
+
+    expect(f.repository.getDeepAnalysisReport).toHaveBeenCalledTimes(2);
+    for (const call of f.repository.getDeepAnalysisReport.mock.calls) {
+      expect(call).toEqual(['report', context.apiKeyFingerprint]);
+    }
+    expect(f.repository.updateDeepAnalysisReport).not.toHaveBeenCalled();
+    expect(f.source.fetchMemoryById).not.toHaveBeenCalled();
+    expect(f.source.deleteMemories).not.toHaveBeenCalled();
+  });
+
+  it('retains the owner on asynchronous failure bookkeeping', async () => {
+    const f = setup();
+    const context = createContext();
+    f.source.fetchMemoryById.mockRejectedValue(new Error('Source unavailable'));
+
+    await f.service.deleteDuplicateMemories(context, 'report');
+    await new Promise(resolve => setImmediate(resolve));
+
+    expect(f.source.deleteMemories).not.toHaveBeenCalled();
+    expect(f.repository.updateDeepAnalysisReport).toHaveBeenCalledTimes(3);
+    for (const call of f.repository.updateDeepAnalysisReport.mock.calls) {
+      expect(call[0]).toBe('report');
+      expect(call[1]).toEqual(context.apiKeyFingerprint);
+    }
+    expect(f.report.previewJson.duplicateCleanup).toMatchObject({ status: 'FAILED' });
+  });
 
   it.each([
     ['different content', [{ canonicalMemoryId: 'keep', duplicateMemoryIds: ['different'] }]],
@@ -383,7 +419,7 @@ describe('duplicate cleanup verification boundaries', () => {
     });
     let finished!: () => void;
     const completion = new Promise<void>(resolve => { finished = resolve; });
-    f.repository.updateDeepAnalysisReport.mockImplementation(async (_id, update) => {
+    f.repository.updateDeepAnalysisReport.mockImplementation(async (_id, _fingerprint, update) => {
       f.report.previewJson = update.previewJson;
       if ((update.previewJson.duplicateCleanup as { status: string }).status === 'COMPLETED') finished();
     });

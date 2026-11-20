@@ -4,9 +4,10 @@ import { fileURLToPath } from 'node:url';
 
 import { PrismaClient } from '@prisma/client';
 
+import { loadDatabaseUrl } from '../packages/config/src';
 import { createPrefixedId } from '../packages/shared/src';
 
-process.env.DATABASE_URL ??= 'mysql://mem9:mem9@127.0.0.1:3306/mem9';
+process.env.DATABASE_URL = loadDatabaseUrl();
 
 const prisma = new PrismaClient();
 const __filename = fileURLToPath(import.meta.url);

@@ -1,3 +1,5 @@
+import { performance } from 'node:perf_hooks';
+
 import type { DeepAnalysisMemorySnapshot } from '@mem9/contracts';
 
 import type { Mem9RequestContext } from './common/request-context';
@@ -32,6 +34,76 @@ function createContext(): Mem9RequestContext {
 }
 
 describe('user profile service', () => {
+  it('preserves temporal plan matching across text and line boundaries', () => {
+    const service = new UserProfileService({} as Mem9SourceService);
+    const classifier = service as unknown as {
+      isTemporalPlanMemory(value: DeepAnalysisMemorySnapshot): boolean;
+    };
+    for (const [content, expected] of [
+      ['换岗位', true],
+      ['想换一个更合适的岗位', true],
+      ['岗位换', false],
+      ['换岗', false],
+      ['换\n岗位', false],
+      ['换\r岗位', false],
+      ['换\u2028岗位', false],
+      ['换\u2029岗位', false],
+      ['换\n换新岗位', true],
+      ['换\t新岗位', true],
+      ['换😀岗位', true],
+      ['EXAM', true],
+      ['来年', true],
+      ['喜欢读书', false],
+    ] as const) {
+      expect(
+        classifier.isTemporalPlanMemory(memory('plan', content, 'fact')),
+      ).toBe(expected);
+    }
+  });
+
+  it('classifies long repeated change prefixes without quadratic backtracking', () => {
+    const service = new UserProfileService({} as Mem9SourceService);
+    const classifier = service as unknown as {
+      isTemporalPlanMemory(value: DeepAnalysisMemorySnapshot): boolean;
+    };
+    const content = '换'.repeat(200000);
+    const start = performance.now();
+
+    expect(
+      classifier.isTemporalPlanMemory(memory('missing', content, 'fact')),
+    ).toBe(false);
+    expect(
+      classifier.isTemporalPlanMemory(
+        memory('match', content + '岗位', 'fact'),
+      ),
+    ).toBe(true);
+    expect(
+      classifier.isTemporalPlanMemory(
+        memory('newline', content + '\n岗位', 'fact'),
+      ),
+    ).toBe(false);
+    expect(performance.now() - start).toBeLessThan(1000);
+  });
+
+  it('handles long punctuation runs followed by text without quadratic backtracking', () => {
+    const source = { fetchProfileMemories: jest.fn() };
+    const service = new UserProfileService(source as unknown as Mem9SourceService);
+    const text = service as unknown as {
+      limitSummaryText(value: string): string;
+      toInlineClause(value: string): string;
+    };
+    const summaryInput = ';'.repeat(200000) + 'x';
+    const inlineInput = '.'.repeat(200000) + 'x';
+    const start = performance.now();
+
+    // These inputs force the old suffix regex to retry from every position.
+    expect(text.limitSummaryText(summaryInput)).toBe(';'.repeat(100));
+    expect(text.toInlineClause(inlineInput)).toBe(inlineInput);
+    expect(text.limitSummaryText('你好；，。')).toBe('你好');
+    expect(text.toInlineClause('用户 喜欢研究。！？')).toBe('研究');
+    expect(performance.now() - start).toBeLessThan(1000);
+  });
+
   it('builds the profile page model only from fact, insight, and pinned memories', async () => {
     const source = {
       fetchProfileMemories: jest.fn(async () => [

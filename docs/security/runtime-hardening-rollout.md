@@ -127,3 +127,46 @@ Runtime readiness does not close scanner findings. Composite findings retain
 their unresolved parts, including plaintext credentials in queue payloads,
 unencrypted database/cache storage, and staging HTTP. Verify S3/SQS encryption
 against live configuration rather than assuming it from missing Terraform flags.
+
+## User profile ReDoS and pre-authentication admission
+
+Profile punctuation trimming uses a backwards character scan, preserving the
+existing output and full source text. No migration, report rewrite, key rotation,
+queue change, or staging HTTPS change is included.
+
+The API installs admission in Fastify's `onRequest` hook, before body parsing and
+Nest authentication guards. Token buckets are local to each API process: by
+default each source IP gets 20 requests/second with a burst of 100; the process
+as a whole gets 100 requests/second with a burst of 300. The corresponding
+`PREAUTH_*` settings must be positive. Existing authenticated tenant quotas still
+apply. A 429 includes `Retry-After`; it does not query MySQL, Redis, or the verifier.
+This limits backend work per process, not fleet-wide traffic or network-level DoS.
+Restarts reset budgets and scaling multiplies the fleet allowance.
+
+IP state is capped at 10,000 entries, with idle expiry. New addresses are rejected
+when state is full; active counters are not evicted to admit rotating identities.
+The global bucket also bounds work when a client rotates IPs or API keys.
+
+`PREAUTH_TRUSTED_PROXY_CIDRS` is empty locally. ECS task configuration derives it
+from the ALB's public subnet CIDRs (requires read access to EC2 DescribeSubnets
+during planning). This assumes the existing API security group continues to admit
+port 3000 only from the ALB security group, and ALB keeps the default append mode
+for X-Forwarded-For. Before deployment, verify both conditions against AWS. Never
+use universal proxy trust or a hop count. With additional proxies, the nearest
+untrusted proxy is the source IP and its users share a budget; only expand the
+allowlist after verifying that proxy's network boundary and header handling.
+
+Only GET/HEAD requests for the exact `/health/live` and `/health/ready` paths
+bypass business admission. Liveness is dependency-free. Readiness coalesces
+concurrent checks and caches both success and failure for one second. Probe
+responses time out after two seconds with 503, but timed-out dependency calls
+remain single-flight until they actually settle. An outage must not cause
+replacement queries to accumulate. Readiness can lag a dependency change by the
+one-second cache window.
+
+Roll out application and task-environment changes together, first in staging.
+Check the actual proxy chain, normal browser polling/batch-upload traffic,
+429/retry behavior, ALB target health, and dependency load. Tune thresholds using
+observed traffic, especially where users share NAT or a frontend proxy. Do not
+declare the Helix finding fixed from local tests alone; retain deployment and
+rescan evidence separately.
