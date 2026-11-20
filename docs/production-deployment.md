@@ -114,6 +114,12 @@ Create one repository-level GitHub Actions secret named `TF_VARS`. Its value is
 the complete production `terraform.tfvars` content. The workflow writes it to
 the ephemeral runner without printing it and removes the runner after the job.
 
+Store the production queue encryption keyring JSON in a separate repository
+secret named `QUEUE_CREDENTIAL_KEYRING`. The release workflow requires it and
+writes `queue-credential.auto.tfvars.json`, preserving the existing `TF_VARS`.
+Apply the matching app-secret version before releasing the encryption code;
+see [queue credential rollout](security/queue-credential-rollout.md).
+
 Neither `TF_VARS` nor `STAGING_TF_VARS` may contain `sentry_auth_token`. Keep
 `sentry_dsn` for runtime error reporting. Sentry authentication tokens belong
 only in the sourcemap upload process, outside Terraform and ECS. Existing

@@ -17,9 +17,11 @@ the remaining application rollout is mem9-node PR #32.
    the keyring format documented in `.env.example`. Never use the example
    key, upstream mem9's keyring, or `APP_PEPPER`. Do not print keys, queue
    bodies, Terraform state, or secret-bearing plans into logs.
-4. Add `queue_credential_keyring` to the existing production Terraform
-   variables and repository `TF_VARS` secret, preserving every existing
-   value. Use the production remote state, not a new local state. Review a
+4. Store the same keyring JSON in the repository secret
+   `QUEUE_CREDENTIAL_KEYRING` and the production Terraform variable
+   `queue_credential_keyring`. The release workflow writes a separate variable
+   file, so the existing `TF_VARS` secret is preserved. Use the production
+   remote state, not a new local state. Review a
    targeted plan for `aws_secretsmanager_secret_version.app`; apply only the
    intended secret-version update. Verify key presence without printing its
    value. Existing tasks continue running with their current environment.
