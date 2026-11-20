@@ -7,13 +7,16 @@ import {
   deriveApiKeyFingerprint,
   parseApiKeyFingerprint,
   safeFingerprintEquals,
+  openQueueCredential,
 } from '@mem9/shared';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 
 import { MemoryAnalysisReportRunnerService } from './memory-analysis-report-runner.service';
 
 @Injectable()
 export class MemoryAnalysisReportProcessorService {
+  private readonly logger = new Logger(MemoryAnalysisReportProcessorService.name);
+
   public constructor(
     private readonly runner: MemoryAnalysisReportRunnerService,
     private readonly repository: AnalysisRepository,
@@ -27,9 +30,30 @@ export class MemoryAnalysisReportProcessorService {
       throw new AppError('Invalid report message', { statusCode: 403, code: 'INVALID_REPORT_MESSAGE' });
     }
     const fingerprint = parseApiKeyFingerprint(message.apiKeyFingerprintHex);
-    if (typeof message.rawApiKey !== 'string' || !message.rawApiKey.trim()
-      || !safeFingerprintEquals(deriveApiKeyFingerprint(this.config.app.pepper, message.rawApiKey), fingerprint)) {
-      throw new AppError('Credential owner mismatch', { statusCode: 403, code: 'INVALID_QUEUE_CREDENTIAL' });
+    let apiKey: string;
+    if (Object.hasOwn(message, 'rawApiKey')) {
+      return this.rejectCredential(message.reportId, 'legacy_plaintext');
+    }
+    if (typeof message.encryptedApiKey !== 'string' || message.encryptedApiKey.length === 0
+      || this.config.queueCredentialKeyring === undefined) {
+      return this.rejectCredential(message.reportId, 'invalid_envelope');
+    }
+    try {
+      apiKey = openQueueCredential(
+        this.config.queueCredentialKeyring,
+        message.encryptedApiKey,
+        {
+          reportId: message.reportId,
+          apiKeyFingerprintHex: message.apiKeyFingerprintHex,
+          createdAfter: message.createdAfter,
+          createdBefore: message.createdBefore,
+        },
+      );
+    } catch {
+      return this.rejectCredential(message.reportId, 'invalid_envelope');
+    }
+    if (!safeFingerprintEquals(deriveApiKeyFingerprint(this.config.app.pepper, apiKey), fingerprint)) {
+      return this.rejectCredential(message.reportId, 'owner_mismatch');
     }
     const start = Date.parse(message.createdAfter);
     const end = Date.parse(message.createdBefore);
@@ -50,11 +74,19 @@ export class MemoryAnalysisReportProcessorService {
       {
         apiKeyFingerprint: fingerprint,
         apiKeyFingerprintHex: fingerprint.toString('hex'),
-        rawApiKey: message.rawApiKey,
+        rawApiKey: apiKey,
         requestId: message.traceId,
       },
       message.reportId,
       { createdAfter: message.createdAfter, createdBefore: message.createdBefore },
     );
+  }
+
+  private rejectCredential(reportId: number, reason: string): void {
+    this.logger.warn(JSON.stringify({
+      event: 'memory_analysis_report_credential_rejected',
+      reportId,
+      reason,
+    }));
   }
 }

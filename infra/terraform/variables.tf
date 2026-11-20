@@ -144,6 +144,11 @@ variable "go_internal_shared_secret" {
   sensitive = true
 }
 
+variable "queue_credential_keyring" {
+  type      = string
+  sensitive = true
+}
+
 variable "sentry_dsn" {
   type      = string
   sensitive = true

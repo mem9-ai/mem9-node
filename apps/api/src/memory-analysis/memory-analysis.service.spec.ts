@@ -1,3 +1,8 @@
+import { randomBytes } from 'node:crypto';
+
+import { parseQueueCredentialKeyring } from '@mem9/config';
+import { openQueueCredential } from '@mem9/shared';
+
 import { MemoryAnalysisService } from './memory-analysis.service';
 
 const reportApiKeyFingerprint = Buffer.alloc(32, 1);
@@ -8,10 +13,15 @@ const reportContext = {
   requestId: 'req_1',
 } as never;
 
+const queueCredentialKeyring = parseQueueCredentialKeyring(
+  JSON.stringify({ encryption_kid: 'k1', encryption_keys: { k1: randomBytes(32).toString('base64') } }),
+);
+
 const TEST_CONFIG = {
   analysis: {
     qwenModel: 'test-model',
   },
+  queueCredentialKeyring,
 } as never;
 
 function createReport(overrides: Record<string, unknown> = {}) {
@@ -205,11 +215,21 @@ describe('memory analysis report service', () => {
       messageType: 'memory_analysis_report',
       reportId: 1,
       apiKeyFingerprintHex: reportApiKeyFingerprint.toString('hex'),
-      rawApiKey: 'space-key',
+      encryptedApiKey: expect.any(String),
       createdAfter: '2026-06-01T00:00:00.000Z',
       createdBefore: '2026-06-14T23:59:59.999Z',
       traceId: 'req_1',
     });
+    // The queued body must never carry the reusable upstream key in plaintext.
+    const [[queued]] = queue.enqueueLlmMessage.mock.calls as unknown as [[Record<string, unknown>]];
+    expect(queued).not.toHaveProperty('rawApiKey');
+    expect(JSON.stringify(queued)).not.toContain('space-key');
+    expect(openQueueCredential(queueCredentialKeyring, queued.encryptedApiKey as string, {
+      reportId: 1,
+      apiKeyFingerprintHex: reportApiKeyFingerprint.toString('hex'),
+      createdAfter: '2026-06-01T00:00:00.000Z',
+      createdBefore: '2026-06-14T23:59:59.999Z',
+    })).toBe('space-key');
     expect(repository.updateMemoryAnalysisReport).not.toHaveBeenCalled();
   });
 
@@ -463,6 +483,46 @@ describe('memory analysis report service', () => {
       failCode: 'MEMORY_ANALYSIS_QUEUE_ENQUEUE_FAILED',
     }));
     expect(errorSpy).toHaveBeenCalled();
+  });
+
+  it('never enqueues a plaintext credential when no queue keyring is configured', async () => {
+    const repository = {
+      findActiveMemoryAnalysisReportByDay: jest.fn(async () => null),
+      countMemoryAnalysisReportsByDay: jest.fn(async () => 0),
+      createMemoryAnalysisReport: jest.fn(async () => createReport({
+        templateId: 'memory_analysis',
+        reportContent: '',
+        renderStatus: 'queued',
+        reportStage: 'queued',
+        memoryCount: 0,
+      })),
+      updateMemoryAnalysisReport: jest.fn(async () => createReport()),
+    };
+    const queue = { enqueueLlmMessage: jest.fn(async () => undefined) };
+    const service = new MemoryAnalysisService(
+      { countSessionMemories: jest.fn(async () => 101) } as never,
+      repository as never,
+      queue as never,
+      { smembers: jest.fn(async () => []), mget: jest.fn(async () => []), del: jest.fn(async () => 0) } as never,
+      {
+        analysis: { qwenModel: 'test-model' },
+      } as never,
+    );
+    jest.spyOn(service['logger'], 'error').mockImplementation(() => undefined);
+
+    await expect(service.createReport(reportContext, {
+      createdAfter: '2026-06-01T00:00:00.000Z',
+      createdBefore: '2026-06-14T23:59:59.999Z',
+    })).rejects.toMatchObject({
+      code: 'MEMORY_ANALYSIS_QUEUE_ENQUEUE_FAILED',
+    });
+
+    expect(queue.enqueueLlmMessage).not.toHaveBeenCalled();
+    expect(repository.updateMemoryAnalysisReport).toHaveBeenCalledWith(1, reportApiKeyFingerprint, expect.objectContaining({
+      renderStatus: 'fail',
+      reportStage: 'failed',
+      failCode: 'MEMORY_ANALYSIS_QUEUE_ENQUEUE_FAILED',
+    }));
   });
 
   it('lists memory analysis reports by type', async () => {

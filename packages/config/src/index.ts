@@ -1,5 +1,14 @@
 import { z } from 'zod';
 
+import {
+  parseQueueCredentialKeyring,
+  type QueueCredentialKeyring,
+} from './queue-credential-keyring';
+
+export {
+  parseQueueCredentialKeyring,
+  type QueueCredentialKeyring,
+} from './queue-credential-keyring';
 export { loadApiIngressConfig, type ApiIngressConfig } from './api-ingress';
 
 const emptyStringToUndefined = (value: unknown): unknown =>
@@ -144,6 +153,10 @@ const envSchema = z
     GO_VERIFY_BASE_URL: z.string().url().default('http://127.0.0.1:8080'),
     GO_VERIFY_TIMEOUT_MS: z.coerce.number().int().positive().default(3000),
     GO_INTERNAL_SHARED_SECRET: z.string().min(8),
+    QUEUE_CREDENTIAL_KEYRING: z.preprocess(
+      emptyStringToUndefined,
+      z.string().optional(),
+    ),
     LOG_LEVEL: z
       .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace'])
       .default('info'),
@@ -228,6 +241,16 @@ const envSchema = z
         }
       }
     }
+    if (
+      env.NODE_ENV === 'production'
+      && env.QUEUE_CREDENTIAL_KEYRING === undefined
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'QUEUE_CREDENTIAL_KEYRING is required in production',
+        path: ['QUEUE_CREDENTIAL_KEYRING'],
+      });
+    }
   });
 
 export type AppEnv = z.infer<typeof envSchema>;
@@ -295,12 +318,16 @@ export interface AppConfig {
     visibilityTimeoutSeconds: number;
     visibilityHeartbeatSeconds: number;
   };
+  queueCredentialKeyring?: QueueCredentialKeyring;
 }
 
 export function loadConfig(
   environment: NodeJS.ProcessEnv = process.env,
 ): AppConfig {
   const env = envSchema.parse(environment);
+  const queueCredentialKeyring = env.QUEUE_CREDENTIAL_KEYRING === undefined
+    ? undefined
+    : parseQueueCredentialKeyring(env.QUEUE_CREDENTIAL_KEYRING);
 
   return {
     app: {
@@ -368,6 +395,7 @@ export function loadConfig(
       visibilityTimeoutSeconds: env.SQS_VISIBILITY_TIMEOUT_SECONDS,
       visibilityHeartbeatSeconds: env.SQS_VISIBILITY_HEARTBEAT_SECONDS,
     },
+    queueCredentialKeyring,
   };
 }
 

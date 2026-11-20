@@ -23,6 +23,10 @@ describe('loadConfig', () => {
     DATABASE_URL: 'mysql://service:existing-password@db.internal:3306/mem9',
     APP_PEPPER: 'existing-production-pepper-1234567890',
     GO_INTERNAL_SHARED_SECRET: 'existing-production-shared-secret',
+    QUEUE_CREDENTIAL_KEYRING: JSON.stringify({
+      encryption_kid: 'k1',
+      encryption_keys: { k1: Buffer.alloc(32, 7).toString('base64') },
+    }),
     MEM9_SOURCE_API_BASE_URL: 'https://api.mem9.example/v1alpha2/mem9s',
     GO_VERIFY_BASE_URL: 'https://api.mem9.example',
   } satisfies NodeJS.ProcessEnv;
@@ -177,6 +181,10 @@ describe('loadConfig', () => {
       ...productionEnv,
       GO_VERIFY_MODE: 'remote',
       APP_PEPPER: 'production-test-pepper-1234567890',
+      QUEUE_CREDENTIAL_KEYRING: JSON.stringify({
+        encryption_kid: 'k1',
+        encryption_keys: { k1: Buffer.alloc(32, 7).toString('base64') },
+      }),
       GO_VERIFY_BASE_URL: 'https://api.mem9.example',
       MEM9_SOURCE_API_BASE_URL: 'https://api.mem9.example/v1alpha2/mem9s',
       GO_VERIFY_TIMEOUT_MS: '1500',
@@ -216,6 +224,10 @@ describe('loadConfig', () => {
       GO_VERIFY_BASE_URL: 'http://staging.example',
       APP_PEPPER: 'staging-test-pepper-1234567890',
       UPSTREAM_HTTPS_REQUIRED: 'false',
+      QUEUE_CREDENTIAL_KEYRING: JSON.stringify({
+        encryption_kid: 'k1',
+        encryption_keys: { k1: Buffer.alloc(32, 7).toString('base64') },
+      }),
     });
     expect(config.analysis.mem9SourceApiBaseUrl).toMatch(/^http:/);
   });
@@ -224,6 +236,46 @@ describe('loadConfig', () => {
     expect(() =>
       loadConfig({ ...baseEnv, UPSTREAM_HTTPS_REQUIRED: 'treu' }),
     ).toThrow(/UPSTREAM_HTTPS_REQUIRED/);
+  });
+
+  describe('QUEUE_CREDENTIAL_KEYRING', () => {
+    const keyring = JSON.stringify({
+      encryption_kid: 'k1',
+      encryption_keys: { k1: Buffer.alloc(32, 7).toString('base64') },
+    });
+    it('is optional outside production', () => {
+      expect(loadConfig(baseEnv).queueCredentialKeyring).toBeUndefined();
+    });
+
+    it('parses a configured keyring', () => {
+      const config = loadConfig({ ...baseEnv, QUEUE_CREDENTIAL_KEYRING: keyring });
+
+      expect(config.queueCredentialKeyring?.activeKid).toBe('k1');
+      expect(config.queueCredentialKeyring?.keys.get('k1')).toEqual(Buffer.alloc(32, 7));
+    });
+
+    it('is required in production', () => {
+      expect(() => loadConfig({ ...productionEnv, QUEUE_CREDENTIAL_KEYRING: undefined })).toThrow(/QUEUE_CREDENTIAL_KEYRING/);
+    });
+
+    it('accepts a valid keyring in production', () => {
+      expect(
+        loadConfig({ ...productionEnv, QUEUE_CREDENTIAL_KEYRING: keyring }).queueCredentialKeyring?.activeKid,
+      ).toBe('k1');
+    });
+
+    it('rejects an invalid keyring at startup without echoing it', () => {
+      const invalid = JSON.stringify({ encryption_kid: 'k1', encryption_keys: { k1: 'c2hvcnQ=' } });
+      let message = '';
+      try {
+        loadConfig({ ...baseEnv, QUEUE_CREDENTIAL_KEYRING: invalid });
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+
+      expect(message).toMatch(/QUEUE_CREDENTIAL_KEYRING/);
+      expect(message).not.toContain('c2hvcnQ=');
+    });
   });
 
   it('exposes mem9 source hardening defaults', () => {
