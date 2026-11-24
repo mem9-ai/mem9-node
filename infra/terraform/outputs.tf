@@ -18,6 +18,10 @@ output "api_load_balancer_dns_name" {
   value = aws_lb.api.dns_name
 }
 
+output "api_health_url" {
+  value = local.deployment_enabled ? "https://${var.api_domain_name}/health/ready" : null
+}
+
 output "api_task_definition_arn" {
   value = aws_ecs_task_definition.api.arn
 }

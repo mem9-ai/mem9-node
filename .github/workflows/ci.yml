@@ -60,3 +60,6 @@ jobs:
         run: |
           terraform -chdir="$TF_WORKING_DIR" init -backend=false -input=false
           terraform -chdir="$TF_WORKING_DIR" validate
+
+      - name: Test security rollout configuration (mock AWS)
+        run: terraform -chdir="$TF_WORKING_DIR" test

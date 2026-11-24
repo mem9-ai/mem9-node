@@ -26,6 +26,8 @@ env:
   API_REPOSITORY: mem9-node-prod-api
   WORKER_REPOSITORY: mem9-node-prod-worker
   API_HEALTH_URL: https://napi.mem9.ai/health/ready
+  TF_VAR_api_domain_name: napi.mem9.ai
+  TF_VAR_api_certificate_arn: arn:aws:acm:ap-southeast-1:401696231252:certificate/b45d5c85-ae95-453e-b4b3-7802f09a2d2b
   TF_STATE_BUCKET: mem9-node-prod-terraform-state
   TF_STATE_KMS_KEY_ARN: arn:aws:kms:ap-southeast-1:401696231252:key/4cd4c7a1-c1a6-47ad-9205-548678b84d86
   TERRAFORM_VERSION: 1.15.4

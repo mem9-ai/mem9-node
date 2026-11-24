@@ -8,6 +8,7 @@ import Redis from 'ioredis';
 export class RedisService extends Redis implements OnModuleDestroy {
   public constructor(@Inject(APP_CONFIG) config: AppConfig) {
     super(config.redis.url, {
+      password: config.redis.password,
       maxRetriesPerRequest: 2,
       lazyConnect: false,
     });

@@ -46,11 +46,11 @@ describe('GoVerifyService', () => {
     global.fetch = originalFetch;
   });
 
-  it('noop mode returns ACTIVE without calling upstream', async () => {
-    const result = await createService('noop').verify(RAW_KEY);
+  it('rejects a legacy noop config even when schema validation was bypassed', async () => {
+    const error = await captureError(createService('noop' as never).verify(RAW_KEY));
 
-    expect(result.status).toBe('ACTIVE');
-    expect(result.verifiedAt).toBeInstanceOf(Date);
+    expect(error.code).toBe('API_KEY_VERIFY_UNAVAILABLE');
+    expect(error.statusCode).toBe(503);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

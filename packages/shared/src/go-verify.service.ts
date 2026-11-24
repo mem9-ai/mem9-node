@@ -26,11 +26,9 @@ export class GoVerifyService {
   public constructor(@Inject(APP_CONFIG) private readonly config: AppConfig) {}
 
   public async verify(rawApiKey: string): Promise<GoVerifyResult> {
-    if (this.config.goVerify.mode === 'noop') {
-      return {
-        status: 'ACTIVE',
-        verifiedAt: new Date(),
-      };
+    if (this.config.goVerify.mode !== 'remote') {
+      // Defense in depth for callers that construct AppConfig without loadConfig.
+      throw unavailable('unsupported_verification_mode');
     }
 
     const controller = new AbortController();

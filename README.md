@@ -34,6 +34,11 @@ API docs: [http://127.0.0.1:3000/docs](http://127.0.0.1:3000/docs)
 
 Worker health: `http://127.0.0.1:3001/health/live`
 
+API keys are verified against `GO_VERIFY_BASE_URL` on every authenticated request.
+Run the local Go API with a valid key; `GO_VERIFY_MODE=noop` is no longer supported.
+Only development/test loopback endpoints may use HTTP. Deployed and external
+upstreams require HTTPS even if `UPSTREAM_HTTPS_REQUIRED=false` is supplied.
+
 Explicitly supply `DATABASE_URL`, `APP_PEPPER`, and `GO_INTERNAL_SHARED_SECRET`
 in the application environment; there are no credential fallbacks. Production
 rejects the example database credentials, development pepper, and placeholder

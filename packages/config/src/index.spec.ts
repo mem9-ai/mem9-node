@@ -195,10 +195,8 @@ describe('loadConfig', () => {
     expect(config.goVerify.timeoutMs).toBe(1500);
   });
 
-  it('still allows noop verification for local development', () => {
-    const config = loadConfig({ ...baseEnv, GO_VERIFY_MODE: 'noop' });
-
-    expect(config.goVerify.mode).toBe('noop');
+  it.each(['development', 'test', 'production'])('rejects noop verification in %s', (NODE_ENV) => {
+    expect(() => loadConfig({ ...productionEnv, NODE_ENV, GO_VERIFY_MODE: 'noop' })).toThrow(/GO_VERIFY_MODE/);
   });
 
   it.each(['MEM9_SOURCE_API_BASE_URL', 'GO_VERIFY_BASE_URL'] as const)(
@@ -217,19 +215,23 @@ describe('loadConfig', () => {
     },
   );
 
-  it('keeps an explicit staging HTTP exception separate from the production default', () => {
-    const config = loadConfig({
-      ...productionEnv,
-      MEM9_SOURCE_API_BASE_URL: 'http://staging.example/v1alpha2/mem9s',
-      GO_VERIFY_BASE_URL: 'http://staging.example',
-      APP_PEPPER: 'staging-test-pepper-1234567890',
-      UPSTREAM_HTTPS_REQUIRED: 'false',
-      QUEUE_CREDENTIAL_KEYRING: JSON.stringify({
-        encryption_kid: 'k1',
-        encryption_keys: { k1: Buffer.alloc(32, 7).toString('base64') },
-      }),
-    });
-    expect(config.analysis.mem9SourceApiBaseUrl).toMatch(/^http:/);
+  it.each(['MEM9_SOURCE_API_BASE_URL', 'GO_VERIFY_BASE_URL', 'QWEN_API_BASE_URL'] as const)(
+    'cannot disable HTTPS for a deployed or external %s', (key) => {
+      for (const NODE_ENV of ['development', 'test', 'production']) {
+        expect(() => loadConfig({ ...productionEnv, NODE_ENV, [key]: 'http://staging.example', UPSTREAM_HTTPS_REQUIRED: 'false' })).toThrow(new RegExp(`${key} must use HTTPS`));
+      }
+      expect(() => loadConfig({ ...productionEnv, [key]: 'http://127.0.0.1:8080', UPSTREAM_HTTPS_REQUIRED: 'false' })).toThrow(new RegExp(`${key} must use HTTPS`));
+    },
+  );
+
+  it.each(['localhost', '127.0.0.1', '[::1]'])('allows loopback HTTP only in local development (%s)', (host) => {
+    expect(loadConfig({ ...baseEnv, GO_VERIFY_BASE_URL: `http://${host}:8080` }).goVerify.baseUrl).toBe(`http://${host}:8080`);
+    expect(() => loadConfig({ ...baseEnv, UPSTREAM_HTTPS_REQUIRED: 'true' })).toThrow(/must use HTTPS/);
+  });
+
+  it('keeps the Redis password separate from the endpoint', () => {
+    const config = loadConfig({ ...baseEnv, REDIS_URL: 'rediss://cache.example:6379', REDIS_PASSWORD: 'private-cache-password' });
+    expect(config.redis).toEqual({ url: 'rediss://cache.example:6379', password: 'private-cache-password' });
   });
 
   it('rejects a misspelled upstream TLS policy instead of silently disabling it', () => {

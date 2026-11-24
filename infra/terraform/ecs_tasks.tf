@@ -5,8 +5,7 @@ data "aws_subnet" "api_ingress_proxy" {
 
 locals {
   # Upgrade the legacy public endpoint before a credential-bearing first request.
-  # Production endpoints must use HTTPS. Staging's internal endpoint has a
-  # separate TLS remediation and retains its current transport until then.
+  # All deployed upstream endpoints must use HTTPS, including staging.
   mem9_source_api_base_url = startswith(var.mem9_source_api_base_url, "http://api.mem9.ai/") ? replace(var.mem9_source_api_base_url, "http://api.mem9.ai/", "https://api.mem9.ai/") : var.mem9_source_api_base_url
   go_verify_base_url = coalesce(
     var.go_verify_base_url,
@@ -15,6 +14,13 @@ locals {
 }
 
 resource "aws_ecs_task_definition" "api" {
+  lifecycle {
+    precondition {
+      condition     = !local.deployment_enabled || (startswith(local.mem9_source_api_base_url, "https://") && startswith(local.go_verify_base_url, "https://") && startswith(var.qwen_api_base_url, "https://"))
+      error_message = "All deployed upstream endpoints must use HTTPS before deploying API/worker tasks."
+    }
+  }
+
   family                   = "${var.name_prefix}-api"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
@@ -38,7 +44,7 @@ resource "aws_ecs_task_definition" "api" {
         }
       ]
 
-      secrets = [
+      secrets = concat(local.redis_auth_secrets, [
         {
           name      = "DATABASE_URL"
           valueFrom = "${aws_secretsmanager_secret.app.arn}:DATABASE_URL::"
@@ -67,14 +73,14 @@ resource "aws_ecs_task_definition" "api" {
           name      = "DEEP_ANALYSIS_DAILY_LIMIT_BYPASS_FINGERPRINTS"
           valueFrom = "${aws_secretsmanager_secret.app.arn}:DEEP_ANALYSIS_DAILY_LIMIT_BYPASS_FINGERPRINTS::"
         }
-      ]
+      ])
 
       environment = [
         # Tasks accept ingress only from the ALB security group. Trust only its
         # subnets; never trust all forwarded headers or a client-supplied hop.
         { name = "PREAUTH_TRUSTED_PROXY_CIDRS", value = join(",", [for subnet in data.aws_subnet.api_ingress_proxy : subnet.cidr_block]) },
         { name = "MEM9_SOURCE_API_BASE_URL", value = local.mem9_source_api_base_url },
-        { name = "UPSTREAM_HTTPS_REQUIRED", value = tostring(var.environment_name == "prod") },
+        { name = "UPSTREAM_HTTPS_REQUIRED", value = "true" },
         { name = "MEM9_SOURCE_PAGE_SIZE", value = "200" },
         { name = "MEM9_SOURCE_REQUEST_TIMEOUT_MS", value = tostring(var.mem9_source_request_timeout_ms) },
         { name = "MEM9_SOURCE_FETCH_RETRIES", value = tostring(var.mem9_source_fetch_retries) },
@@ -96,7 +102,7 @@ resource "aws_ecs_task_definition" "api" {
         { name = "GO_VERIFY_MODE", value = "remote" },
         { name = "GO_VERIFY_BASE_URL", value = local.go_verify_base_url },
         { name = "LOG_LEVEL", value = "info" },
-        { name = "REDIS_URL", value = "rediss://${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379" }
+        { name = "REDIS_URL", value = "rediss://${local.active_redis_endpoint}:6379" }
       ]
 
       logConfiguration = {
@@ -117,6 +123,13 @@ resource "aws_ecs_task_definition" "api" {
 }
 
 resource "aws_ecs_task_definition" "worker" {
+  lifecycle {
+    precondition {
+      condition     = !local.deployment_enabled || (startswith(local.mem9_source_api_base_url, "https://") && startswith(local.go_verify_base_url, "https://") && startswith(var.qwen_api_base_url, "https://"))
+      error_message = "All deployed upstream endpoints must use HTTPS before deploying API/worker tasks."
+    }
+  }
+
   family                   = "${var.name_prefix}-worker"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
@@ -140,7 +153,7 @@ resource "aws_ecs_task_definition" "worker" {
         }
       ]
 
-      secrets = [
+      secrets = concat(local.redis_auth_secrets, [
         {
           name      = "DATABASE_URL"
           valueFrom = "${aws_secretsmanager_secret.app.arn}:DATABASE_URL::"
@@ -165,7 +178,7 @@ resource "aws_ecs_task_definition" "worker" {
           name      = "QWEN_API_KEY"
           valueFrom = "${aws_secretsmanager_secret.app.arn}:QWEN_API_KEY::"
         }
-      ]
+      ])
 
       environment = [
         { name = "NODE_ENV", value = "production" },
@@ -173,7 +186,7 @@ resource "aws_ecs_task_definition" "worker" {
         { name = "TAXONOMY_VERSION", value = "v3" },
         { name = "AWS_REGION", value = var.aws_region },
         { name = "MEM9_SOURCE_API_BASE_URL", value = local.mem9_source_api_base_url },
-        { name = "UPSTREAM_HTTPS_REQUIRED", value = tostring(var.environment_name == "prod") },
+        { name = "UPSTREAM_HTTPS_REQUIRED", value = "true" },
         { name = "MEM9_SOURCE_PAGE_SIZE", value = "200" },
         { name = "MEM9_SOURCE_REQUEST_TIMEOUT_MS", value = tostring(var.mem9_source_request_timeout_ms) },
         { name = "MEM9_SOURCE_FETCH_RETRIES", value = tostring(var.mem9_source_fetch_retries) },
@@ -191,7 +204,7 @@ resource "aws_ecs_task_definition" "worker" {
         { name = "LOG_LEVEL", value = "info" },
         { name = "GO_VERIFY_MODE", value = "remote" },
         { name = "GO_VERIFY_BASE_URL", value = local.go_verify_base_url },
-        { name = "REDIS_URL", value = "rediss://${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379" }
+        { name = "REDIS_URL", value = "rediss://${local.active_redis_endpoint}:6379" }
       ]
 
       logConfiguration = {
