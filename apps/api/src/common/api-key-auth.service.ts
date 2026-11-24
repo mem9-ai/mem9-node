@@ -14,7 +14,6 @@ export interface ApiKeyAuthenticationInput {
   fingerprintHex: string;
 }
 
-const ACTIVE_TTL_SECONDS = 300;
 const NEGATIVE_TTL_SECONDS = 60;
 
 @Injectable()
@@ -54,11 +53,8 @@ export class ApiKeyAuthService {
       });
     }
 
-    if (cached === 'active' && subject !== null) {
-      await this.repository.markApiKeySubjectSeen(subject.id);
-      return subject;
-    }
-
+    // A cached success is not proof of current validity. Ignore legacy active
+    // entries so revocation takes effect on the next authenticated request.
     const result = await this.goVerifyService.verify(input.rawApiKey);
 
     if (result.status === 'INVALID') {
@@ -92,10 +88,6 @@ export class ApiKeyAuthService {
         code: 'API_KEY_DISABLED',
       });
     }
-
-    await this.redis
-      .set(cacheKey, 'active', 'EX', ACTIVE_TTL_SECONDS)
-      .catch(() => undefined);
 
     return verifiedSubject;
   }

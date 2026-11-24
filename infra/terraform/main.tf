@@ -30,6 +30,10 @@ provider "aws" {
   region = var.aws_region
 }
 
+locals {
+  deployment_enabled = var.environment_name == "prod" || var.staging_enabled
+}
+
 resource "aws_s3_bucket" "analysis_payloads" {
   bucket = var.analysis_payload_bucket_name
 }
@@ -186,16 +190,8 @@ resource "aws_security_group" "redis" {
   vpc_id      = var.vpc_id
 }
 
-resource "aws_vpc_security_group_ingress_rule" "alb_http_redirect_in" {
-  security_group_id = aws_security_group.alb.id
-  cidr_ipv4         = "0.0.0.0/0"
-  from_port         = 80
-  to_port           = 80
-  ip_protocol       = "tcp"
-}
-
 resource "aws_vpc_security_group_ingress_rule" "alb_https_in" {
-  count = var.environment_name == "prod" ? 1 : 0
+  count = local.deployment_enabled ? 1 : 0
 
   security_group_id = aws_security_group.alb.id
   cidr_ipv4         = "0.0.0.0/0"
@@ -289,34 +285,13 @@ resource "aws_db_subnet_group" "mysql" {
   }
 }
 
-resource "aws_lb_listener" "http" {
-  load_balancer_arn = aws_lb.api.arn
-  port              = 80
-  protocol          = "HTTP"
-
-  default_action {
-    type             = var.environment_name == "prod" ? "redirect" : "forward"
-    target_group_arn = var.environment_name == "staging" ? aws_lb_target_group.api.arn : null
-
-    dynamic "redirect" {
-      for_each = var.environment_name == "prod" ? [1] : []
-
-      content {
-        port        = "443"
-        protocol    = "HTTPS"
-        status_code = "HTTP_301"
-      }
-    }
-  }
-}
-
 resource "aws_lb_listener" "https" {
-  count = var.environment_name == "prod" ? 1 : 0
+  count = local.deployment_enabled ? 1 : 0
 
   load_balancer_arn = aws_lb.api.arn
   port              = 443
   protocol          = "HTTPS"
-  certificate_arn   = "arn:aws:acm:ap-southeast-1:401696231252:certificate/b45d5c85-ae95-453e-b4b3-7802f09a2d2b"
+  certificate_arn   = var.api_certificate_arn
   ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09"
 
   default_action {

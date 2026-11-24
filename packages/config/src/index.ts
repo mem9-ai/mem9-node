@@ -71,6 +71,7 @@ const envSchema = z
     PORT: z.coerce.number().int().positive().default(3000),
     WORKER_HEALTH_PORT: z.coerce.number().int().positive().default(3001),
     REDIS_URL: z.string().min(1).default('redis://127.0.0.1:6379'),
+    REDIS_PASSWORD: z.preprocess(emptyStringToUndefined, z.string().min(1).optional()),
     APP_PEPPER: z.string().min(16),
     SENTRY_DSN: z.preprocess(
       emptyStringToUndefined,
@@ -149,7 +150,7 @@ const envSchema = z
     MAX_BATCH_MEMORIES: z.coerce.number().int().positive().default(100),
     MAX_BATCH_BYTES: z.coerce.number().int().positive().default(524288),
     MAX_MEMORIES_PER_REQUEST: z.coerce.number().int().positive().default(100),
-    GO_VERIFY_MODE: z.enum(['noop', 'remote']).default('remote'),
+    GO_VERIFY_MODE: z.literal('remote').default('remote'),
     GO_VERIFY_BASE_URL: z.string().url().default('http://127.0.0.1:8080'),
     GO_VERIFY_TIMEOUT_MS: z.coerce.number().int().positive().default(3000),
     GO_INTERNAL_SHARED_SECRET: z.string().min(8),
@@ -199,13 +200,6 @@ const envSchema = z
         path: ['AWS_SESSION_TOKEN'],
       });
     }
-    if (env.NODE_ENV === 'production' && env.GO_VERIFY_MODE === 'noop') {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'GO_VERIFY_MODE=noop is not allowed in production',
-        path: ['GO_VERIFY_MODE'],
-      });
-    }
     if (
       env.NODE_ENV === 'production' &&
       [
@@ -230,9 +224,15 @@ const envSchema = z
         path: ['GO_INTERNAL_SHARED_SECRET'],
       });
     }
-    if (env.UPSTREAM_HTTPS_REQUIRED ?? (env.NODE_ENV === 'production')) {
-      for (const key of ['MEM9_SOURCE_API_BASE_URL', 'GO_VERIFY_BASE_URL'] as const) {
-        if (URL.canParse(env[key]) && new URL(env[key]).protocol !== 'https:') {
+    // HTTP is only for loopback development/test servers. An environment flag
+    // cannot downgrade deployed or external credential-bearing connections.
+    for (const key of ['MEM9_SOURCE_API_BASE_URL', 'GO_VERIFY_BASE_URL', 'QWEN_API_BASE_URL'] as const) {
+      if (URL.canParse(env[key])) {
+        const url = new URL(env[key]);
+        const localHttp = env.NODE_ENV !== 'production' &&
+          env.UPSTREAM_HTTPS_REQUIRED !== true && url.protocol === 'http:' &&
+          ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+        if (url.protocol !== 'https:' && !localHttp) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             message: `${key} must use HTTPS when upstream TLS is required`,
@@ -271,6 +271,7 @@ export interface AppConfig {
   };
   redis: {
     url: string;
+    password?: string;
   };
   aws: {
     region: string;
@@ -345,6 +346,7 @@ export function loadConfig(
     },
     redis: {
       url: env.REDIS_URL,
+      password: env.REDIS_PASSWORD,
     },
     aws: {
       region: env.AWS_REGION,

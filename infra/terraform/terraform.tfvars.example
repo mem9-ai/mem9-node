@@ -7,6 +7,13 @@ api_image    = "401696231252.dkr.ecr.ap-southeast-1.amazonaws.com/mem9-node-prod
 worker_image = "401696231252.dkr.ecr.ap-southeast-1.amazonaws.com/mem9-node-prod-worker:0123456789abcdef0123456789abcdef01234567"
 
 api_alb_idle_timeout_seconds = 120
+api_domain_name             = "napi.mem9.ai"
+api_certificate_arn         = "arn:aws:acm:ap-southeast-1:401696231252:certificate/replace-with-issued-certificate-id"
+
+# Keep these false until the separate storage migration window is prepared.
+# Never turn provisioning off after creating the encrypted copies.
+provision_encrypted_storage = false
+use_encrypted_storage       = false
 
 vpc_id = "vpc-xxxxxxxxxxxxxxxxx"
 

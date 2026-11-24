@@ -292,7 +292,7 @@ function createConfig(overrides?: Partial<AppConfig['analysis']>): AppConfig {
       ...overrides,
     },
     goVerify: {
-      mode: 'noop',
+      mode: 'remote',
       baseUrl: 'http://127.0.0.1:8080',
       timeoutMs: 3000,
       sharedSecret: 'local-secret',

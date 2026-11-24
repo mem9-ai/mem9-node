@@ -67,7 +67,7 @@ function createConfig(overrides?: {
       ...overrides?.analysis,
     },
     goVerify: {
-      mode: 'noop',
+      mode: 'remote',
       baseUrl: 'http://127.0.0.1:8080',
       timeoutMs: 3000,
       sharedSecret: 'local-secret',

@@ -166,7 +166,7 @@ describe('ApiKeyAuthService', () => {
   });
 
   describe('valid keys', () => {
-    it('provisions the subject only after upstream verification and caches it for 300 seconds', async () => {
+    it('provisions the subject only after upstream verification without caching success', async () => {
       const ctx = setup({ existing: null, verifyStatus: 'ACTIVE' });
 
       const result = await ctx.authenticate();
@@ -177,17 +177,17 @@ describe('ApiKeyAuthService', () => {
         fingerprint,
         expect.any(Date),
       );
-      expect(ctx.redis.set).toHaveBeenCalledWith(cacheKey, 'active', 'EX', 300);
+      expect(ctx.redis.set).not.toHaveBeenCalled();
     });
 
-    it('serves a cached active key with an ACTIVE subject without calling upstream', async () => {
+    it('re-verifies a legacy cached active key with an ACTIVE subject', async () => {
       const ctx = setup({ existing: subject('ACTIVE'), cached: 'active' });
 
       const result = await ctx.authenticate();
 
       expect(result).toMatchObject({ id: 'aks_1' });
-      expect(ctx.goVerifyService.verify).not.toHaveBeenCalled();
-      expect(ctx.repository.markApiKeySubjectSeen).toHaveBeenCalledWith('aks_1');
+      expect(ctx.goVerifyService.verify).toHaveBeenCalledWith(RAW_KEY);
+      expect(ctx.repository.recordVerifiedApiKeySubject).toHaveBeenCalledTimes(1);
     });
 
     it('re-verifies when the cache says active but no subject row exists', async () => {
@@ -197,6 +197,24 @@ describe('ApiKeyAuthService', () => {
 
       expect(ctx.goVerifyService.verify).toHaveBeenCalledTimes(1);
       expect(ctx.repository.recordVerifiedApiKeySubject).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('upstream revocation', () => {
+    it.each(['INACTIVE', 'INVALID'] as const)('rejects %s on the very next request despite an old active cache entry', async (status) => {
+      const ctx = setup({ existing: subject(), cached: 'active' });
+      await ctx.authenticate();
+      ctx.goVerifyService.verify.mockResolvedValueOnce({ status, verifiedAt: new Date() });
+      const error = await captureError(ctx.authenticate());
+      expect(error.code).toBe(status === 'INACTIVE' ? 'API_KEY_INACTIVE' : 'API_KEY_INVALID');
+      expect(ctx.goVerifyService.verify).toHaveBeenCalledTimes(2);
+      expect(ctx.repository.recordVerifiedApiKeySubject).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not fall back to cached success when the verifier is unavailable', async () => {
+      const ctx = setup({ existing: subject(), cached: 'active', verifyError: new AppError('unavailable', { statusCode: 503, code: 'API_KEY_VERIFY_UNAVAILABLE' }) });
+      expect((await captureError(ctx.authenticate())).code).toBe('API_KEY_VERIFY_UNAVAILABLE');
+      expect(ctx.repository.recordVerifiedApiKeySubject).not.toHaveBeenCalled();
     });
   });
 

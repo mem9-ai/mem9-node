@@ -30,6 +30,12 @@ variable "api_desired_count" {
   }
 }
 
+variable "staging_enabled" {
+  description = "Staging is suspended by default. Re-enable only after HTTPS, real upstream verification, and protected runtime secrets are ready."
+  type        = bool
+  default     = false
+}
+
 variable "worker_desired_count" {
   description = "Desired number of worker ECS tasks."
   type        = number
@@ -74,6 +80,77 @@ variable "worker_image" {
 variable "api_alb_idle_timeout_seconds" {
   type    = number
   default = 120
+}
+
+variable "api_certificate_arn" {
+  description = "Issued ACM certificate in this region covering api_domain_name; required for production and enabled staging."
+  type        = string
+  default     = null
+  validation {
+    condition     = (var.environment_name == "staging" && !var.staging_enabled) || can(regex("^arn:aws:acm:[a-z0-9-]+:[0-9]{12}:certificate/[a-zA-Z0-9-]+$", var.api_certificate_arn))
+    error_message = "Supply the environment's ACM certificate ARN."
+  }
+}
+
+variable "api_domain_name" {
+  description = "Certificate-covered DNS hostname pointing to this environment's ALB. Never use the raw ALB DNS name for HTTPS health checks."
+  type        = string
+  default     = null
+  validation {
+    condition     = (var.environment_name == "staging" && !var.staging_enabled) || try(can(regex("^[a-zA-Z0-9][a-zA-Z0-9.-]*\\.[a-zA-Z]{2,}$", var.api_domain_name)) && !endswith(var.api_domain_name, ".elb.amazonaws.com"), false)
+    error_message = "Supply a certificate-covered API hostname, without a scheme or path."
+  }
+}
+
+variable "provision_encrypted_storage" {
+  description = "Create parallel encrypted restores without touching existing data. Keep true after creation; prevent_destroy protects both copies."
+  type        = bool
+  default     = false
+  validation {
+    condition     = !var.provision_encrypted_storage || (var.encrypted_database_snapshot_identifier != null && var.redis_migration_snapshot_name != null && var.encrypted_redis_auth_token != null)
+    error_message = "Encrypted storage provisioning requires the final encrypted RDS snapshot, Redis snapshot, and Redis AUTH token."
+  }
+}
+
+variable "use_encrypted_storage" {
+  description = "Switch application endpoints only after validating the restored data under a write freeze; see the migration runbook."
+  type        = bool
+  default     = false
+  validation {
+    condition     = !var.use_encrypted_storage || var.provision_encrypted_storage
+    error_message = "Cannot switch to encrypted storage before provisioning it."
+  }
+}
+
+variable "encrypted_database_snapshot_identifier" {
+  description = "Final encrypted copy of the original database snapshot taken after writers and queues are quiesced."
+  type        = string
+  default     = null
+  validation {
+    condition     = var.encrypted_database_snapshot_identifier == null ? true : length(trimspace(var.encrypted_database_snapshot_identifier)) > 0
+    error_message = "The database snapshot identifier must not be empty."
+  }
+}
+
+variable "redis_migration_snapshot_name" {
+  description = "Final Redis backup taken during the same write freeze; never restore a stale rehearsal snapshot for cutover."
+  type        = string
+  default     = null
+  validation {
+    condition     = var.redis_migration_snapshot_name == null ? true : length(trimspace(var.redis_migration_snapshot_name)) > 0
+    error_message = "The Redis snapshot name must not be empty."
+  }
+}
+
+variable "encrypted_redis_auth_token" {
+  description = "AUTH token for the new encrypted Redis group, supplied through protected Terraform variables and Secrets Manager."
+  type        = string
+  sensitive   = true
+  default     = null
+  validation {
+    condition     = var.encrypted_redis_auth_token == null ? true : can(regex("^[A-Za-z0-9!&#$^<>-]{16,128}$", var.encrypted_redis_auth_token))
+    error_message = "Redis AUTH requires 16-128 alphanumeric characters or ! & # $ ^ < > -."
+  }
 }
 
 variable "analysis_payload_bucket_name" {
