@@ -39,7 +39,7 @@ export class AppExceptionFilter implements ExceptionFilter {
 
     if (exception instanceof AppError) {
       if (exception.statusCode >= 500) {
-        Sentry.captureException(exception);
+        Sentry.captureException(exception, { tags: { requestId: resolveRequestId(request.id) } });
       }
 
       response.status(exception.statusCode).send({
@@ -56,7 +56,7 @@ export class AppExceptionFilter implements ExceptionFilter {
 
     if (exception instanceof HttpException) {
       if (exception.getStatus() >= 500) {
-        Sentry.captureException(exception);
+        Sentry.captureException(exception, { tags: { requestId: resolveRequestId(request.id) } });
       }
 
       response.status(exception.getStatus()).send({
@@ -77,7 +77,7 @@ export class AppExceptionFilter implements ExceptionFilter {
       return;
     }
 
-    Sentry.captureException(exception);
+    Sentry.captureException(exception, { tags: { requestId: resolveRequestId(request.id) } });
     response.status(HttpStatus.INTERNAL_SERVER_ERROR).send({
       code: 'INTERNAL_SERVER_ERROR',
       message: 'Internal server error',

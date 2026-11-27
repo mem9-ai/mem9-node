@@ -534,3 +534,16 @@ describe('batch queue isolation', () => {
     expect(fixture.taxonomyCache.getRules).not.toHaveBeenCalled();
   });
 });
+
+
+it('persists a safe failure message and never puts raw exceptions in progress events', async () => {
+  const fixture = createIsolationFixture();
+  const error = new Error('mysql://user:private-password@db/tenant memory');
+  fixture.storage.getObjectBuffer.mockRejectedValue(error);
+  await expect(fixture.processor.process(fixture.message, 1)).rejects.toBe(error);
+  expect(fixture.repository.markBatchFailure).toHaveBeenCalledWith(expect.objectContaining({
+    errorCode: 'BATCH_PROCESSING_FAILED', errorMessage: 'Analysis processing failed. Please retry.',
+  }));
+  expect(JSON.stringify(fixture.redis.rpush.mock.calls)).not.toContain('private-password');
+  expect(fixture.redis.rpush).toHaveBeenCalledWith(expect.any(String), expect.stringContaining('batch_failed'));
+});

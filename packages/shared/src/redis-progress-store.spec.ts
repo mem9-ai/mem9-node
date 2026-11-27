@@ -235,3 +235,18 @@ describe('redis progress store', () => {
     });
   });
 });
+
+
+it('sanitizes legacy Redis failure events and cached batch results without changing cursors', async () => {
+  const redis = new FakeRedis();
+  const store = new RedisProgressStore(redis as never, 60);
+  await redis.set('aj:job:batch:1', JSON.stringify({ batchIndex: 1, errorMessage: 'private-password', errorCode: 'BATCH_PROCESSING_FAILED' }));
+  await redis.rpush('aj:job:events', JSON.stringify({ version: 1, type: 'batch_failed', status: 'FAILED', message: 'private-password' }));
+  await redis.rpush('aj:job:events', JSON.stringify({ version: 2, type: 'batch_completed', batchIndex: 1 }));
+  const result = await store.getUpdates('job', 0);
+  expect(result.events).toHaveLength(2);
+  expect(result.events[0]).toMatchObject({ version: 1, message: 'Analysis processing failed. Please retry.' });
+  expect(result.completedBatchResults[0]).toMatchObject({ errorCode: 'BATCH_PROCESSING_FAILED', errorMessage: 'Analysis processing failed. Please retry.' });
+  expect(JSON.stringify(result)).not.toContain('private-password');
+  expect((await store.getUpdates('job', 1)).events).toHaveLength(1);
+});

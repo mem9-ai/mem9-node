@@ -23,6 +23,8 @@ import {
   canonicalizeBatchPayload,
   gzipJson,
   sha256Hex,
+  publicProcessingError,
+  publicStoredError,
 } from '@mem9/shared';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { AnalysisJobStatus } from '@prisma/client';
@@ -296,7 +298,7 @@ export class AnalysisJobsService {
             startedAt: batch.startedAt?.toISOString(),
             completedAt: batch.completedAt?.toISOString(),
             errorCode: batch.errorCode,
-            errorMessage: batch.errorMessage,
+            errorMessage: publicStoredError(batch.errorMessage, batch.errorCode),
           };
         }
 
@@ -310,7 +312,7 @@ export class AnalysisJobsService {
           startedAt: batch.startedAt?.toISOString(),
           completedAt: batch.completedAt?.toISOString(),
           errorCode: batch.errorCode,
-          errorMessage: batch.errorMessage,
+          errorMessage: publicStoredError(batch.errorMessage, batch.errorCode),
         };
       }),
     );
@@ -443,9 +445,7 @@ export class AnalysisJobsService {
       const errorCode = error instanceof AppError
         ? error.code
         : 'ANALYSIS_SOURCE_PREPARATION_FAILED';
-      const errorMessage = error instanceof Error
-        ? error.message
-        : 'Failed to prepare analysis source';
+      const errorMessage = publicProcessingError(errorCode);
 
       const updated = await this.repository.markJobFailed(
         jobId,

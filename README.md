@@ -68,6 +68,19 @@ build secret or your credential manager. Do not put this token in application
 environment files, Terraform variables, or ECS runtime secrets. The deployment
 workflows currently build images without uploading sourcemaps.
 
+API and worker error events use a shared SDK-side allowlist: retain release,
+process, request ID, error code, and stack locations; omit raw exception messages,
+request data, user data, extra context, source snippets, breadcrumbs, and attachments.
+Sentry logs and transactions are disabled. This does not erase existing Sentry
+records or change internal database diagnostics and application log retention.
+
+Snapshot storage rejects objects above 32 MiB. Gzip JSON decoding is asynchronous
+and rejects decoded output above 64 MiB (`PAYLOAD_TOO_LARGE`); downloads enforce
+the limit while streaming even without a trustworthy Content-Length. Writers
+apply the same limits. Oversized historical snapshots fail without truncation.
+Public processing failures expose fixed messages and error codes; reads also mask
+legacy raw error messages in database records and Redis progress events.
+
 ## Production Deployment
 
 Pull requests run application and Terraform checks. Production is released

@@ -38,6 +38,25 @@ describe('deep report queue isolation', () => {
     return { repository, storage, qwen, processor, expectNoSideEffects };
   }
 
+  it('keeps provider exception text out of the public report failure field', async () => {
+    const fixture = setup();
+    fixture.repository.getOwnedDeepAnalysisReport.mockResolvedValue({
+      id: message.reportId, status: 'QUEUED', internalComment: null,
+    });
+    fixture.storage.getObjectBuffer.mockRejectedValue(new Error('provider-key-secret tenant data'));
+    const log = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    try {
+      await fixture.processor.process(message);
+      expect(fixture.repository.updateDeepAnalysisExecution).toHaveBeenLastCalledWith(
+        message.reportId, TEST_FINGERPRINT, TEST_LEASE_TOKEN,
+        expect.objectContaining({ status: 'FAILED', errorCode: 'DEEP_ANALYSIS_PROCESSING_FAILED',
+          errorMessage: 'Analysis processing failed. Please retry.' }),
+      );
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it.each([undefined, '', '01', 'gg'.repeat(32), '01'.repeat(32) + 'junk', '01'.repeat(32) + '\n'])('rejects an absent or malformed owner %p before lookup', async (owner) => {
     const fixture = setup();
     await expect(fixture.processor.process({ ...message, apiKeyFingerprintHex: owner } as DeepAnalysisReportMessage)).rejects.toThrow();
@@ -1294,6 +1313,8 @@ describe('deep analysis report processor service', () => {
       ),
       putJson: jest.fn(async () => undefined),
     };
+    let notifyFirstWave: () => void = () => undefined;
+    const firstWaveStarted = new Promise<void>(resolve => { notifyFirstWave = resolve; });
     let inFlight = 0;
     let maxInFlight = 0;
     const pendingChunkResolves: Array<() => void> = [];
@@ -1306,6 +1327,7 @@ describe('deep analysis report processor service', () => {
 
         inFlight += 1;
         maxInFlight = Math.max(maxInFlight, inFlight);
+        if (inFlight === 5) notifyFirstWave();
         await new Promise<void>((resolve) => {
           pendingChunkResolves.push(() => {
             inFlight -= 1;
@@ -1332,7 +1354,7 @@ describe('deep analysis report processor service', () => {
       traceId: 'trace_concurrency',
     });
 
-    await new Promise((resolve) => setImmediate(resolve));
+    await firstWaveStarted;
     expect(maxInFlight).toBe(5);
     expect(pendingChunkResolves).toHaveLength(5);
 
@@ -1487,7 +1509,7 @@ describe('deep analysis report processor service', () => {
         status: 'FAILED',
         stage: 'VALIDATE',
         errorCode: 'DEEP_ANALYSIS_PROCESSING_FAILED',
-        errorMessage: "Cannot read properties of undefined (reading 'trim')",
+        errorMessage: 'Analysis processing failed. Please retry.',
         internalComment: expect.any(String),
       }),
     );
