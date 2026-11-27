@@ -9,6 +9,29 @@ jest.mock('@sentry/nestjs', () => ({
 }));
 
 describe('AppExceptionFilter', () => {
+  it.each([
+    new Error('Prisma: secret database password at db.internal'),
+    new AppError('upstream secret response', {
+      statusCode: 503, code: 'UPSTREAM_UNAVAILABLE', details: { body: 'private tenant content' },
+    }),
+    new HttpException({ message: 'private database failure', credentials: 'secret' }, 500),
+  ])('hides internal server messages and details while retaining the request id', (error) => {
+    const { host, response } = createHost();
+    new AppExceptionFilter().catch(error, host);
+    expect(response.send).toHaveBeenCalledWith({
+      code: error instanceof AppError ? error.code : error instanceof HttpException ? 'HTTP_EXCEPTION' : 'INTERNAL_SERVER_ERROR',
+      message: 'Internal server error', requestId: 'req_123',
+    });
+    expect(Sentry.captureException).toHaveBeenCalledWith(error);
+  });
+
+  it('preserves actionable client validation errors', () => {
+    const { host, response } = createHost();
+    const cause = { message: ['lang must be shorter than or equal to 32 characters'], statusCode: 400 };
+    new AppExceptionFilter().catch(new HttpException(cause, 400), host);
+    expect(response.send).toHaveBeenCalledWith(expect.objectContaining({ details: { cause } }));
+  });
+
   afterEach(() => {
     jest.restoreAllMocks();
     jest.clearAllMocks();

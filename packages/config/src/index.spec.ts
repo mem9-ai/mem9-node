@@ -47,8 +47,10 @@ describe('loadConfig', () => {
   it.each([
     ['APP_PEPPER', 'local-dev-pepper-1234567890'],
     ['APP_PEPPER', 'replace-with-32-char-random-secret'],
+    ['APP_PEPPER', 'replace-with-32-plus-char-random-secret'],
     ['GO_INTERNAL_SHARED_SECRET', 'local-secret'],
     ['GO_INTERNAL_SHARED_SECRET', 'replace-me'],
+    ['GO_INTERNAL_SHARED_SECRET', 'replace-with-strong-internal-shared-secret'],
     ['DATABASE_URL', baseEnv.DATABASE_URL],
     ['DATABASE_URL', 'mysql://mem9:mem9@db.internal:3306/production'],
     ['DATABASE_URL', 'mysql://%6dem9:%6dem9@db.internal:3306/production'],

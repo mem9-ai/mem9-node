@@ -21,15 +21,21 @@ export class AppExceptionFilter implements ExceptionFilter {
     const request = host.switchToHttp().getRequest<Mem9FastifyRequest>();
 
     // Guards run before interceptors; retain denied requests in structured logs.
-    this.logger.warn(JSON.stringify({
-      event: 'request_rejected',
-      requestId: resolveRequestId(request.id),
-      method: request.method,
-      route: request.routeOptions?.url ?? 'unmatched',
-      statusCode: exception instanceof AppError ? exception.statusCode
-        : exception instanceof HttpException ? exception.getStatus() : 500,
-      apiKeyFingerprintHex: request.mem9Context?.apiKeyFingerprintHex,
-    }));
+    this.logger.warn(
+      JSON.stringify({
+        event: 'request_rejected',
+        requestId: resolveRequestId(request.id),
+        method: request.method,
+        route: request.routeOptions?.url ?? 'unmatched',
+        statusCode:
+          exception instanceof AppError
+            ? exception.statusCode
+            : exception instanceof HttpException
+              ? exception.getStatus()
+              : 500,
+        apiKeyFingerprintHex: request.mem9Context?.apiKeyFingerprintHex,
+      }),
+    );
 
     if (exception instanceof AppError) {
       if (exception.statusCode >= 500) {
@@ -38,9 +44,12 @@ export class AppExceptionFilter implements ExceptionFilter {
 
       response.status(exception.statusCode).send({
         code: exception.code,
-        message: exception.message,
+        message:
+          exception.statusCode >= 500
+            ? 'Internal server error'
+            : exception.message,
         requestId: request.id,
-        details: exception.details,
+        ...(exception.statusCode < 500 ? { details: exception.details } : {}),
       });
       return;
     }
@@ -52,11 +61,18 @@ export class AppExceptionFilter implements ExceptionFilter {
 
       response.status(exception.getStatus()).send({
         code: 'HTTP_EXCEPTION',
-        message: sanitizeErrorMessage(exception),
+        message:
+          exception.getStatus() >= 500
+            ? 'Internal server error'
+            : sanitizeErrorMessage(exception),
         requestId: request.id,
-        details: {
-          cause: exception.getResponse(),
-        },
+        ...(exception.getStatus() < 500
+          ? {
+              details: {
+                cause: exception.getResponse(),
+              },
+            }
+          : {}),
       });
       return;
     }
@@ -64,7 +80,7 @@ export class AppExceptionFilter implements ExceptionFilter {
     Sentry.captureException(exception);
     response.status(HttpStatus.INTERNAL_SERVER_ERROR).send({
       code: 'INTERNAL_SERVER_ERROR',
-      message: sanitizeErrorMessage(exception),
+      message: 'Internal server error',
       requestId: request.id,
     });
   }

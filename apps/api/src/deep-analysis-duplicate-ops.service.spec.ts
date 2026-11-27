@@ -13,6 +13,32 @@ function createContext() {
 }
 
 describe('deep analysis duplicate ops service', () => {
+  it.each([
+    '=HYPERLINK("https://example.invalid", "click")',
+    '+1+2', '-1+2', '@SUM(1,2)', '\t=1+2', '\r=1+2', '\n=1+2', '   =1+2',
+    'normal, "quoted" text',
+  ])('exports untrusted memory text as a literal CSV cell: %s', async (content) => {
+    const service = new DeepAnalysisDuplicateOpsService({
+      getOwnedDeepAnalysisReport: jest.fn().mockResolvedValue({
+        id: 'dar_1', status: 'COMPLETED', reportObjectKey: 'report.json', sourceSnapshotObjectKey: 'source.json.gz',
+      }),
+    } as never, {} as never, {
+      getObjectBuffer: jest.fn(async (key: string) => key === 'report.json'
+        ? Buffer.from(JSON.stringify({ quality: { duplicateClusters: [
+          { canonicalMemoryId: 'canonical', duplicateMemoryIds: ['=1+2'] },
+        ] } }))
+        : gzipJson({ memories: [
+          { id: 'canonical', content }, { id: '=1+2', content },
+        ] })),
+    } as never);
+    const result = await service.downloadDuplicateCleanupCsv(createContext(), 'dar_1');
+    const preview = content.replace(/\s+/g, ' ').trim();
+    const expected = preview.startsWith('normal') ? preview : `'${preview}`;
+    expect(result.content).toContain(`"${expected.replace(/"/g, '""')}"`);
+    expect(result.content).toContain('"\'=1+2",');
+    expect(result.content.split('\n')).toHaveLength(3);
+  });
+
   it('rejects a historical model-generated cluster whose contents are different before deleting anything', async () => {
     const report = {
       id: 'dar_1', status: 'COMPLETED', reportObjectKey: 'report.json',

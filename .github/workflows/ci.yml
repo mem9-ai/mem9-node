@@ -44,6 +44,9 @@ jobs:
       - name: Run unit tests
         run: pnpm test
 
+      - name: Test production rollback provenance checks
+        run: python3 -m unittest discover -s scripts -p 'test_trusted_release_record.py'
+
       - name: Build application
         run: pnpm build
 

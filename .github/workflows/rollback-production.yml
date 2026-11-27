@@ -29,6 +29,12 @@ jobs:
       id-token: write
 
     steps:
+      - name: Check out trusted rollback validation
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
       - name: Configure AWS deployment credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
@@ -93,10 +99,14 @@ jobs:
           while IFS=$'\t' read -r _ artifact_id; do
             test -n "$artifact_id" || continue
 
-            archive="$RECORD_DIR/$artifact_id.zip"
             record="$RECORD_DIR/$artifact_id.json"
-            gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > "$archive"
-            unzip -p "$archive" release.json > "$record"
+            if python3 scripts/trusted-release-record.py "$artifact_id" release "$record"; then
+              :
+            else
+              result=$?
+              if [ "$result" -eq 2 ]; then continue; fi
+              exit "$result"
+            fi
 
             recorded_api=$(jq -r '.apiTaskDefinition // empty' "$record")
             recorded_worker=$(jq -r '.workerTaskDefinition // empty' "$record")
@@ -135,10 +145,14 @@ jobs:
             while IFS=$'\t' read -r _ artifact_id; do
               test -n "$artifact_id" || continue
 
-              archive="$RECORD_DIR/restore-$artifact_id.zip"
               record="$RECORD_DIR/restore-$artifact_id.json"
-              gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > "$archive"
-              unzip -p "$archive" restore-point.json > "$record"
+              if python3 scripts/trusted-release-record.py "$artifact_id" restore-point "$record"; then
+                :
+              else
+                result=$?
+                if [ "$result" -eq 2 ]; then continue; fi
+                exit "$result"
+              fi
 
               previous_api=$(jq -r '.previousApiTaskDefinition // empty' "$record")
               previous_worker=$(jq -r '.previousWorkerTaskDefinition // empty' "$record")
