@@ -27,6 +27,35 @@ function buildContext(request: Record<string, unknown>): ExecutionContext {
 }
 
 describe('rate limit guard', () => {
+  it.each([
+    ['POST', '/v1/analysis-jobs/from-source?trace=1', { minute: 2, day: 338 }],
+    ['POST', '/v1/analysis-jobs?trace=1', 2],
+    ['POST', '/v1/analysis-jobs?redirect=/batches/1', 2],
+    ['PUT', '/v1/analysis-jobs/aj_1/batches/1?trace=1', 3],
+    ['GET', '/v1/taxonomy?redirect=/analysis-jobs/from-source', 1],
+  ])('charges the route cost for %s %s', async (method, url, cost) => {
+    const consume = jest.fn();
+    const guard = new RateLimitGuard(createRepository() as never, { consume } as never);
+    await guard.canActivate(buildContext({
+      method, url, body: { expectedTotalBatches: 112 },
+      mem9Context: { apiKeyFingerprintHex: '00' },
+      mem9ApiKeySubject: activeSubject(),
+    }));
+    expect(consume).toHaveBeenCalledWith('00', expect.anything(), cost);
+  });
+
+  it('uses the matched route when Fastify provides one', async () => {
+    const consume = jest.fn();
+    const guard = new RateLimitGuard(createRepository() as never, { consume } as never);
+    await guard.canActivate(buildContext({
+      method: 'POST', url: '/v1/analysis-jobs/from-source?trace=1',
+      routeOptions: { url: '/v1/analysis-jobs/from-source' },
+      body: { expectedTotalBatches: 2 },
+      mem9Context: { apiKeyFingerprintHex: '00' }, mem9ApiKeySubject: activeSubject(),
+    }));
+    expect(consume).toHaveBeenCalledWith('00', expect.anything(), { minute: 2, day: 8 });
+  });
+
   it('reserves the full daily workload for source-backed analysis', async () => {
     const repository = createRepository();
     const rateLimitWindowService = {

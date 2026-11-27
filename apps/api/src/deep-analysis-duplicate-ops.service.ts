@@ -35,10 +35,15 @@ function sentencePreview(content: string): string {
 }
 
 function escapeCsvCell(value: string | number): string {
-  const normalized = String(value)
-    .replace(/\r?\n/g, ' ')
-    .replace(/"/g, '""');
-  return `"${normalized}"`;
+  const raw = String(value);
+  const normalized = raw.replace(/[\r\n]/g, ' ');
+  // CSV quoting only escapes delimiters; spreadsheet formulas need a text prefix.
+  // Control characters can precede a formula, so recognize them deliberately.
+  // eslint-disable-next-line no-control-regex
+  const cell = /^[\s\x00-\x1f]*[=+\-@]/u.test(normalized) || /^[\t\r\n]/u.test(raw)
+    ? `'${normalized}`
+    : normalized;
+  return `"${cell.replace(/"/g, '""')}"`;
 }
 
 function buildDuplicateCsv(rows: DeepAnalysisDuplicateExportRow[]): string {

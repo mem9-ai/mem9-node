@@ -36,7 +36,8 @@ export class RateLimitGuard implements CanActivate {
   }
 
   private resolveCost(request: Mem9FastifyRequest): number | { minute: number; day: number } {
-    const { method, url } = request;
+    const { method } = request;
+    const url = request.routeOptions?.url ?? request.url.split('?', 1)[0]!;
 
     if (method === 'PUT' && url.includes('/batches/')) {
       return 3;

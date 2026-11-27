@@ -205,6 +205,7 @@ const envSchema = z
       [
         'local-dev-pepper-1234567890',
         'replace-with-32-char-random-secret',
+        'replace-with-32-plus-char-random-secret',
       ].includes(env.APP_PEPPER)
     ) {
       ctx.addIssue({
@@ -215,7 +216,7 @@ const envSchema = z
     }
     if (
       env.NODE_ENV === 'production' &&
-      ['local-secret', 'replace-me'].includes(env.GO_INTERNAL_SHARED_SECRET)
+      ['local-secret', 'replace-me', 'replace-with-strong-internal-shared-secret'].includes(env.GO_INTERNAL_SHARED_SECRET)
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
