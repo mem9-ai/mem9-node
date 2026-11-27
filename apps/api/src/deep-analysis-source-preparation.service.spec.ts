@@ -57,7 +57,7 @@ describe('deep analysis source preparation lease', () => {
       fingerprint,
       'source',
     );
-    const snapshot = gunzipJson<{ memoryCount: number }>(
+    const snapshot = await gunzipJson<{ memoryCount: number }>(
       storage.putCompressedJson.mock.calls[0]![1],
     );
     expect(snapshot.memoryCount).toBe(1);

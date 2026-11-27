@@ -858,7 +858,7 @@ describe('analysis jobs integration', () => {
     if (status === 200) {
       expect(storage).toHaveBeenCalledTimes(1);
       expect(enqueue).toHaveBeenCalledTimes(1);
-      const stored = gunzipJson<{ memories: { content: string }[] }>(storage.mock.calls[0]![1]);
+      const stored = await gunzipJson<{ memories: { content: string }[] }>(storage.mock.calls[0]![1]);
       expect(stored.memories[0]?.content).toBe(content);
     } else {
       expect((response.body as { code: string }).code).toBe('MAX_BATCH_BYTES_EXCEEDED');

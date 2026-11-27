@@ -23,6 +23,7 @@ import {
   isDeepAnalysisExecutionLeaseLost,
   normalizeMemory,
   parseApiKeyFingerprint,
+  publicProcessingError,
   withDeepAnalysisExecutionLease,
 } from '@mem9/shared';
 import { Inject, Injectable, Logger } from '@nestjs/common';
@@ -1760,7 +1761,7 @@ export class DeepAnalysisReportProcessorService {
         });
         await lease.assertActive();
         const payloadBuffer = await this.storage.getObjectBuffer(reportRecord.sourceSnapshotObjectKey);
-        const payload = gunzipJson<SourceSnapshotPayload>(payloadBuffer);
+        const payload = await gunzipJson<SourceSnapshotPayload>(payloadBuffer);
         const prepared = this.prepareMemories(payload.memories);
         const memoryIds = new Set(payload.memories.map((memory) => memory.id));
         const totalChunks = this.buildChunkCount(prepared.uniqueMemories.length);
@@ -1959,7 +1960,7 @@ export class DeepAnalysisReportProcessorService {
           progressPercent: 100,
           completedAt: new Date(),
           errorCode,
-          errorMessage: error instanceof Error ? error.message.slice(0, 512) : 'Deep analysis failed',
+          errorMessage: publicProcessingError(errorCode),
           internalComment: JSON.stringify(internalComment),
         });
         this.logger.error(

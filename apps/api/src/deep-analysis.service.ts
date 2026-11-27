@@ -5,10 +5,9 @@ import type {
   DeepAnalysisReportDetail,
   DeepAnalysisReportDocument,
   DeepAnalysisReportListItem,
-  DeepAnalysisReportPreview,
   ListDeepAnalysisReportsResponse,
 } from '@mem9/contracts';
-import { AnalysisRepository, S3PayloadStorageService, createPrefixedId } from '@mem9/shared';
+import { AnalysisRepository, S3PayloadStorageService, createPrefixedId, publicStoredError, publicReportPreview } from '@mem9/shared';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 
 import type { Mem9RequestContext } from './common/request-context';
@@ -18,14 +17,6 @@ import { DeepAnalysisPolicy } from './deep-analysis.policy';
 import type { CreateDeepAnalysisReportDto } from './dto/create-deep-analysis-report.dto';
 import type { ListDeepAnalysisReportsDto } from './dto/list-deep-analysis-reports.dto';
 import { Mem9SourceService } from './mem9-source.service';
-
-function toPreview(value: unknown): DeepAnalysisReportPreview | null {
-  if (!value || typeof value !== 'object') {
-    return null;
-  }
-
-  return value as DeepAnalysisReportPreview;
-}
 
 function parseReportDocument(payload: Buffer): DeepAnalysisReportDocument {
   return JSON.parse(payload.toString('utf8')) as DeepAnalysisReportDocument;
@@ -58,8 +49,8 @@ function toListItem(report: {
     startedAt: report.startedAt?.toISOString() ?? null,
     completedAt: report.completedAt?.toISOString() ?? null,
     errorCode: report.errorCode,
-    errorMessage: report.errorMessage,
-    preview: toPreview(report.previewJson),
+    errorMessage: publicStoredError(report.errorMessage, report.errorCode),
+    preview: publicReportPreview(report.previewJson),
   };
 }
 

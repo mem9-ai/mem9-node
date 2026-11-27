@@ -738,3 +738,27 @@ describe('deep analysis service', () => {
     expect(duplicateOps.deleteReport).toHaveBeenCalledWith(context, 'dar_1');
   });
 });
+
+
+it('masks historical report and duplicate-cleanup errors in both list and detail responses', async () => {
+  const report = {
+    id: 'dar_1', status: 'FAILED', stage: 'FETCH_SOURCE', progressPercent: 0,
+    lang: 'en', timezone: 'UTC', memoryCount: 1001, requestedAt: new Date(),
+    startedAt: null, completedAt: null, reportObjectKey: null,
+    errorCode: 'SOURCE_FAILED', errorMessage: 'private-password',
+    previewJson: { summary: 'Expected summary', duplicateCleanup: { status: 'FAILED', errorMessage: 'private-password' } },
+  };
+  const { service } = createService({ repository: {
+    listOwnedDeepAnalysisReports: jest.fn().mockResolvedValue({ reports: [report], total: 1 }),
+    getOwnedDeepAnalysisReport: jest.fn().mockResolvedValue(report),
+  } });
+  const list = await service.listReports(createContext(), { limit: 20, offset: 0 });
+  const detail = await service.getReport(createContext(), 'dar_1');
+  for (const result of [list.reports[0], detail]) {
+    expect(JSON.stringify(result)).not.toContain('private-password');
+    expect(result).toMatchObject({ errorCode: 'SOURCE_FAILED', errorMessage: 'Analysis processing failed. Please retry.',
+      preview: { summary: 'Expected summary', duplicateCleanup: { errorMessage: 'Analysis processing failed. Please retry.' } },
+    });
+  }
+  expect(report.errorMessage).toBe('private-password');
+});

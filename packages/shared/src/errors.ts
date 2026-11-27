@@ -32,3 +32,14 @@ export function sanitizeErrorMessage(error: unknown): string {
 
   return 'Unexpected error';
 }
+
+/** Public processing failures must never include provider, storage, or tenant text. */
+export function publicProcessingError(code?: string | null): string {
+  return code === 'PAYLOAD_TOO_LARGE'
+    ? 'Analysis snapshot exceeds the supported size limit'
+    : 'Analysis processing failed. Please retry.';
+}
+
+export function publicStoredError(message: string | null | undefined, code?: string | null): string | null {
+  return message == null ? null : publicProcessingError(code);
+}

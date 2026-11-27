@@ -193,3 +193,22 @@ describe('analysis jobs service', () => {
     expect(finalizeJob).not.toHaveBeenCalled();
   });
 });
+
+
+it.each([null, JSON.stringify({ batchIndex: 1, errorMessage: 'private-password' })])(
+  'masks historical database errors whether a batch cache exists: %s', async cached => {
+    const repository = { getOwnedJob: jest.fn().mockResolvedValue({
+      id: 'job', status: 'FAILED', createdAt: new Date(), expectedTotalBatches: 1,
+      batches: [{ batchIndex: 1, status: 'FAILED', memoryCount: 1,
+        errorCode: 'BATCH_PROCESSING_FAILED', errorMessage: 'private-password' }],
+    }) };
+    const redis = { get: jest.fn(async (key: string) => key.endsWith(':batch:1') ? cached : null) };
+    const service = new AnalysisJobsService(repository as never, redis as never,
+      {} as never, {} as never, {} as never, {} as never, {} as never,
+      { analysis: { jobResultTtlSeconds: 3600 } } as never);
+    const result = await service.getSnapshot({ apiKeyFingerprint: Buffer.alloc(32) } as never, 'job');
+    expect(result.batchSummaries[0]).toMatchObject({ errorCode: 'BATCH_PROCESSING_FAILED',
+      errorMessage: 'Analysis processing failed. Please retry.' });
+    expect(JSON.stringify(result)).not.toContain('private-password');
+  },
+);

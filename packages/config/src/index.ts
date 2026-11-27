@@ -403,3 +403,5 @@ export function loadConfig(
 }
 
 export const APP_CONFIG = Symbol('APP_CONFIG');
+
+export { sentryPrivacyOptions, scrubSentryEvent } from './sentry-privacy';

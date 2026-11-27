@@ -19,3 +19,4 @@ export * from './state-machine';
 export * from './taxonomy-cache.service';
 export * from './taxonomy-categories';
 export * from './time';
+export * from './public-preview';

@@ -13,6 +13,7 @@ import {
   normalizeMemory,
   parseApiKeyFingerprint,
   sha256Hex,
+  publicProcessingError,
 } from '@mem9/shared';
 import { Injectable, Logger } from '@nestjs/common';
 import { AnalysisJobStatus, AnalysisJobBatchStatus } from '@prisma/client';
@@ -100,7 +101,7 @@ export class BatchProcessorService {
         await this.repository.markBatchRunning(message.jobId, message.batchIndex);
 
         const payloadBuffer = await this.storage.getObjectBuffer(batch.payloadObjectKey);
-        const payload = gunzipJson<{
+        const payload = await gunzipJson<{
           jobId: string;
           batchIndex: number;
           memoryCount: number;
@@ -161,14 +162,13 @@ export class BatchProcessorService {
           jobId: message.jobId,
           batchIndex: message.batchIndex,
           errorCode: error instanceof AppError ? error.code : 'BATCH_PROCESSING_FAILED',
-          errorMessage: error instanceof Error ? error.message.slice(0, 512) : 'Batch processing failed',
+          errorMessage: publicProcessingError(error instanceof AppError ? error.code : undefined),
           retryable: receiveCount < 3,
           receiveCount,
         });
         await this.progressStore.appendFailureEvent(
           message.jobId,
           message.batchIndex,
-          error instanceof Error ? error.message : 'Batch processing failed',
         );
         throw error;
       }

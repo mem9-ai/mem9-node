@@ -9,6 +9,7 @@ import type {
 import { ANALYSIS_CATEGORIES } from '@mem9/contracts';
 import type Redis from 'ioredis';
 
+import { publicProcessingError, publicStoredError } from './errors';
 import { redisKeys } from './redis-keys';
 
 const defaultProgress = (expectedTotalBatches = 0): JobProgressSnapshot => ({
@@ -181,7 +182,7 @@ export class RedisProgressStore {
     };
   }
 
-  public async appendFailureEvent(jobId: string, batchIndex: number, message: string): Promise<void> {
+  public async appendFailureEvent(jobId: string, batchIndex: number): Promise<void> {
     const progress = await this.getProgress(jobId);
     const nextProgress = {
       ...progress,
@@ -194,7 +195,7 @@ export class RedisProgressStore {
       jobId,
       batchIndex,
       status: 'FAILED',
-      message,
+      message: publicProcessingError(),
       delta: {
         failedBatches: 1,
       },
@@ -218,7 +219,9 @@ export class RedisProgressStore {
 
   public async getBatchResult(jobId: string, batchIndex: number): Promise<BatchSummary | null> {
     const raw = await this.redis.get(redisKeys.batchResult(jobId, batchIndex));
-    return raw === null ? null : (JSON.parse(raw) as BatchSummary);
+    if (raw === null) return null;
+    const result = JSON.parse(raw) as BatchSummary;
+    return { ...result, errorMessage: publicStoredError(result.errorMessage, result.errorCode) };
   }
 
   public async getUpdates(jobId: string, cursor: number): Promise<AnalysisJobUpdatesResponse> {
@@ -228,7 +231,12 @@ export class RedisProgressStore {
       this.redis.lrange(redisKeys.events(jobId), 0, -1),
     ]);
     const events = rawEvents
-      .map((value) => JSON.parse(value) as AnalysisEvent)
+      .map((value) => {
+        const event = JSON.parse(value) as AnalysisEvent;
+        return event.type === 'batch_failed' || event.status === 'FAILED'
+          ? { ...event, message: publicProcessingError() }
+          : event;
+      })
       .filter((event) => event.version > cursor);
     const batchResults = (
       await Promise.all(

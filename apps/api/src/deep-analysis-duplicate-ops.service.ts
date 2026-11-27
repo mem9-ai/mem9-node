@@ -2,7 +2,6 @@ import type {
   DeepAnalysisDuplicateCleanupStatus,
   DeepAnalysisDuplicateExportRow,
   DeepAnalysisReportDocument,
-  DeepAnalysisReportPreview,
   DeleteDeepAnalysisDuplicatesResponse,
 } from '@mem9/contracts';
 import {
@@ -13,6 +12,8 @@ import {
   normalizeMemoryContent,
   parseApiKeyFingerprint,
   sha256Hex,
+  publicReportPreview,
+  publicProcessingError,
 } from '@mem9/shared';
 import { Injectable, Logger } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
@@ -110,18 +111,10 @@ function unverifiedDuplicates(): AppError {
   });
 }
 
-function toPreview(value: unknown): DeepAnalysisReportPreview | null {
-  if (!value || typeof value !== 'object') {
-    return null;
-  }
-
-  return value as DeepAnalysisReportPreview;
-}
-
 function getDuplicateCleanupStatus(
   report: Pick<DeepAnalysisReportRecordLike, 'previewJson'>,
 ): DeepAnalysisDuplicateCleanupStatus | null {
-  return toPreview(report.previewJson)?.duplicateCleanup ?? null;
+  return publicReportPreview(report.previewJson)?.duplicateCleanup ?? null;
 }
 
 function isDuplicateCleanupActive(
@@ -146,7 +139,7 @@ function buildPreviewWithDuplicateCleanup(
   report: DeepAnalysisReportRecordLike,
   cleanup: DeepAnalysisDuplicateCleanupStatus,
 ): Prisma.InputJsonValue {
-  const preview = toPreview(report.previewJson);
+  const preview = publicReportPreview(report.previewJson);
   return {
     ...preview,
     generatedAt:
@@ -247,7 +240,7 @@ export class DeepAnalysisDuplicateOpsService {
     const previousDeletedMemoryIds = existingCleanup?.deletedMemoryIds ?? [];
     const sourcePayload = await this.storage.getObjectBuffer(report.sourceSnapshotObjectKey);
     const verifiedDuplicates = verifyDuplicateClusters(
-      document, gunzipJson<SourceSnapshotPayload>(sourcePayload), previousDeletedMemoryIds,
+      document, await gunzipJson<SourceSnapshotPayload>(sourcePayload), previousDeletedMemoryIds,
     );
     const duplicateMemoryIds = verifiedDuplicates.map(item => item.duplicateMemoryId);
 
@@ -361,7 +354,7 @@ export class DeepAnalysisDuplicateOpsService {
       this.storage.getObjectBuffer(report.sourceSnapshotObjectKey),
     ]);
     const document = JSON.parse(reportPayload.toString('utf8')) as DeepAnalysisReportDocument;
-    const sourceSnapshot = gunzipJson<SourceSnapshotPayload>(sourcePayload);
+    const sourceSnapshot = await gunzipJson<SourceSnapshotPayload>(sourcePayload);
     const memoryPreviewById = new Map(
       sourceSnapshot.memories.map((memory) => [memory.id, sentencePreview(memory.content)]),
     );
@@ -491,10 +484,7 @@ export class DeepAnalysisDuplicateOpsService {
           failedCount: failedMemoryIds.length,
           deletedMemoryIds,
           failedMemoryIds,
-          errorMessage:
-            error instanceof Error
-              ? error.message.slice(0, 512)
-              : 'Failed to delete duplicate memories',
+          errorMessage: publicProcessingError(error instanceof AppError ? error.code : undefined),
         };
         await this.repository.updateDeepAnalysisReport(input.reportId, fingerprint, {
           previewJson: buildPreviewWithDuplicateCleanup(report, failedCleanup),

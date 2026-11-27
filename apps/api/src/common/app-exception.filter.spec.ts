@@ -22,7 +22,7 @@ describe('AppExceptionFilter', () => {
       code: error instanceof AppError ? error.code : error instanceof HttpException ? 'HTTP_EXCEPTION' : 'INTERNAL_SERVER_ERROR',
       message: 'Internal server error', requestId: 'req_123',
     });
-    expect(Sentry.captureException).toHaveBeenCalledWith(error);
+    expect(Sentry.captureException).toHaveBeenCalledWith(error, { tags: { requestId: 'req_123' } });
   });
 
   it('preserves actionable client validation errors', () => {
@@ -85,7 +85,7 @@ describe('AppExceptionFilter', () => {
 
     filter.catch(error, host);
 
-    expect(Sentry.captureException).toHaveBeenCalledWith(error);
+    expect(Sentry.captureException).toHaveBeenCalledWith(error, { tags: { requestId: 'req_123' } });
     expect(response.status).toHaveBeenCalledWith(
       HttpStatus.INTERNAL_SERVER_ERROR,
     );
@@ -98,7 +98,7 @@ describe('AppExceptionFilter', () => {
 
     filter.catch(error, host);
 
-    expect(Sentry.captureException).toHaveBeenCalledWith(error);
+    expect(Sentry.captureException).toHaveBeenCalledWith(error, { tags: { requestId: 'req_123' } });
     expect(response.status).toHaveBeenCalledWith(
       HttpStatus.INTERNAL_SERVER_ERROR,
     );

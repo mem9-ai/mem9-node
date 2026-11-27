@@ -1,13 +1,14 @@
 import { Readable } from 'node:stream';
 
 import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
-import type { SQSClientConfig } from '@aws-sdk/client-sqs';
-import type { Message } from '@aws-sdk/client-sqs';
+import type { SQSClientConfig, Message } from '@aws-sdk/client-sqs';
 import { ChangeMessageVisibilityCommand, DeleteMessageCommand, ReceiveMessageCommand, SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import type { AppConfig } from '@mem9/config';
 import { APP_CONFIG } from '@mem9/config';
 import type { AnalysisBatchMessage, AnalysisLlmQueueMessage } from '@mem9/contracts';
 import { Inject, Injectable } from '@nestjs/common';
+
+import { assertSnapshotSize, MAX_SNAPSHOT_STORED_BYTES } from './gzip';
 
 @Injectable()
 export class AwsClientFactory {
@@ -65,6 +66,7 @@ export class S3PayloadStorageService {
   public constructor(private readonly factory: AwsClientFactory) {}
 
   public async putCompressedJson(key: string, payload: Buffer): Promise<void> {
+    assertSnapshotSize(payload.length, MAX_SNAPSHOT_STORED_BYTES);
     await this.factory.s3.send(
       new PutObjectCommand({
         Bucket: this.factory.settings.aws.s3BucketAnalysisPayloads,
@@ -76,53 +78,47 @@ export class S3PayloadStorageService {
     );
   }
 
-  public async getObjectBuffer(key: string): Promise<Buffer> {
+  public async getObjectBuffer(key: string, maxBytes = MAX_SNAPSHOT_STORED_BYTES): Promise<Buffer> {
+    const controller = new AbortController();
     const response = await this.factory.s3.send(
       new GetObjectCommand({
         Bucket: this.factory.settings.aws.s3BucketAnalysisPayloads,
         Key: key,
       }),
+      { abortSignal: controller.signal },
     );
     const body = response.Body;
-
-    if (
-      body === undefined ||
-      (!(body instanceof Readable) &&
-        typeof (body as { transformToByteArray?: () => Promise<Uint8Array> }).transformToByteArray !== 'function')
-    ) {
+    // Node S3 responses are Readable. Never fall back to an unbounded buffering helper.
+    if (!(body instanceof Readable)) {
+      controller.abort();
       throw new Error('Unsupported S3 body stream');
     }
-
-    if (body instanceof Readable) {
+    try {
+      assertSnapshotSize(response.ContentLength ?? 0, maxBytes);
       const chunks: Buffer[] = [];
-
+      let totalBytes = 0;
       for await (const chunk of body) {
-        if (Buffer.isBuffer(chunk)) {
-          chunks.push(chunk);
-          continue;
-        }
-
-        if (typeof chunk === 'string') {
-          chunks.push(Buffer.from(chunk));
-          continue;
-        }
-
-        chunks.push(Buffer.from(chunk as Uint8Array));
+        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+        totalBytes += bytes.length;
+        assertSnapshotSize(totalBytes, maxBytes);
+        chunks.push(bytes);
       }
-
-      return Buffer.concat(chunks);
+      return Buffer.concat(chunks, totalBytes);
+    } catch (error) {
+      controller.abort();
+      body.destroy();
+      throw error;
     }
-
-    const bytes = await body.transformToByteArray();
-    return Buffer.from(bytes);
   }
 
   public async putJson(key: string, payload: unknown): Promise<void> {
+    const json = JSON.stringify(payload);
+    assertSnapshotSize(Buffer.byteLength(json), MAX_SNAPSHOT_STORED_BYTES);
     await this.factory.s3.send(
       new PutObjectCommand({
         Bucket: this.factory.settings.aws.s3BucketAnalysisPayloads,
         Key: key,
-        Body: JSON.stringify(payload),
+        Body: json,
         ContentType: 'application/json',
       }),
     );
